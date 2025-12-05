@@ -50,6 +50,8 @@ from computor_agent.settings import (
     ComputorConfig,
 )
 
+from computor_agent.services import RepositoryService
+
 __all__ = [
     # Version
     "__version__",
@@ -94,4 +96,6 @@ __all__ = [
     "AgentConfig",
     "LLMSettings",
     "ComputorConfig",
+    # Services
+    "RepositoryService",
 ]
