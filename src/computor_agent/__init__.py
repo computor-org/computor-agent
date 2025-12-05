@@ -25,6 +25,8 @@ from computor_agent.llm import (
 
 from computor_agent.git import (
     GitRepository,
+    GitCredentials,
+    GitProvider,
     GitError,
     RepositoryNotFoundError,
     CloneError,
@@ -60,6 +62,8 @@ __all__ = [
     "list_providers",
     # Git
     "GitRepository",
+    "GitCredentials",
+    "GitProvider",
     "GitError",
     "RepositoryNotFoundError",
     "CloneError",

@@ -8,9 +8,14 @@ import pytest
 
 from computor_agent.git import (
     GitRepository,
+    GitCredentials,
+    GitProvider,
     GitError,
     RepositoryNotFoundError,
     FileStatus,
+    inject_credentials,
+    mask_credentials,
+    strip_credentials,
 )
 
 
@@ -343,3 +348,158 @@ class TestRepoStatus:
         # With untracked
         status = RepoStatus(branch="main", untracked=["new.txt"])
         assert status.has_changes
+
+
+class TestGitCredentials:
+    """Tests for Git authentication utilities."""
+
+    def test_credentials_with_token(self):
+        """Test creating credentials with a token."""
+        creds = GitCredentials(token="ghp_xxxx")
+        assert creds.get_token() == "ghp_xxxx"
+        assert creds.get_password() is None
+
+    def test_credentials_with_username_password(self):
+        """Test creating credentials with username and password."""
+        creds = GitCredentials(username="user", password="pass123")
+        assert creds.username == "user"
+        assert creds.get_password() == "pass123"
+
+    def test_credentials_with_provider(self):
+        """Test creating credentials with a specific provider."""
+        creds = GitCredentials(token="glpat-xxxx", provider=GitProvider.GITLAB)
+        assert creds.provider == GitProvider.GITLAB
+
+
+class TestInjectCredentials:
+    """Tests for inject_credentials function."""
+
+    def test_inject_github_token(self):
+        """Test injecting GitHub token into URL."""
+        creds = GitCredentials(token="ghp_xxxx")
+        url = "https://github.com/user/repo.git"
+        result = inject_credentials(url, creds)
+        assert result == "https://x-access-token:ghp_xxxx@github.com/user/repo.git"
+
+    def test_inject_github_token_with_username(self):
+        """Test injecting GitHub token with custom username."""
+        creds = GitCredentials(token="ghp_xxxx", username="myuser")
+        url = "https://github.com/user/repo.git"
+        result = inject_credentials(url, creds)
+        assert result == "https://myuser:ghp_xxxx@github.com/user/repo.git"
+
+    def test_inject_gitlab_token(self):
+        """Test injecting GitLab token into URL."""
+        creds = GitCredentials(token="glpat-xxxx", provider=GitProvider.GITLAB)
+        url = "https://gitlab.com/user/repo.git"
+        result = inject_credentials(url, creds)
+        assert result == "https://oauth2:glpat-xxxx@gitlab.com/user/repo.git"
+
+    def test_inject_gitlab_token_auto_detect(self):
+        """Test auto-detecting GitLab from hostname."""
+        creds = GitCredentials(token="glpat-xxxx")
+        url = "https://gitlab.com/user/repo.git"
+        result = inject_credentials(url, creds)
+        assert result == "https://oauth2:glpat-xxxx@gitlab.com/user/repo.git"
+
+    def test_inject_bitbucket_token(self):
+        """Test injecting Bitbucket token into URL."""
+        creds = GitCredentials(token="app_pass")
+        url = "https://bitbucket.org/user/repo.git"
+        result = inject_credentials(url, creds)
+        assert result == "https://x-token-auth:app_pass@bitbucket.org/user/repo.git"
+
+    def test_inject_azure_token(self):
+        """Test injecting Azure DevOps token into URL."""
+        creds = GitCredentials(token="pat_xxxx")
+        url = "https://dev.azure.com/org/project/_git/repo"
+        result = inject_credentials(url, creds)
+        assert result == "https://pat:pat_xxxx@dev.azure.com/org/project/_git/repo"
+
+    def test_inject_username_password(self):
+        """Test injecting username and password."""
+        creds = GitCredentials(username="user", password="pass")
+        url = "https://github.com/user/repo.git"
+        result = inject_credentials(url, creds)
+        assert result == "https://user:pass@github.com/user/repo.git"
+
+    def test_inject_preserves_ssh_url(self):
+        """Test that SSH URLs are not modified."""
+        creds = GitCredentials(token="ghp_xxxx")
+        url = "git@github.com:user/repo.git"
+        result = inject_credentials(url, creds)
+        assert result == url  # Unchanged
+
+    def test_inject_preserves_port(self):
+        """Test that port is preserved in URL."""
+        creds = GitCredentials(token="token123")
+        url = "https://gitlab.example.com:8443/user/repo.git"
+        result = inject_credentials(url, creds)
+        assert "gitlab.example.com:8443" in result
+        assert "token123" in result
+
+    def test_inject_no_credentials(self):
+        """Test URL unchanged when no credentials provided."""
+        creds = GitCredentials()
+        url = "https://github.com/user/repo.git"
+        result = inject_credentials(url, creds)
+        assert result == url
+
+
+class TestStripCredentials:
+    """Tests for strip_credentials function."""
+
+    def test_strip_token(self):
+        """Test stripping token from URL."""
+        url = "https://ghp_xxxx@github.com/user/repo.git"
+        result = strip_credentials(url)
+        assert result == "https://github.com/user/repo.git"
+
+    def test_strip_username_password(self):
+        """Test stripping username and password from URL."""
+        url = "https://user:pass@github.com/user/repo.git"
+        result = strip_credentials(url)
+        assert result == "https://github.com/user/repo.git"
+
+    def test_strip_preserves_clean_url(self):
+        """Test clean URL is unchanged."""
+        url = "https://github.com/user/repo.git"
+        result = strip_credentials(url)
+        assert result == url
+
+    def test_strip_preserves_port(self):
+        """Test port is preserved when stripping."""
+        url = "https://user:pass@gitlab.example.com:8443/user/repo.git"
+        result = strip_credentials(url)
+        assert result == "https://gitlab.example.com:8443/user/repo.git"
+
+
+class TestMaskCredentials:
+    """Tests for mask_credentials function."""
+
+    def test_mask_token(self):
+        """Test masking token in URL."""
+        url = "https://ghp_xxxx@github.com/user/repo.git"
+        result = mask_credentials(url)
+        assert result == "https://***@github.com/user/repo.git"
+        assert "ghp_xxxx" not in result
+
+    def test_mask_username_password(self):
+        """Test masking username and password in URL."""
+        url = "https://user:secretpass@github.com/user/repo.git"
+        result = mask_credentials(url)
+        assert result == "https://***@github.com/user/repo.git"
+        assert "user" not in result or result.count("user") == 1  # Only in path
+        assert "secretpass" not in result
+
+    def test_mask_preserves_clean_url(self):
+        """Test clean URL is unchanged."""
+        url = "https://github.com/user/repo.git"
+        result = mask_credentials(url)
+        assert result == url
+
+    def test_mask_preserves_port(self):
+        """Test port is preserved when masking."""
+        url = "https://user:pass@gitlab.example.com:8443/user/repo.git"
+        result = mask_credentials(url)
+        assert result == "https://***@gitlab.example.com:8443/user/repo.git"

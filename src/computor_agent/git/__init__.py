@@ -6,7 +6,7 @@ designed for use by AI agents to analyze and manipulate repositories.
 
 Example:
     ```python
-    from computor_agent.git import GitRepository
+    from computor_agent.git import GitRepository, GitCredentials
 
     # Open existing repository
     repo = GitRepository("/path/to/repo")
@@ -24,15 +24,30 @@ Example:
     diff = repo.diff()
     print(f"Files changed: {diff.files_changed}")
 
-    # Clone a repository
+    # Clone a public repository
     repo = GitRepository.clone(
         "https://github.com/user/repo.git",
         "/tmp/repo",
         depth=1,
     )
+
+    # Clone a private repository with token
+    creds = GitCredentials(token="ghp_xxxx")
+    repo = GitRepository.clone(
+        "https://github.com/user/private-repo.git",
+        "/tmp/private-repo",
+        credentials=creds,
+    )
     ```
 """
 
+from computor_agent.git.auth import (
+    GitCredentials,
+    GitProvider,
+    inject_credentials,
+    mask_credentials,
+    strip_credentials,
+)
 from computor_agent.git.exceptions import (
     BranchError,
     CheckoutError,
@@ -67,6 +82,12 @@ from computor_agent.git.repository import GitRepository
 __all__ = [
     # Main class
     "GitRepository",
+    # Authentication
+    "GitCredentials",
+    "GitProvider",
+    "inject_credentials",
+    "mask_credentials",
+    "strip_credentials",
     # Models
     "Author",
     "Branch",

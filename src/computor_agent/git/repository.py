@@ -30,6 +30,12 @@ from computor_agent.git.exceptions import (
     RemoteError,
     RepositoryNotFoundError,
 )
+from computor_agent.git.auth import (
+    GitCredentials,
+    GitProvider,
+    inject_credentials,
+    mask_credentials,
+)
 from computor_agent.git.models import (
     Author,
     Branch,
@@ -107,6 +113,7 @@ class GitRepository:
         branch: Optional[str] = None,
         depth: Optional[int] = None,
         single_branch: bool = False,
+        credentials: Optional[GitCredentials] = None,
     ) -> "GitRepository":
         """
         Clone a repository from a URL.
@@ -117,6 +124,7 @@ class GitRepository:
             branch: Branch to checkout (default: remote HEAD)
             depth: Create a shallow clone with limited history
             single_branch: Clone only the specified branch
+            credentials: Authentication credentials for private repos
 
         Returns:
             GitRepository instance for the cloned repo
@@ -126,11 +134,21 @@ class GitRepository:
 
         Example:
             ```python
+            # Public repository
             repo = GitRepository.clone(
                 "https://github.com/user/repo.git",
                 "/tmp/repo",
                 branch="main",
                 depth=1,
+            )
+
+            # Private repository with token
+            from computor_agent.git import GitCredentials
+            creds = GitCredentials(token="ghp_xxxx")
+            repo = GitRepository.clone(
+                "https://github.com/user/private-repo.git",
+                "/tmp/private-repo",
+                credentials=creds,
             )
             ```
         """
@@ -144,15 +162,22 @@ class GitRepository:
         if single_branch:
             kwargs["single_branch"] = single_branch
 
+        # Inject credentials into URL if provided
+        clone_url = url
+        if credentials:
+            clone_url = inject_credentials(url, credentials)
+
         try:
-            Repo.clone_from(url, path, **kwargs)
+            Repo.clone_from(clone_url, path, **kwargs)
             return cls(path)
         except GitCommandError as e:
+            # Mask credentials in error messages
+            safe_url = mask_credentials(clone_url) if credentials else url
             raise CloneError(
-                f"Failed to clone {url}: {e.stderr}",
-                command=f"git clone {url}",
+                f"Failed to clone {safe_url}: {e.stderr}",
+                command=f"git clone {safe_url}",
                 return_code=e.status,
-                stderr=e.stderr,
+                stderr=mask_credentials(e.stderr) if credentials else e.stderr,
                 repo_path=str(path),
             )
 
