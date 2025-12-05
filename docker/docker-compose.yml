@@ -1,15 +1,24 @@
-# Docker Compose for computor-agent
+# Docker Compose for Computor Agent
 #
 # The LLM server (Ollama, LM Studio, etc.) runs on the HOST machine.
-# This container only runs computor-agent and connects to the host's LLM server.
+# This container runs the Computor Agent and connects to the host's LLM server.
 #
 # Usage:
-#   # First, start your LLM server on the host:
-#   ollama serve
+#   # Copy and configure environment file
+#   cp docker/.env.example docker/.env
+#   # Edit docker/.env with your settings
 #
-#   # Then start computor-agent:
+#   # Start the agent
 #   docker-compose -f docker/docker-compose.yml up -d
+#
+#   # Attach to container
 #   docker-compose -f docker/docker-compose.yml exec computor-agent bash
+#
+#   # View logs
+#   docker-compose -f docker/docker-compose.yml logs -f
+#
+#   # Stop
+#   docker-compose -f docker/docker-compose.yml down
 
 services:
   computor-agent:
@@ -17,13 +26,85 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: computor-agent
+    env_file:
+      - .env
     environment:
+      # Git configuration
+      - GIT_USER_NAME=${GIT_USER_NAME:-Computor Agent}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-agent@computor.local}
+
+      # LLM configuration
       - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
       - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
       - LLM_MODEL=${LLM_MODEL:-devstral-small}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+
+      # Backend configuration
+      - COMPUTOR_BACKEND_URL=${COMPUTOR_BACKEND_URL:-}
+      - COMPUTOR_BACKEND_USERNAME=${COMPUTOR_BACKEND_USERNAME:-}
+      - COMPUTOR_BACKEND_PASSWORD=${COMPUTOR_BACKEND_PASSWORD:-}
+      - COMPUTOR_BACKEND_TIMEOUT=${COMPUTOR_BACKEND_TIMEOUT:-30}
+
+      # Agent configuration
+      - COMPUTOR_AGENT_NAME=${COMPUTOR_AGENT_NAME:-Tutor AI}
+      - COMPUTOR_AGENT_DESCRIPTION=${COMPUTOR_AGENT_DESCRIPTION:-}
+
+      # Tutor configuration - Personality
+      - TUTOR_PERSONALITY_TONE=${TUTOR_PERSONALITY_TONE:-friendly_professional}
+      - TUTOR_LANGUAGE=${TUTOR_LANGUAGE:-en}
+
+      # Tutor configuration - Security
+      - TUTOR_SECURITY_ENABLED=${TUTOR_SECURITY_ENABLED:-true}
+      - TUTOR_SECURITY_REQUIRE_CONFIRMATION=${TUTOR_SECURITY_REQUIRE_CONFIRMATION:-true}
+      - TUTOR_SECURITY_BLOCK_ON_THREAT=${TUTOR_SECURITY_BLOCK_ON_THREAT:-true}
+      - TUTOR_SECURITY_CHECK_MESSAGES=${TUTOR_SECURITY_CHECK_MESSAGES:-true}
+      - TUTOR_SECURITY_CHECK_CODE=${TUTOR_SECURITY_CHECK_CODE:-true}
+
+      # Tutor configuration - Context
+      - TUTOR_CONTEXT_PREVIOUS_MESSAGES=${TUTOR_CONTEXT_PREVIOUS_MESSAGES:-3}
+      - TUTOR_CONTEXT_INCLUDE_COMMENTS=${TUTOR_CONTEXT_INCLUDE_COMMENTS:-true}
+      - TUTOR_CONTEXT_INCLUDE_REFERENCE=${TUTOR_CONTEXT_INCLUDE_REFERENCE:-false}
+      - TUTOR_CONTEXT_MAX_CODE_LINES=${TUTOR_CONTEXT_MAX_CODE_LINES:-1000}
+      - TUTOR_CONTEXT_STUDENT_NOTES_ENABLED=${TUTOR_CONTEXT_STUDENT_NOTES_ENABLED:-false}
+      - TUTOR_CONTEXT_STUDENT_NOTES_DIR=/data/notes
+
+      # Tutor configuration - Grading
+      - TUTOR_GRADING_ENABLED=${TUTOR_GRADING_ENABLED:-false}
+      - TUTOR_GRADING_AUTO_SUBMIT=${TUTOR_GRADING_AUTO_SUBMIT:-false}
+
+      # Tutor configuration - Scheduler
+      - TUTOR_SCHEDULER_ENABLED=${TUTOR_SCHEDULER_ENABLED:-true}
+      - TUTOR_SCHEDULER_POLL_INTERVAL=${TUTOR_SCHEDULER_POLL_INTERVAL:-30}
+      - TUTOR_SCHEDULER_MAX_CONCURRENT=${TUTOR_SCHEDULER_MAX_CONCURRENT:-5}
+      - TUTOR_SCHEDULER_COOLDOWN=${TUTOR_SCHEDULER_COOLDOWN:-60}
+
+      # Workspace paths
+      - WORKSPACE_ROOT=/data/workspace
+      - CONFIG_DIR=/data/config
+      - LOG_DIR=/data/logs
+
     # Allow container to reach host machine
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+    # Persistent volumes
+    volumes:
+      - computor-workspace:/data/workspace
+      - computor-config:/data/config
+      - computor-notes:/data/notes
+      - computor-logs:/data/logs
+
     stdin_open: true
     tty: true
     restart: unless-stopped
+
+volumes:
+  computor-workspace:
+    name: computor-agent-workspace
+  computor-config:
+    name: computor-agent-config
+  computor-notes:
+    name: computor-agent-notes
+  computor-logs:
+    name: computor-agent-logs
