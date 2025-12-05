@@ -23,24 +23,52 @@ from computor_agent.llm import (
     list_providers,
 )
 
+from computor_agent.git import (
+    GitRepository,
+    GitError,
+    RepositoryNotFoundError,
+    CloneError,
+    CommitError,
+    FileStatus,
+    FileChange,
+    RepoStatus,
+    Commit,
+    Branch,
+    Diff,
+    Author,
+)
+
 __all__ = [
     # Version
     "__version__",
-    # Config
+    # LLM Config
     "LLMConfig",
     "DummyProviderConfig",
     "ProviderType",
     "Message",
     "MessageRole",
-    # Base classes
+    # LLM Base classes
     "LLMProvider",
     "LLMResponse",
     "StreamChunk",
-    # Providers
+    # LLM Providers
     "OpenAIProvider",
     "DummyProvider",
-    # Factory
+    # LLM Factory
     "get_provider",
     "create_provider",
     "list_providers",
+    # Git
+    "GitRepository",
+    "GitError",
+    "RepositoryNotFoundError",
+    "CloneError",
+    "CommitError",
+    "FileStatus",
+    "FileChange",
+    "RepoStatus",
+    "Commit",
+    "Branch",
+    "Diff",
+    "Author",
 ]
