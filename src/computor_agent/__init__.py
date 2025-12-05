@@ -44,6 +44,10 @@ from computor_agent.settings import (
     GitCredentialsStore,
     CredentialMapping,
     CredentialScope,
+    BackendConfig,
+    AgentConfig,
+    LLMSettings,
+    ComputorConfig,
 )
 
 __all__ = [
@@ -81,8 +85,13 @@ __all__ = [
     "Branch",
     "Diff",
     "Author",
-    # Settings
+    # Settings - Credentials
     "GitCredentialsStore",
     "CredentialMapping",
     "CredentialScope",
+    # Settings - Configuration
+    "BackendConfig",
+    "AgentConfig",
+    "LLMSettings",
+    "ComputorConfig",
 ]

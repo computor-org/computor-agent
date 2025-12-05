@@ -12,6 +12,10 @@ from computor_agent.settings import (
     GitCredentialsStore,
     CredentialMapping,
     CredentialScope,
+    BackendConfig,
+    AgentConfig,
+    LLMSettings,
+    ComputorConfig,
 )
 from computor_agent.git import GitProvider
 
@@ -432,3 +436,338 @@ class TestGitCredentialsStoreEnv:
 
         store = GitCredentialsStore.from_env()
         assert len(store) == 0
+
+
+class TestBackendConfig:
+    """Tests for BackendConfig model."""
+
+    def test_create_backend_config(self):
+        """Test creating a backend configuration."""
+        config = BackendConfig(
+            url="https://api.computor.example.com",
+            username="tutor-agent",
+            password="secret-password",
+        )
+        assert config.url == "https://api.computor.example.com"
+        assert config.username == "tutor-agent"
+        assert config.get_password() == "secret-password"
+        assert config.timeout == 30.0  # Default value
+
+    def test_url_normalization(self):
+        """Test that trailing slashes are removed from URLs."""
+        config = BackendConfig(
+            url="https://api.computor.example.com/",
+            username="user",
+            password="pass",
+        )
+        assert config.url == "https://api.computor.example.com"
+
+    def test_custom_timeout(self):
+        """Test setting a custom timeout."""
+        config = BackendConfig(
+            url="https://api.example.com",
+            username="user",
+            password="pass",
+            timeout=60.0,
+        )
+        assert config.timeout == 60.0
+
+
+class TestAgentConfig:
+    """Tests for AgentConfig model."""
+
+    def test_default_agent_config(self):
+        """Test default agent configuration values."""
+        config = AgentConfig()
+        assert config.name == "Computor Agent"
+        assert config.description is None
+
+    def test_custom_agent_config(self):
+        """Test creating agent config with custom values."""
+        config = AgentConfig(
+            name="Tutor AI",
+            description="Automated grading assistant",
+        )
+        assert config.name == "Tutor AI"
+        assert config.description == "Automated grading assistant"
+
+
+class TestLLMSettings:
+    """Tests for LLMSettings model."""
+
+    def test_default_llm_settings(self):
+        """Test default LLM settings."""
+        settings = LLMSettings()
+        assert settings.provider == "openai"
+        assert settings.model == "gpt-4"
+        assert settings.base_url is None
+        assert settings.api_key is None
+        assert settings.temperature == 0.7
+        assert settings.max_tokens is None
+
+    def test_custom_llm_settings(self):
+        """Test creating LLM settings with custom values."""
+        settings = LLMSettings(
+            provider="ollama",
+            model="llama3",
+            base_url="http://localhost:11434/v1",
+            temperature=0.5,
+            max_tokens=4096,
+        )
+        assert settings.provider == "ollama"
+        assert settings.model == "llama3"
+        assert settings.base_url == "http://localhost:11434/v1"
+        assert settings.temperature == 0.5
+        assert settings.max_tokens == 4096
+
+    def test_api_key_handling(self):
+        """Test API key secure handling."""
+        settings = LLMSettings(api_key="sk-secret-key")
+        assert settings.get_api_key() == "sk-secret-key"
+
+        # Without API key
+        settings_no_key = LLMSettings()
+        assert settings_no_key.get_api_key() is None
+
+
+class TestComputorConfig:
+    """Tests for ComputorConfig model."""
+
+    def test_create_minimal_config(self):
+        """Test creating config with only required fields."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="user",
+                password="pass",
+            )
+        )
+        assert config.backend.url == "https://api.example.com"
+        assert config.agent.name == "Computor Agent"  # Default
+        assert config.llm is None  # Optional
+
+    def test_create_full_config(self):
+        """Test creating config with all fields."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="tutor",
+                password="secret",
+                timeout=60.0,
+            ),
+            agent=AgentConfig(
+                name="Tutor AI",
+                description="Grading assistant",
+            ),
+            llm=LLMSettings(
+                provider="openai",
+                model="gpt-4",
+                api_key="sk-xxx",
+            ),
+        )
+        assert config.backend.username == "tutor"
+        assert config.agent.name == "Tutor AI"
+        assert config.llm.model == "gpt-4"
+
+    def test_from_dict(self):
+        """Test creating config from dictionary."""
+        data = {
+            "backend": {
+                "url": "https://api.example.com",
+                "username": "user",
+                "password": "pass",
+            },
+            "agent": {
+                "name": "Test Agent",
+            },
+        }
+        config = ComputorConfig.from_dict(data)
+        assert config.backend.url == "https://api.example.com"
+        assert config.agent.name == "Test Agent"
+
+    def test_to_dict_masks_secrets(self):
+        """Test that to_dict masks passwords by default."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="user",
+                password="secret-password",
+            ),
+            llm=LLMSettings(
+                api_key="sk-secret-key",
+            ),
+        )
+        data = config.to_dict()
+        assert data["backend"]["password"] == "***"
+        assert data["llm"]["api_key"] == "***"
+
+    def test_to_dict_includes_secrets(self):
+        """Test that to_dict can include secrets when requested."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="user",
+                password="secret-password",
+            ),
+        )
+        data = config.to_dict(include_secrets=True)
+        assert data["backend"]["password"] == "secret-password"
+
+
+class TestComputorConfigFile:
+    """Tests for file-based ComputorConfig."""
+
+    def test_from_yaml_file(self):
+        """Test loading config from YAML file."""
+        yaml_content = """
+backend:
+  url: https://api.example.com
+  username: tutor-agent
+  password: secret123
+
+agent:
+  name: Tutor AI
+  description: Grading assistant
+
+llm:
+  provider: openai
+  model: gpt-4
+  temperature: 0.5
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
+            f.write(yaml_content)
+            f.flush()
+
+            try:
+                config = ComputorConfig.from_file(f.name)
+                assert config.backend.url == "https://api.example.com"
+                assert config.backend.username == "tutor-agent"
+                assert config.backend.get_password() == "secret123"
+                assert config.agent.name == "Tutor AI"
+                assert config.llm.provider == "openai"
+                assert config.llm.temperature == 0.5
+            finally:
+                os.unlink(f.name)
+
+    def test_from_json_file(self):
+        """Test loading config from JSON file."""
+        json_content = {
+            "backend": {
+                "url": "https://api.example.com",
+                "username": "user",
+                "password": "pass",
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as f:
+            json.dump(json_content, f)
+            f.flush()
+
+            try:
+                config = ComputorConfig.from_file(f.name)
+                assert config.backend.url == "https://api.example.com"
+            finally:
+                os.unlink(f.name)
+
+    def test_from_file_not_found(self):
+        """Test error when config file doesn't exist."""
+        with pytest.raises(FileNotFoundError):
+            ComputorConfig.from_file("/nonexistent/path/config.yaml")
+
+    def test_save_yaml(self):
+        """Test saving config to YAML file."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="user",
+                password="secret",
+            ),
+            agent=AgentConfig(name="Test Agent"),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.yaml"
+            config.save(path, format="yaml")
+
+            # Verify file was created with restricted permissions
+            assert path.exists()
+            assert (path.stat().st_mode & 0o777) == 0o600
+
+            # Verify content can be loaded back
+            loaded = ComputorConfig.from_file(path)
+            assert loaded.backend.url == "https://api.example.com"
+            assert loaded.backend.get_password() == "secret"
+
+    def test_save_json(self):
+        """Test saving config to JSON file."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="user",
+                password="secret",
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            config.save(path, format="json")
+
+            # Verify content is valid JSON
+            content = path.read_text()
+            data = json.loads(content)
+            assert "backend" in data
+
+
+class TestComputorConfigEnv:
+    """Tests for environment-based ComputorConfig."""
+
+    def test_from_env(self):
+        """Test loading config from environment variables."""
+        os.environ["COMPUTOR_BACKEND_URL"] = "https://api.example.com"
+        os.environ["COMPUTOR_BACKEND_USERNAME"] = "tutor"
+        os.environ["COMPUTOR_BACKEND_PASSWORD"] = "secret"
+        os.environ["COMPUTOR_AGENT_NAME"] = "Env Agent"
+        os.environ["COMPUTOR_LLM_PROVIDER"] = "openai"
+        os.environ["COMPUTOR_LLM_MODEL"] = "gpt-4"
+
+        try:
+            config = ComputorConfig.from_env()
+            assert config.backend.url == "https://api.example.com"
+            assert config.backend.username == "tutor"
+            assert config.backend.get_password() == "secret"
+            assert config.agent.name == "Env Agent"
+            assert config.llm.provider == "openai"
+            assert config.llm.model == "gpt-4"
+        finally:
+            # Clean up
+            for key in list(os.environ.keys()):
+                if key.startswith("COMPUTOR_"):
+                    del os.environ[key]
+
+    def test_from_env_missing_required(self):
+        """Test error when required env vars are missing."""
+        # Clean any existing vars
+        for key in list(os.environ.keys()):
+            if key.startswith("COMPUTOR_"):
+                del os.environ[key]
+
+        with pytest.raises(ValueError, match="Missing required"):
+            ComputorConfig.from_env()
+
+    def test_from_env_custom_prefix(self):
+        """Test loading with custom prefix."""
+        os.environ["MY_APP_BACKEND_URL"] = "https://api.example.com"
+        os.environ["MY_APP_BACKEND_USERNAME"] = "user"
+        os.environ["MY_APP_BACKEND_PASSWORD"] = "pass"
+
+        try:
+            config = ComputorConfig.from_env(prefix="MY_APP_")
+            assert config.backend.url == "https://api.example.com"
+        finally:
+            for key in list(os.environ.keys()):
+                if key.startswith("MY_APP_"):
+                    del os.environ[key]
