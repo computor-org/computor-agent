@@ -377,3 +377,95 @@ class TestThreatLevels:
             ],
         )
         assert result.should_block is False
+
+
+class TestTrigger:
+    """Tests for trigger detection."""
+
+    def test_staff_roles(self):
+        """Test staff roles constant."""
+        from computor_agent.tutor import STAFF_ROLES
+
+        assert "_tutor" in STAFF_ROLES
+        assert "_lecturer" in STAFF_ROLES
+        assert "_maintainer" in STAFF_ROLES
+        assert "_owner" in STAFF_ROLES
+        assert "_student" not in STAFF_ROLES
+
+    def test_trigger_checker_is_student_role(self):
+        """Test role checking."""
+        from computor_agent.tutor.trigger import TriggerChecker
+
+        checker = TriggerChecker(
+            messages_client=MagicMock(),
+            course_members_client=MagicMock(),
+        )
+
+        assert checker.is_student_role("_student") is True
+        assert checker.is_student_role("_tutor") is False
+        assert checker.is_student_role("_lecturer") is False
+        assert checker.is_staff_role("_tutor") is True
+        assert checker.is_staff_role("_student") is False
+
+    def test_message_trigger_dataclass(self):
+        """Test MessageTrigger dataclass."""
+        from computor_agent.tutor import MessageTrigger
+
+        trigger = MessageTrigger(
+            message_id="msg-1",
+            submission_group_id="sg-1",
+            author_id="user-1",
+            author_course_member_id="cm-1",
+            author_role="_student",
+            content="Help me!",
+            title="Question",
+        )
+
+        assert trigger.message_id == "msg-1"
+        assert trigger.author_role == "_student"
+
+    def test_submission_trigger_dataclass(self):
+        """Test SubmissionTrigger dataclass."""
+        from computor_agent.tutor import SubmissionTrigger
+
+        trigger = SubmissionTrigger(
+            artifact_id="art-1",
+            submission_group_id="sg-1",
+            uploaded_by_course_member_id="cm-1",
+            version_identifier="v1",
+            file_size=1024,
+        )
+
+        assert trigger.artifact_id == "art-1"
+        assert trigger.file_size == 1024
+
+
+class TestSchedulerConfig:
+    """Tests for SchedulerConfig."""
+
+    def test_default_config(self):
+        """Test default scheduler config."""
+        from computor_agent.tutor import SchedulerConfig
+
+        config = SchedulerConfig()
+
+        assert config.enabled is True
+        assert config.poll_interval_seconds == 30
+        assert config.max_concurrent_processing == 5
+        assert config.cooldown_seconds == 60
+        assert config.check_messages is True
+        assert config.check_submissions is True
+
+    def test_custom_config(self):
+        """Test custom scheduler config."""
+        from computor_agent.tutor import SchedulerConfig
+
+        config = SchedulerConfig(
+            poll_interval_seconds=60,
+            max_concurrent_processing=10,
+            course_ids=["course-1", "course-2"],
+        )
+
+        assert config.poll_interval_seconds == 60
+        assert config.max_concurrent_processing == 10
+        assert config.course_ids == ["course-1", "course-2"]

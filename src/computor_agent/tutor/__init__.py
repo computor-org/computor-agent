@@ -110,11 +110,30 @@ from computor_agent.tutor.strategies import StrategyRegistry, StrategyResponse
 from computor_agent.tutor.context import ConversationContext, TriggerType
 from computor_agent.tutor.context_builder import ContextBuilder
 from computor_agent.tutor.agent import TutorAgent, ProcessingResult
+from computor_agent.tutor.trigger import (
+    TriggerChecker,
+    TriggerCheckResult,
+    MessageTrigger,
+    SubmissionTrigger,
+    should_tutor_respond,
+    STAFF_ROLES,
+)
+from computor_agent.tutor.scheduler import TutorScheduler, SchedulerConfig
 
 __all__ = [
     # Main agent
     "TutorAgent",
     "ProcessingResult",
+    # Scheduler
+    "TutorScheduler",
+    "SchedulerConfig",
+    # Trigger detection
+    "TriggerChecker",
+    "TriggerCheckResult",
+    "MessageTrigger",
+    "SubmissionTrigger",
+    "should_tutor_respond",
+    "STAFF_ROLES",
     # Configuration
     "TutorConfig",
     "PersonalityConfig",
