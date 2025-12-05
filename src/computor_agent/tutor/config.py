@@ -1,0 +1,363 @@
+"""
+Configuration for the Tutor AI Agent.
+
+This module defines all configuration options for the tutor agent,
+including personality, security settings, context options, and grading.
+"""
+
+import json
+from enum import Enum
+from pathlib import Path
+from typing import Optional, Union
+
+import yaml
+from pydantic import BaseModel, Field
+
+
+class PersonalityTone(str, Enum):
+    """Predefined personality tones for the tutor."""
+
+    FRIENDLY_PROFESSIONAL = "friendly_professional"
+    STRICT = "strict"
+    CASUAL = "casual"
+    ENCOURAGING = "encouraging"
+
+
+class PersonalityConfig(BaseModel):
+    """
+    Personality configuration for the tutor agent.
+
+    Defines how the tutor presents itself and communicates.
+    """
+
+    name: str = Field(
+        default="Tutor AI",
+        description="Display name of the tutor",
+    )
+    tone: PersonalityTone = Field(
+        default=PersonalityTone.FRIENDLY_PROFESSIONAL,
+        description="Communication tone",
+    )
+    language: str = Field(
+        default="en",
+        description="Primary language (ISO 639-1 code)",
+    )
+    custom_system_prompt_prefix: Optional[str] = Field(
+        default=None,
+        description="Custom text prepended to all system prompts",
+    )
+    custom_system_prompt_suffix: Optional[str] = Field(
+        default=None,
+        description="Custom text appended to all system prompts",
+    )
+
+
+class SecurityConfig(BaseModel):
+    """
+    Security configuration for threat detection.
+
+    The security gate checks both student messages and repository code
+    for malicious content (prompt injection, manipulation attempts, etc.).
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable security checks",
+    )
+    require_confirmation: bool = Field(
+        default=True,
+        description="Use 2nd LLM call to confirm detected threats",
+    )
+    threat_log_path: Optional[Path] = Field(
+        default=None,
+        description="Path to threat log file (None = use default logging)",
+    )
+    block_on_threat: bool = Field(
+        default=True,
+        description="Block response if threat confirmed (False = log only)",
+    )
+    check_messages: bool = Field(
+        default=True,
+        description="Check student messages for prompt injection",
+    )
+    check_code: bool = Field(
+        default=True,
+        description="Check student repository code for malicious content",
+    )
+
+
+class ContextConfig(BaseModel):
+    """
+    Configuration for conversation context building.
+
+    Controls what information is gathered before processing.
+    """
+
+    include_previous_messages: int = Field(
+        default=3,
+        ge=0,
+        le=20,
+        description="Number of previous messages to include (0 = none)",
+    )
+    include_course_member_comments: bool = Field(
+        default=True,
+        description="Include tutor/lecturer notes about the student",
+    )
+    include_reference_solution: bool = Field(
+        default=False,
+        description="Include example/reference solution in context",
+    )
+    max_code_lines: int = Field(
+        default=1000,
+        ge=100,
+        description="Maximum lines of code to include from repository",
+    )
+    max_code_files: int = Field(
+        default=20,
+        ge=1,
+        description="Maximum number of code files to include",
+    )
+
+    # Student notes storage
+    student_notes_enabled: bool = Field(
+        default=False,
+        description="Enable storing/reading student notes from filesystem",
+    )
+    student_notes_dir: Optional[Path] = Field(
+        default=None,
+        description="Directory for student notes (uses user UUID as filename)",
+    )
+
+
+class GradingConfig(BaseModel):
+    """
+    Configuration for automated grading.
+
+    Controls whether and how the tutor assigns grades.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable automated grading for submissions",
+    )
+    auto_submit_grade: bool = Field(
+        default=False,
+        description="Automatically POST grade to API (requires enabled=True)",
+    )
+    default_status: int = Field(
+        default=0,
+        ge=0,
+        le=3,
+        description="Default grading status (0=NOT_REVIEWED, 1=CORRECTED, 2=CORRECTION_NECESSARY, 3=IMPROVEMENT_POSSIBLE)",
+    )
+    require_human_review: bool = Field(
+        default=True,
+        description="Flag submissions for human review after grading",
+    )
+    min_grade: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Minimum grade value",
+    )
+    max_grade: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Maximum grade value",
+    )
+
+
+class StrategyConfig(BaseModel):
+    """
+    Configuration for individual response strategies.
+
+    Each strategy can be enabled/disabled and configured separately.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable this strategy",
+    )
+    max_response_tokens: int = Field(
+        default=1000,
+        ge=100,
+        description="Maximum tokens in LLM response",
+    )
+    system_prompt_file: Optional[Path] = Field(
+        default=None,
+        description="Custom system prompt file (overrides default)",
+    )
+    temperature: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0,
+        description="LLM temperature for this strategy",
+    )
+
+
+class StrategiesConfig(BaseModel):
+    """Configuration for all strategies."""
+
+    question_example: StrategyConfig = Field(
+        default_factory=StrategyConfig,
+        description="Strategy for questions about the assignment",
+    )
+    question_howto: StrategyConfig = Field(
+        default_factory=StrategyConfig,
+        description="Strategy for general how-to questions",
+    )
+    help_debug: StrategyConfig = Field(
+        default_factory=StrategyConfig,
+        description="Strategy for debugging help requests",
+    )
+    help_review: StrategyConfig = Field(
+        default_factory=StrategyConfig,
+        description="Strategy for code review requests",
+    )
+    submission_review: StrategyConfig = Field(
+        default_factory=StrategyConfig,
+        description="Strategy for official submission reviews",
+    )
+    clarification: StrategyConfig = Field(
+        default_factory=StrategyConfig,
+        description="Strategy for follow-up clarification questions",
+    )
+    other: StrategyConfig = Field(
+        default_factory=StrategyConfig,
+        description="Fallback strategy for unclear intents",
+    )
+
+
+class TutorConfig(BaseModel):
+    """
+    Complete configuration for the Tutor AI Agent.
+
+    Example YAML configuration file:
+        ```yaml
+        personality:
+          name: "Course Tutor"
+          tone: "friendly_professional"
+          language: "en"
+
+        security:
+          enabled: true
+          require_confirmation: true
+          block_on_threat: true
+
+        context:
+          include_previous_messages: 3
+          include_course_member_comments: true
+          student_notes_enabled: true
+          student_notes_dir: "/var/lib/computor/student-notes"
+
+        grading:
+          enabled: false
+          auto_submit_grade: false
+
+        strategies:
+          question_example:
+            enabled: true
+            max_response_tokens: 1000
+          submission_review:
+            enabled: true
+            temperature: 0.5
+        ```
+    """
+
+    personality: PersonalityConfig = Field(
+        default_factory=PersonalityConfig,
+        description="Personality and communication settings",
+    )
+    security: SecurityConfig = Field(
+        default_factory=SecurityConfig,
+        description="Security and threat detection settings",
+    )
+    context: ContextConfig = Field(
+        default_factory=ContextConfig,
+        description="Context building settings",
+    )
+    grading: GradingConfig = Field(
+        default_factory=GradingConfig,
+        description="Automated grading settings",
+    )
+    strategies: StrategiesConfig = Field(
+        default_factory=StrategiesConfig,
+        description="Strategy-specific settings",
+    )
+
+    @classmethod
+    def from_file(cls, path: Union[str, Path]) -> "TutorConfig":
+        """
+        Load configuration from a YAML or JSON file.
+
+        Args:
+            path: Path to configuration file
+
+        Returns:
+            TutorConfig instance
+
+        Raises:
+            FileNotFoundError: If file doesn't exist
+        """
+        path = Path(path).expanduser().resolve()
+
+        if not path.exists():
+            raise FileNotFoundError(f"Configuration file not found: {path}")
+
+        content = path.read_text()
+
+        if path.suffix in (".yaml", ".yml"):
+            data = yaml.safe_load(content)
+        elif path.suffix == ".json":
+            data = json.loads(content)
+        else:
+            # Try YAML first, then JSON
+            try:
+                data = yaml.safe_load(content)
+            except Exception:
+                data = json.loads(content)
+
+        return cls.model_validate(data or {})
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TutorConfig":
+        """
+        Create configuration from a dictionary.
+
+        Args:
+            data: Configuration dictionary
+
+        Returns:
+            TutorConfig instance
+        """
+        return cls.model_validate(data)
+
+    def to_dict(self) -> dict:
+        """
+        Export configuration to a dictionary.
+
+        Returns:
+            Dictionary representation
+        """
+        return self.model_dump(mode="json")
+
+    def save(self, path: Union[str, Path], format: str = "yaml") -> None:
+        """
+        Save configuration to a file.
+
+        Args:
+            path: Output file path
+            format: Output format ('yaml' or 'json')
+        """
+        path = Path(path).expanduser().resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        data = self.to_dict()
+
+        if format == "yaml":
+            content = yaml.dump(data, default_flow_style=False, sort_keys=False)
+        else:
+            content = json.dumps(data, indent=2)
+
+        path.write_text(content)
