@@ -1,0 +1,29 @@
+# Docker Compose for computor-agent
+#
+# The LLM server (Ollama, LM Studio, etc.) runs on the HOST machine.
+# This container only runs computor-agent and connects to the host's LLM server.
+#
+# Usage:
+#   # First, start your LLM server on the host:
+#   ollama serve
+#
+#   # Then start computor-agent:
+#   docker-compose -f docker/docker-compose.yml up -d
+#   docker-compose -f docker/docker-compose.yml exec computor-agent bash
+
+services:
+  computor-agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: computor-agent
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      - LLM_MODEL=${LLM_MODEL:-devstral-small}
+    # Allow container to reach host machine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
