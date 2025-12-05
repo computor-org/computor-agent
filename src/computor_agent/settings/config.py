@@ -19,6 +19,9 @@ class BackendConfig(BaseModel):
     """
     Backend API configuration.
 
+    SECURITY: Credentials are protected and will not be exposed in
+    string representations, logging, or serialization by default.
+
     Example:
         ```python
         config = BackendConfig(
@@ -28,6 +31,8 @@ class BackendConfig(BaseModel):
         )
         ```
     """
+
+    model_config = {"extra": "forbid"}
 
     url: str = Field(
         description="Backend API base URL (e.g., https://api.computor.example.com)"
@@ -44,7 +49,7 @@ class BackendConfig(BaseModel):
     )
 
     def get_password(self) -> str:
-        """Get the password as a plain string."""
+        """Get the password as a plain string. Internal use only."""
         return self.password.get_secret_value()
 
     @field_validator("url")
@@ -52,6 +57,14 @@ class BackendConfig(BaseModel):
     def normalize_url(cls, v: str) -> str:
         """Normalize URL by removing trailing slash."""
         return v.rstrip("/")
+
+    def __repr__(self) -> str:
+        """Safe representation that hides credentials."""
+        return f"BackendConfig(url={self.url!r}, username='***', password='***')"
+
+    def __str__(self) -> str:
+        """Safe string representation."""
+        return f"BackendConfig(url={self.url})"
 
 
 class AgentConfig(BaseModel):
@@ -81,6 +94,9 @@ class LLMSettings(BaseModel):
     """
     LLM provider settings.
 
+    SECURITY: API keys are protected and will not be exposed in
+    string representations, logging, or serialization by default.
+
     Example:
         ```python
         settings = LLMSettings(
@@ -90,6 +106,8 @@ class LLMSettings(BaseModel):
         )
         ```
     """
+
+    model_config = {"extra": "forbid"}
 
     provider: str = Field(
         default="openai",
@@ -119,10 +137,22 @@ class LLMSettings(BaseModel):
     )
 
     def get_api_key(self) -> Optional[str]:
-        """Get the API key as a plain string."""
+        """Get the API key as a plain string. Internal use only."""
         if self.api_key:
             return self.api_key.get_secret_value()
         return None
+
+    def __repr__(self) -> str:
+        """Safe representation that hides API key."""
+        api_key_str = "'***'" if self.api_key else "None"
+        return (
+            f"LLMSettings(provider={self.provider!r}, model={self.model!r}, "
+            f"api_key={api_key_str})"
+        )
+
+    def __str__(self) -> str:
+        """Safe string representation."""
+        return f"LLMSettings(provider={self.provider}, model={self.model})"
 
 
 class ComputorConfig(BaseModel):
@@ -130,6 +160,11 @@ class ComputorConfig(BaseModel):
     Complete Computor Agent configuration.
 
     Combines backend, agent, and LLM settings into a single configuration object.
+
+    SECURITY: This configuration contains sensitive credentials (passwords, API keys).
+    - String representations (__repr__, __str__) mask all secrets
+    - model_dump() masks secrets by default (use include_secrets=True if needed)
+    - Pydantic's default JSON serialization masks SecretStr values
 
     Example:
         ```python
@@ -148,8 +183,13 @@ class ComputorConfig(BaseModel):
 
         # Load from file
         config = ComputorConfig.from_file("~/.computor/config.yaml")
+
+        # Safe to print - credentials are masked
+        print(config)  # Shows "***" for sensitive fields
         ```
     """
+
+    model_config = {"extra": "forbid"}
 
     backend: BackendConfig = Field(
         description="Backend API configuration"
@@ -162,6 +202,20 @@ class ComputorConfig(BaseModel):
         default=None,
         description="LLM provider settings"
     )
+
+    def __repr__(self) -> str:
+        """Safe representation that hides all credentials."""
+        return (
+            f"ComputorConfig(backend={self.backend!r}, "
+            f"agent={self.agent!r}, llm={self.llm!r})"
+        )
+
+    def __str__(self) -> str:
+        """Safe string representation."""
+        return (
+            f"ComputorConfig(backend_url={self.backend.url}, "
+            f"agent={self.agent.name})"
+        )
 
     @classmethod
     def from_file(cls, path: Union[str, Path]) -> "ComputorConfig":

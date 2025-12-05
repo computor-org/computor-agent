@@ -771,3 +771,185 @@ class TestComputorConfigEnv:
             for key in list(os.environ.keys()):
                 if key.startswith("MY_APP_"):
                     del os.environ[key]
+
+
+class TestSecureRepresentations:
+    """Tests to ensure credentials are never exposed in string representations."""
+
+    def test_backend_config_repr_hides_credentials(self):
+        """Test that BackendConfig repr hides password and username."""
+        config = BackendConfig(
+            url="https://api.example.com",
+            username="secret-user",
+            password="super-secret-password",
+        )
+        repr_str = repr(config)
+        assert "super-secret-password" not in repr_str
+        assert "secret-user" not in repr_str
+        assert "***" in repr_str
+        assert "https://api.example.com" in repr_str
+
+    def test_backend_config_str_hides_credentials(self):
+        """Test that BackendConfig str hides credentials."""
+        config = BackendConfig(
+            url="https://api.example.com",
+            username="secret-user",
+            password="super-secret-password",
+        )
+        str_str = str(config)
+        assert "super-secret-password" not in str_str
+        assert "secret-user" not in str_str
+
+    def test_llm_settings_repr_hides_api_key(self):
+        """Test that LLMSettings repr hides API key."""
+        settings = LLMSettings(
+            provider="openai",
+            model="gpt-4",
+            api_key="sk-super-secret-key-12345",
+        )
+        repr_str = repr(settings)
+        assert "sk-super-secret-key-12345" not in repr_str
+        assert "***" in repr_str
+        assert "openai" in repr_str
+        assert "gpt-4" in repr_str
+
+    def test_llm_settings_str_hides_api_key(self):
+        """Test that LLMSettings str hides API key."""
+        settings = LLMSettings(
+            provider="openai",
+            api_key="sk-super-secret-key-12345",
+        )
+        str_str = str(settings)
+        assert "sk-super-secret-key-12345" not in str_str
+
+    def test_computor_config_repr_hides_all_secrets(self):
+        """Test that ComputorConfig repr hides all secrets."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="secret-user",
+                password="super-secret-password",
+            ),
+            llm=LLMSettings(
+                api_key="sk-secret-key",
+            ),
+        )
+        repr_str = repr(config)
+        assert "super-secret-password" not in repr_str
+        assert "secret-user" not in repr_str
+        assert "sk-secret-key" not in repr_str
+
+    def test_computor_config_str_hides_all_secrets(self):
+        """Test that ComputorConfig str hides all secrets."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="secret-user",
+                password="super-secret-password",
+            ),
+        )
+        str_str = str(config)
+        assert "super-secret-password" not in str_str
+        assert "secret-user" not in str_str
+
+    def test_credential_mapping_repr_hides_token(self):
+        """Test that CredentialMapping repr hides token."""
+        mapping = CredentialMapping(
+            pattern="https://gitlab.example.com",
+            token="glpat-super-secret-token",
+        )
+        repr_str = repr(mapping)
+        assert "glpat-super-secret-token" not in repr_str
+        assert "***" in repr_str
+        assert "gitlab.example.com" in repr_str
+
+    def test_credential_mapping_str_hides_token(self):
+        """Test that CredentialMapping str hides token."""
+        mapping = CredentialMapping(
+            pattern="https://gitlab.example.com",
+            token="glpat-super-secret-token",
+        )
+        str_str = str(mapping)
+        assert "glpat-super-secret-token" not in str_str
+
+    def test_to_dict_masks_by_default(self):
+        """Test that to_dict masks secrets by default."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="user",
+                password="super-secret",
+            ),
+            llm=LLMSettings(api_key="sk-secret"),
+        )
+        data = config.to_dict()
+        assert data["backend"]["password"] == "***"
+        assert data["llm"]["api_key"] == "***"
+        # Actual values should not appear anywhere
+        assert "super-secret" not in str(data)
+        assert "sk-secret" not in str(data)
+
+    def test_print_does_not_expose_secrets(self):
+        """Test that printing config does not expose secrets."""
+        import io
+        import sys
+
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="secret-user",
+                password="super-secret-password",
+            ),
+        )
+
+        # Capture print output
+        captured = io.StringIO()
+        sys.stdout = captured
+        print(config)
+        sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        assert "super-secret-password" not in output
+        assert "secret-user" not in output
+
+    def test_format_string_does_not_expose_secrets(self):
+        """Test that format strings do not expose secrets."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="secret-user",
+                password="super-secret-password",
+            ),
+        )
+        formatted = f"Config: {config}"
+        assert "super-secret-password" not in formatted
+        assert "secret-user" not in formatted
+
+    def test_logging_does_not_expose_secrets(self):
+        """Test that logging config does not expose secrets."""
+        import logging
+        import io
+
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="secret-user",
+                password="super-secret-password",
+            ),
+        )
+
+        # Set up logging to capture output
+        log_capture = io.StringIO()
+        handler = logging.StreamHandler(log_capture)
+        handler.setLevel(logging.DEBUG)
+        logger = logging.getLogger("test_secure")
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+
+        # Log the config
+        logger.info(f"Config loaded: {config}")
+        logger.debug(f"Backend config: {config.backend}")
+
+        log_output = log_capture.getvalue()
+        assert "super-secret-password" not in log_output
+        assert "secret-user" not in log_output

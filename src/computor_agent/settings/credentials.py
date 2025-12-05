@@ -56,6 +56,9 @@ class CredentialMapping(BaseModel):
     """
     A mapping between a URL pattern and credentials.
 
+    SECURITY: Tokens are protected and will not be exposed in
+    string representations, logging, or serialization by default.
+
     Scope is automatically inferred from the pattern:
     - "https://gitlab.example.com" -> HOST (matches all repos)
     - "https://gitlab.example.com/mygroup" -> GROUP (matches repos in group)
@@ -76,6 +79,8 @@ class CredentialMapping(BaseModel):
         )
         ```
     """
+
+    model_config = {"extra": "forbid"}
 
     pattern: str = Field(
         description="URL pattern to match (host, group, or project URL)"
@@ -102,8 +107,16 @@ class CredentialMapping(BaseModel):
         return _infer_scope(self.pattern)
 
     def get_token(self) -> str:
-        """Get the token as a plain string."""
+        """Get the token as a plain string. Internal use only."""
         return self.token.get_secret_value()
+
+    def __repr__(self) -> str:
+        """Safe representation that hides token."""
+        return f"CredentialMapping(pattern={self.pattern!r}, token='***', scope={self.scope.value!r})"
+
+    def __str__(self) -> str:
+        """Safe string representation."""
+        return f"CredentialMapping(pattern={self.pattern}, scope={self.scope.value})"
 
     def to_git_credentials(self) -> GitCredentials:
         """Convert to GitCredentials for use with GitRepository."""
