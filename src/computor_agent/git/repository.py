@@ -182,6 +182,64 @@ class GitRepository:
             )
 
     @classmethod
+    def clone_with_store(
+        cls,
+        url: str,
+        path: Union[str, Path],
+        credentials_store: "GitCredentialsStore",  # noqa: F821
+        *,
+        branch: Optional[str] = None,
+        depth: Optional[int] = None,
+        single_branch: bool = False,
+    ) -> "GitRepository":
+        """
+        Clone a repository using credentials from a store.
+
+        Automatically looks up credentials based on the URL.
+
+        Args:
+            url: Repository URL (HTTPS or SSH)
+            path: Local path to clone to
+            credentials_store: Store to look up credentials from
+                (from computor_agent.settings.GitCredentialsStore)
+            branch: Branch to checkout (default: remote HEAD)
+            depth: Create a shallow clone with limited history
+            single_branch: Clone only the specified branch
+
+        Returns:
+            GitRepository instance for the cloned repo
+
+        Raises:
+            CloneError: If cloning fails
+
+        Example:
+            ```python
+            from computor_agent.git import GitRepository
+            from computor_agent.settings import GitCredentialsStore
+
+            # Load credentials
+            store = GitCredentialsStore.from_file("~/.computor/credentials.yaml")
+
+            # Clone with automatic credential lookup
+            repo = GitRepository.clone_with_store(
+                "https://gitlab.example.com/course/student-repo.git",
+                "/tmp/repo",
+                store,
+            )
+            ```
+        """
+        credentials = credentials_store.get_credentials(url)
+
+        return cls.clone(
+            url=url,
+            path=path,
+            branch=branch,
+            depth=depth,
+            single_branch=single_branch,
+            credentials=credentials,
+        )
+
+    @classmethod
     def init(
         cls,
         path: Union[str, Path],

@@ -40,6 +40,12 @@ from computor_agent.git import (
     Author,
 )
 
+from computor_agent.settings import (
+    GitCredentialsStore,
+    CredentialMapping,
+    CredentialScope,
+)
+
 __all__ = [
     # Version
     "__version__",
@@ -75,4 +81,8 @@ __all__ = [
     "Branch",
     "Diff",
     "Author",
+    # Settings
+    "GitCredentialsStore",
+    "CredentialMapping",
+    "CredentialScope",
 ]
