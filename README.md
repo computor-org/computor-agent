@@ -98,6 +98,121 @@ computor-agent providers
 
 All providers use the OpenAI-compatible API format.
 
+## Setting Up Ollama (Linux)
+
+Ollama is a lightweight tool for running LLMs locally. Here's how to get started:
+
+### 1. Install Ollama
+
+```bash
+# One-line install script
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+This installs Ollama and sets it up as a systemd service that starts automatically.
+
+### 2. Verify Installation
+
+```bash
+# Check if Ollama is running
+ollama --version
+
+# Check the service status
+systemctl status ollama
+```
+
+### 3. Pull a Model
+
+Choose a model based on your hardware. Smaller models run faster and need less RAM:
+
+```bash
+# Small models (4-8GB RAM) - Fast, good for testing
+ollama pull qwen2.5-coder:1.5b      # 1.5B params, ~1GB, coding focused
+ollama pull llama3.2:1b              # 1B params, ~700MB, general purpose
+ollama pull phi3:mini                # 3.8B params, ~2GB, good quality
+
+# Medium models (8-16GB RAM) - Better quality
+ollama pull qwen2.5-coder:7b         # 7B params, ~4GB, excellent for code
+ollama pull llama3.2:3b              # 3B params, ~2GB, balanced
+ollama pull mistral:7b               # 7B params, ~4GB, versatile
+
+# Large models (16-32GB+ RAM) - Best quality
+ollama pull llama3.1:8b              # 8B params, ~5GB
+ollama pull codellama:13b            # 13B params, ~8GB, code specialist
+```
+
+### 4. Test the Model
+
+```bash
+# Interactive chat
+ollama run qwen2.5-coder:1.5b
+
+# Or via API
+curl http://localhost:11434/api/generate -d '{
+  "model": "qwen2.5-coder:1.5b",
+  "prompt": "Write a hello world in Python",
+  "stream": false
+}'
+```
+
+### 5. Use with Computor Agent
+
+```bash
+# Interactive chat with Ollama
+computor-agent chat -p ollama -m qwen2.5-coder:1.5b
+
+# Single question
+computor-agent ask "Explain Python lists" -p ollama -m qwen2.5-coder:1.5b
+```
+
+Or in your configuration file (`config.yaml`):
+
+```yaml
+llm:
+  provider: ollama
+  model: qwen2.5-coder:1.5b
+  base_url: http://localhost:11434/v1
+  temperature: 0.7
+```
+
+### Ollama Commands Reference
+
+```bash
+# List downloaded models
+ollama list
+
+# Show model info
+ollama show qwen2.5-coder:1.5b
+
+# Remove a model
+ollama rm qwen2.5-coder:1.5b
+
+# Pull/update a model
+ollama pull qwen2.5-coder:1.5b
+
+# Run interactively
+ollama run qwen2.5-coder:1.5b
+
+# Start/stop the service
+sudo systemctl start ollama
+sudo systemctl stop ollama
+
+# View logs
+journalctl -u ollama -f
+```
+
+### Recommended Models for Tutoring
+
+For the Tutor AI Agent, we recommend these models based on your use case:
+
+| Model | Size | RAM Needed | Best For |
+|-------|------|------------|----------|
+| `qwen2.5-coder:1.5b` | ~1GB | 4GB | Quick responses, basic code help |
+| `qwen2.5-coder:7b` | ~4GB | 8GB | Good code understanding, detailed explanations |
+| `llama3.1:8b` | ~5GB | 12GB | General tutoring, longer explanations |
+
+Start with a smaller model to test, then upgrade if you need better quality responses.
+
 ## Configuration
 
 ### Environment Variables
