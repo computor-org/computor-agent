@@ -6,6 +6,8 @@ Implements two-phase threat detection:
 2. Confirmation: Second LLM pass to confirm/reject the detection
 
 If both passes agree a threat exists, it's logged and the response is blocked.
+
+Also validates filesystem access requests from LLMs.
 """
 
 import json
@@ -503,3 +505,102 @@ class SecurityGate:
                 f.write(json.dumps(log_entry) + "\n")
         except Exception as e:
             logger.error(f"Failed to write to threat log: {e}")
+
+    def check_file_access(self, requested_path: Path, context: "ConversationContext") -> tuple[bool, str]:
+        """
+        Check if LLM can access a file path.
+
+        Validates that the requested path:
+        - Is within repository boundaries
+        - Is not a sensitive file (credentials, keys, etc.)
+        - Passes all security checks
+
+        Args:
+            requested_path: Path the LLM wants to access
+            context: Current conversation context
+
+        Returns:
+            Tuple of (is_allowed, reason)
+        """
+        try:
+            resolved_path = requested_path.expanduser().resolve()
+        except (OSError, RuntimeError) as e:
+            return False, f"Invalid path: {e}"
+
+        # Check if path is within student repository
+        if context.student_code and context.student_code.repository_path:
+            allowed_root = context.student_code.repository_path.resolve()
+            try:
+                resolved_path.relative_to(allowed_root)
+            except ValueError:
+                return False, "Path is outside student repository"
+
+        # Check if path is within reference repository (if available)
+        elif context.reference_code and context.reference_code.repository_path:
+            allowed_root = context.reference_code.repository_path.resolve()
+            try:
+                resolved_path.relative_to(allowed_root)
+            except ValueError:
+                return False, "Path is outside reference repository"
+        else:
+            return False, "No repository context available"
+
+        # Check for sensitive files
+        sensitive_patterns = [
+            ".env",
+            "credentials",
+            "secrets",
+            ".ssh",
+            ".git/config",
+            "id_rsa",
+            "id_ed25519",
+            ".password",
+            "token",
+            ".key",
+            "private",
+        ]
+
+        path_lower = str(resolved_path).lower()
+        for pattern in sensitive_patterns:
+            if pattern in path_lower:
+                logger.warning(f"Blocked access to sensitive file: {resolved_path}")
+                return False, f"Access denied: file matches sensitive pattern '{pattern}'"
+
+        return True, "Access allowed"
+
+    def validate_search_directory(
+        self, directory: Path, context: "ConversationContext"
+    ) -> tuple[bool, str]:
+        """
+        Validate that a search directory is within allowed boundaries.
+
+        Args:
+            directory: Directory to search in
+            context: Current conversation context
+
+        Returns:
+            Tuple of (is_allowed, reason)
+        """
+        try:
+            resolved_dir = directory.expanduser().resolve()
+        except (OSError, RuntimeError) as e:
+            return False, f"Invalid directory: {e}"
+
+        # Must be within student or reference repository
+        allowed_roots = []
+        if context.student_code and context.student_code.repository_path:
+            allowed_roots.append(context.student_code.repository_path.resolve())
+        if context.reference_code and context.reference_code.repository_path:
+            allowed_roots.append(context.reference_code.repository_path.resolve())
+
+        if not allowed_roots:
+            return False, "No repository context available"
+
+        for allowed_root in allowed_roots:
+            try:
+                resolved_dir.relative_to(allowed_root)
+                return True, "Directory is within allowed repository"
+            except ValueError:
+                continue
+
+        return False, "Directory is outside allowed repositories"

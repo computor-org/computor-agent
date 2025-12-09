@@ -1,0 +1,66 @@
+# Computor Agent Configuration with Filesystem Restrictions
+#
+# This example shows how to configure with restricted filesystem access for LLMs.
+#
+# Copy this file to ~/.computor/config.yaml and update with your settings.
+
+# Backend API configuration (required)
+backend:
+  url: http://localhost:8000
+  api_token: ctp_your_token_here_32_characters_long
+  timeout: 30
+
+# Agent identity (optional)
+agent:
+  name: Tutor AI
+  description: Automated grading assistant for course submissions
+
+# LLM configuration (optional)
+llm:
+  provider: ollama
+  model: qwen2.5-coder:7b
+  base_url: http://localhost:11434/v1
+  temperature: 0.7
+
+# Filesystem access restrictions (optional - for LLM file access)
+filesystem:
+  enabled: true
+  allowed_directories:
+    - /tmp/computor-repos/student-submissions
+    - /opt/computor/reference-solutions
+  max_file_size_bytes: 10000000
+  allowed_extensions: [".py", ".js", ".java", ".txt", ".md"]
+  blocked_patterns: [".env", "credentials", ".ssh", "token"]
+  max_search_results: 100
+  search_timeout_seconds: 30.0
+  follow_symlinks: false
+
+# Tutor AI configuration (optional)
+tutor:
+  personality:
+    name: "Course Tutor"
+    tone: "friendly_professional"
+    language: "en"
+
+  security:
+    enabled: true
+    require_confirmation: true
+    block_on_threat: true
+    check_messages: true
+    check_code: true
+
+  context:
+    include_previous_messages: 3
+    include_course_member_comments: true
+    max_code_lines: 1000
+    max_code_files: 20
+
+  grading:
+    enabled: false
+    auto_submit_grade: false
+
+  strategies:
+    submission_review:
+      enabled: true
+      max_response_tokens: 2000
+      temperature: 0.3

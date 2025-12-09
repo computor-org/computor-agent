@@ -14,6 +14,8 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from computor_agent.filesystem.config import FileSystemAccessConfig
+
 
 class BackendConfig(BaseModel):
     """
@@ -248,6 +250,10 @@ class ComputorConfig(BaseModel):
         default=None,
         description="LLM provider settings"
     )
+    filesystem: Optional[FileSystemAccessConfig] = Field(
+        default=None,
+        description="Filesystem access restrictions (optional)"
+    )
 
     def __repr__(self) -> str:
         """Safe representation that hides all credentials."""
@@ -285,6 +291,12 @@ class ComputorConfig(BaseModel):
               model: gpt-oss-120b
               base_url: http://localhost:11434/v1
               temperature: 0.7
+
+            filesystem:
+              enabled: true
+              allowed_directories:
+                - /tmp/workspaces
+              max_file_size_bytes: 10000000
             ```
 
         Args:
