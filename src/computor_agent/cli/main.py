@@ -6,13 +6,17 @@ Supports both complete and streaming modes.
 """
 
 import asyncio
+import logging
 import os
+import signal
 import sys
+from pathlib import Path
 from typing import Optional
 
 import click
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
@@ -26,6 +30,20 @@ from computor_agent.llm.factory import create_provider, get_provider, list_provi
 load_dotenv()
 
 console = Console()
+
+
+def setup_logging(verbose: bool = False) -> None:
+    """Setup rich logging."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandler(console=console, rich_tracebacks=True)],
+    )
+    # Reduce noise from httpx
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def get_default_base_url(provider: str) -> str:
@@ -427,6 +445,237 @@ def providers():
     for p in list_providers():
         default_url = get_default_base_url(p)
         console.print(f"  • [green]{p}[/green] - {default_url}")
+
+
+@cli.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True),
+    default="config.yaml",
+    help="Path to config file (default: config.yaml)",
+)
+@click.option(
+    "--credentials",
+    type=click.Path(exists=True),
+    default="credentials.yaml",
+    help="Path to Git credentials file (default: credentials.yaml)",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Enable verbose logging",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Don't send responses, just log what would happen",
+)
+def tutor(
+    config: str,
+    credentials: str,
+    verbose: bool,
+    dry_run: bool,
+):
+    """
+    Start the Tutor AI agent.
+
+    The tutor agent polls for student messages and submissions,
+    and responds automatically using the configured LLM.
+
+    Examples:
+
+        # Start with config files in current directory
+        computor-agent tutor
+
+        # Use specific config files
+        computor-agent tutor -c ~/.computor/config.yaml
+
+        # Verbose mode
+        computor-agent tutor -v
+    """
+    setup_logging(verbose)
+    logger = logging.getLogger(__name__)
+
+    # Load configuration
+    config_path = Path(config)
+    credentials_path = Path(credentials)
+
+    try:
+        from computor_agent.settings import ComputorConfig, GitCredentialsStore
+        from computor_agent.tutor import TutorConfig
+
+        logger.info(f"Loading config from {config_path}")
+        computor_config = ComputorConfig.from_file(config_path)
+
+        logger.info(f"Loading credentials from {credentials_path}")
+        git_credentials = GitCredentialsStore.from_file(credentials_path)
+
+        # Load tutor config if exists
+        tutor_config_path = config_path.parent / "tutor.yaml"
+        if tutor_config_path.exists():
+            logger.info(f"Loading tutor config from {tutor_config_path}")
+            tutor_config = TutorConfig.from_file(tutor_config_path)
+        else:
+            logger.info("Using default tutor config")
+            tutor_config = TutorConfig()
+
+    except FileNotFoundError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[bold red]Configuration error:[/bold red] {e}")
+        sys.exit(1)
+
+    # Show configuration summary
+    console.print(
+        Panel(
+            f"[bold cyan]Tutor AI Agent[/bold cyan]\n\n"
+            f"Backend: [green]{computor_config.backend.url}[/green]\n"
+            f"Auth: [green]{computor_config.backend.auth_method}[/green]\n"
+            f"LLM: [green]{computor_config.llm.provider if computor_config.llm else 'not configured'}[/green] "
+            f"([green]{computor_config.llm.model if computor_config.llm else 'n/a'}[/green])\n"
+            f"Git credentials: [green]{len(git_credentials)} mapping(s)[/green]\n"
+            f"Dry run: [yellow]{dry_run}[/yellow]\n\n"
+            f"Press [yellow]Ctrl+C[/yellow] to stop.",
+            title="Starting",
+        )
+    )
+
+    asyncio.run(_run_tutor(computor_config, tutor_config, git_credentials, dry_run))
+
+
+async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bool):
+    """Run the tutor agent."""
+    from computor_client import ComputorClient
+
+    from computor_agent.llm.config import LLMConfig, ProviderType
+    from computor_agent.llm.factory import get_provider
+    from computor_agent.tutor import TutorAgent, TutorScheduler, SchedulerConfig, TutorClientAdapter, TutorLLMAdapter
+
+    logger = logging.getLogger(__name__)
+
+    # Create LLM provider
+    if not computor_config.llm:
+        console.print("[bold red]Error:[/bold red] LLM configuration is required")
+        sys.exit(1)
+
+    llm_config = LLMConfig(
+        provider=ProviderType(computor_config.llm.provider),
+        model=computor_config.llm.model,
+        base_url=computor_config.llm.base_url,
+        api_key=computor_config.llm.get_api_key(),
+        temperature=computor_config.llm.temperature,
+    )
+    llm_provider = get_provider(llm_config)
+    tutor_llm = TutorLLMAdapter(llm_provider)
+
+    # Create Computor client with appropriate authentication
+    client_kwargs = {"base_url": computor_config.backend.url}
+
+    if computor_config.backend.auth_method == "api_token":
+        # Use X-API-Token header for API token auth
+        client_kwargs["headers"] = {
+            "X-API-Token": computor_config.backend.get_api_token()
+        }
+        logger.info("Using API token authentication")
+
+    async with ComputorClient(**client_kwargs) as client:
+        # Authenticate with username/password if not using API token
+        if computor_config.backend.auth_method != "api_token":
+            try:
+                await client.login(
+                    username=computor_config.backend.username,
+                    password=computor_config.backend.get_password(),
+                )
+                logger.info("Authenticated with username/password")
+            except Exception as e:
+                console.print(f"[bold red]Authentication failed:[/bold red] {e}")
+                sys.exit(1)
+
+        # Wrap client with adapter for TutorAgent compatibility
+        tutor_client = TutorClientAdapter(client)
+
+        # Create tutor agent
+        agent = TutorAgent(
+            config=tutor_config,
+            llm=tutor_llm,
+            client=tutor_client,
+        )
+
+        # Create scheduler
+        scheduler_config = SchedulerConfig(
+            enabled=True,
+            poll_interval_seconds=tutor_config.scheduler.poll_interval_seconds
+            if hasattr(tutor_config, "scheduler") and tutor_config.scheduler
+            else 30,
+        )
+
+        async def on_message_trigger(result, submission_group):
+            logger.info(f"Processing message trigger: {result.reason}")
+            if dry_run:
+                logger.info(f"[DRY RUN] Would process message: {result.message_trigger.message_id}")
+                return
+
+            # Get the message data
+            message = {
+                "id": result.message_trigger.message_id,
+                "content": result.message_trigger.content,
+                "title": result.message_trigger.title,
+                "author_id": result.message_trigger.author_id,
+            }
+            await agent.process_message(
+                submission_group_id=result.message_trigger.submission_group_id,
+                message=message,
+            )
+
+        async def on_submission_trigger(result, submission_group):
+            logger.info(f"Processing submission trigger")
+            if dry_run:
+                logger.info(f"[DRY RUN] Would process submission: {result.submission_trigger.artifact_id}")
+                return
+
+            # Build artifact dict
+            artifact = {
+                "id": result.submission_trigger.artifact_id,
+            }
+            await agent.process_submission(
+                submission_group_id=result.submission_trigger.submission_group_id,
+                artifact=artifact,
+            )
+
+        scheduler = TutorScheduler(
+            client=client,
+            config=scheduler_config,
+            on_message_trigger=on_message_trigger,
+            on_submission_trigger=on_submission_trigger,
+        )
+
+        # Handle shutdown gracefully
+        shutdown_event = asyncio.Event()
+
+        def signal_handler():
+            logger.info("Shutdown signal received")
+            shutdown_event.set()
+
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, signal_handler)
+
+        # Start scheduler
+        await scheduler.start()
+        logger.info("Tutor scheduler started")
+
+        # Wait for shutdown
+        await shutdown_event.wait()
+
+        # Stop scheduler
+        await scheduler.stop()
+        logger.info("Tutor scheduler stopped")
+
+    await tutor_llm.close()
+    console.print("[green]Tutor agent stopped.[/green]")
 
 
 if __name__ == "__main__":

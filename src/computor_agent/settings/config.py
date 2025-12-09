@@ -22,7 +22,21 @@ class BackendConfig(BaseModel):
     SECURITY: Credentials are protected and will not be exposed in
     string representations, logging, or serialization by default.
 
-    Example:
+    Supports two authentication methods:
+    1. API Token (recommended): Set `api_token` field
+    2. Basic Auth: Set `username` and `password` fields
+
+    If both are provided, API token takes precedence.
+
+    Example with API token:
+        ```python
+        config = BackendConfig(
+            url="https://api.computor.example.com",
+            api_token="ctp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+        )
+        ```
+
+    Example with username/password:
         ```python
         config = BackendConfig(
             url="https://api.computor.example.com",
@@ -37,20 +51,43 @@ class BackendConfig(BaseModel):
     url: str = Field(
         description="Backend API base URL (e.g., https://api.computor.example.com)"
     )
-    username: str = Field(
-        description="Username for API authentication"
+    api_token: Optional[SecretStr] = Field(
+        default=None,
+        description="API token for authentication (format: ctp_<32chars>). Preferred over username/password."
     )
-    password: SecretStr = Field(
-        description="Password for API authentication"
+    username: Optional[str] = Field(
+        default=None,
+        description="Username for Basic Auth (used if api_token not set)"
+    )
+    password: Optional[SecretStr] = Field(
+        default=None,
+        description="Password for Basic Auth (used if api_token not set)"
     )
     timeout: float = Field(
         default=30.0,
         description="HTTP request timeout in seconds"
     )
 
-    def get_password(self) -> str:
+    def get_api_token(self) -> Optional[str]:
+        """Get the API token as a plain string. Internal use only."""
+        if self.api_token:
+            return self.api_token.get_secret_value()
+        return None
+
+    def get_password(self) -> Optional[str]:
         """Get the password as a plain string. Internal use only."""
-        return self.password.get_secret_value()
+        if self.password:
+            return self.password.get_secret_value()
+        return None
+
+    @property
+    def auth_method(self) -> str:
+        """Return the authentication method being used."""
+        if self.api_token:
+            return "api_token"
+        elif self.username and self.password:
+            return "basic"
+        return "none"
 
     @field_validator("url")
     @classmethod
@@ -58,13 +95,22 @@ class BackendConfig(BaseModel):
         """Normalize URL by removing trailing slash."""
         return v.rstrip("/")
 
+    def model_post_init(self, __context) -> None:
+        """Validate that at least one auth method is configured."""
+        if not self.api_token and not (self.username and self.password):
+            raise ValueError(
+                "Either api_token or both username and password must be provided"
+            )
+
     def __repr__(self) -> str:
         """Safe representation that hides credentials."""
-        return f"BackendConfig(url={self.url!r}, username='***', password='***')"
+        if self.api_token:
+            return f"BackendConfig(url={self.url!r}, api_token='***')"
+        return f"BackendConfig(url={self.url!r}, username={self.username!r}, password='***')"
 
     def __str__(self) -> str:
         """Safe string representation."""
-        return f"BackendConfig(url={self.url})"
+        return f"BackendConfig(url={self.url}, auth={self.auth_method})"
 
 
 class AgentConfig(BaseModel):
@@ -290,8 +336,9 @@ class ComputorConfig(BaseModel):
 
         Environment variables:
             COMPUTOR_BACKEND_URL - Backend API URL
-            COMPUTOR_BACKEND_USERNAME - API username
-            COMPUTOR_BACKEND_PASSWORD - API password
+            COMPUTOR_BACKEND_API_TOKEN - API token (preferred, format: ctp_<32chars>)
+            COMPUTOR_BACKEND_USERNAME - API username (for basic auth)
+            COMPUTOR_BACKEND_PASSWORD - API password (for basic auth)
             COMPUTOR_BACKEND_TIMEOUT - Request timeout
 
             COMPUTOR_AGENT_NAME - Agent name
@@ -315,17 +362,26 @@ class ComputorConfig(BaseModel):
         """
         # Backend config (required)
         backend_url = os.environ.get(f"{prefix}BACKEND_URL")
+        backend_api_token = os.environ.get(f"{prefix}BACKEND_API_TOKEN")
         backend_username = os.environ.get(f"{prefix}BACKEND_USERNAME")
         backend_password = os.environ.get(f"{prefix}BACKEND_PASSWORD")
 
-        if not all([backend_url, backend_username, backend_password]):
+        if not backend_url:
+            raise ValueError(f"Missing required environment variable: {prefix}BACKEND_URL")
+
+        # Check for valid auth configuration
+        has_api_token = bool(backend_api_token)
+        has_basic_auth = bool(backend_username and backend_password)
+
+        if not has_api_token and not has_basic_auth:
             raise ValueError(
-                f"Missing required environment variables: "
-                f"{prefix}BACKEND_URL, {prefix}BACKEND_USERNAME, {prefix}BACKEND_PASSWORD"
+                f"Missing authentication: set {prefix}BACKEND_API_TOKEN "
+                f"or both {prefix}BACKEND_USERNAME and {prefix}BACKEND_PASSWORD"
             )
 
         backend = BackendConfig(
             url=backend_url,
+            api_token=backend_api_token,
             username=backend_username,
             password=backend_password,
             timeout=float(os.environ.get(f"{prefix}BACKEND_TIMEOUT", "30")),
@@ -364,13 +420,21 @@ class ComputorConfig(BaseModel):
         Returns:
             Dictionary representation
         """
+        backend_dict = {
+            "url": self.backend.url,
+            "timeout": self.backend.timeout,
+        }
+
+        # Include auth credentials based on method used
+        if self.backend.api_token:
+            backend_dict["api_token"] = self.backend.get_api_token() if include_secrets else "***"
+        if self.backend.username:
+            backend_dict["username"] = self.backend.username
+        if self.backend.password:
+            backend_dict["password"] = self.backend.get_password() if include_secrets else "***"
+
         data = {
-            "backend": {
-                "url": self.backend.url,
-                "username": self.backend.username,
-                "password": self.backend.get_password() if include_secrets else "***",
-                "timeout": self.backend.timeout,
-            },
+            "backend": backend_dict,
             "agent": {
                 "name": self.agent.name,
             },

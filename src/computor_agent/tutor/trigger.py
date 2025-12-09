@@ -146,63 +146,56 @@ class TriggerChecker:
             TriggerCheckResult indicating if/why to respond
         """
         try:
-            # Get messages for this submission group, ordered by created_at
+            # Get unread messages for this submission group
             messages = await self.messages.list(
                 submission_group_id=submission_group_id,
-                limit=50,  # Get recent messages
+                is_read=False,
             )
 
             if not messages:
                 return TriggerCheckResult(
                     should_respond=False,
-                    reason="No messages in submission group",
+                    reason="No unread messages in submission group",
                 )
 
-            # Sort by created_at (most recent last)
-            # Note: Assuming messages have created_at attribute
+            # Sort by created_at (oldest first to process in order)
             messages_sorted = sorted(
                 messages,
                 key=lambda m: getattr(m, "created_at", datetime.min) or datetime.min,
             )
 
-            # Get the last message
-            last_message = messages_sorted[-1]
+            # Find the oldest unread message from a student
+            for message in messages_sorted:
+                author_id = message.author_id
+                author_role = await self._get_author_role(author_id, course_id)
 
-            # Look up the author's course role
-            author_id = last_message.author_id
-            author_role = await self._get_author_role(author_id, course_id)
+                if author_role is None:
+                    continue
 
-            if author_role is None:
-                return TriggerCheckResult(
-                    should_respond=False,
-                    reason=f"Could not determine role for author {author_id}",
-                )
+                # Check if the author is a student (not staff)
+                if author_role not in STAFF_ROLES:
+                    course_member = await self._get_course_member_by_user_id(author_id, course_id)
 
-            # Check if the author is a student
-            if author_role not in STAFF_ROLES:
-                # Author is a student - check if any staff replied after
-                # Since this is the last message and they're a student, no staff has replied
-                course_member = await self._get_course_member_by_user_id(author_id, course_id)
+                    return TriggerCheckResult(
+                        should_respond=True,
+                        reason=f"Unread message from student (role: {author_role}) needs response",
+                        message_trigger=MessageTrigger(
+                            message_id=message.id,
+                            submission_group_id=submission_group_id,
+                            author_id=author_id,
+                            author_course_member_id=course_member.id if course_member else "",
+                            author_role=author_role,
+                            content=message.content,
+                            title=message.title,
+                            created_at=getattr(message, "created_at", None),
+                        ),
+                    )
 
-                return TriggerCheckResult(
-                    should_respond=True,
-                    reason=f"Last message from student (role: {author_role}) needs response",
-                    message_trigger=MessageTrigger(
-                        message_id=last_message.id,
-                        submission_group_id=submission_group_id,
-                        author_id=author_id,
-                        author_course_member_id=course_member.id if course_member else "",
-                        author_role=author_role,
-                        content=last_message.content,
-                        title=last_message.title,
-                        created_at=getattr(last_message, "created_at", None),
-                    ),
-                )
-            else:
-                return TriggerCheckResult(
-                    should_respond=False,
-                    reason=f"Last message from staff (role: {author_role})",
-                )
+            # All unread messages are from staff
+            return TriggerCheckResult(
+                should_respond=False,
+                reason="No unread student messages",
+            )
 
         except Exception as e:
             logger.exception(f"Error checking message trigger: {e}")
@@ -285,7 +278,6 @@ class TriggerChecker:
             members = await self.course_members.get_course_members(
                 user_id=user_id,
                 course_id=course_id,
-                limit=1,
             )
             return members[0] if members else None
         except Exception as e:

@@ -472,6 +472,58 @@ class TestBackendConfig:
         )
         assert config.timeout == 60.0
 
+    def test_api_token_auth(self):
+        """Test creating config with API token authentication."""
+        config = BackendConfig(
+            url="https://api.example.com",
+            api_token="ctp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+        )
+        assert config.url == "https://api.example.com"
+        assert config.get_api_token() == "ctp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+        assert config.auth_method == "api_token"
+        assert config.username is None
+        assert config.password is None
+
+    def test_basic_auth(self):
+        """Test creating config with basic authentication."""
+        config = BackendConfig(
+            url="https://api.example.com",
+            username="user",
+            password="pass",
+        )
+        assert config.auth_method == "basic"
+        assert config.api_token is None
+
+    def test_api_token_takes_precedence(self):
+        """Test that API token takes precedence when both are provided."""
+        config = BackendConfig(
+            url="https://api.example.com",
+            api_token="ctp_token123",
+            username="user",
+            password="pass",
+        )
+        assert config.auth_method == "api_token"
+
+    def test_missing_auth_raises_error(self):
+        """Test that missing authentication raises an error."""
+        with pytest.raises(ValueError, match="Either api_token or both username and password"):
+            BackendConfig(url="https://api.example.com")
+
+    def test_partial_basic_auth_raises_error(self):
+        """Test that providing only username (no password) raises an error."""
+        with pytest.raises(ValueError, match="Either api_token or both username and password"):
+            BackendConfig(url="https://api.example.com", username="user")
+
+    def test_api_token_repr_hides_token(self):
+        """Test that repr hides API token."""
+        config = BackendConfig(
+            url="https://api.example.com",
+            api_token="ctp_secret_token_value",
+        )
+        repr_str = repr(config)
+        assert "ctp_secret_token_value" not in repr_str
+        assert "***" in repr_str
+
 
 class TestAgentConfig:
     """Tests for AgentConfig model."""
@@ -777,7 +829,7 @@ class TestSecureRepresentations:
     """Tests to ensure credentials are never exposed in string representations."""
 
     def test_backend_config_repr_hides_credentials(self):
-        """Test that BackendConfig repr hides password and username."""
+        """Test that BackendConfig repr hides password but shows username."""
         config = BackendConfig(
             url="https://api.example.com",
             username="secret-user",
@@ -785,12 +837,13 @@ class TestSecureRepresentations:
         )
         repr_str = repr(config)
         assert "super-secret-password" not in repr_str
-        assert "secret-user" not in repr_str
         assert "***" in repr_str
         assert "https://api.example.com" in repr_str
+        # Username is shown (it's an identifier, not a secret)
+        assert "secret-user" in repr_str
 
     def test_backend_config_str_hides_credentials(self):
-        """Test that BackendConfig str hides credentials."""
+        """Test that BackendConfig str hides password."""
         config = BackendConfig(
             url="https://api.example.com",
             username="secret-user",
@@ -798,7 +851,8 @@ class TestSecureRepresentations:
         )
         str_str = str(config)
         assert "super-secret-password" not in str_str
-        assert "secret-user" not in str_str
+        # str shows auth method, not individual credentials
+        assert "basic" in str_str  # auth_method
 
     def test_llm_settings_repr_hides_api_key(self):
         """Test that LLMSettings repr hides API key."""
@@ -823,7 +877,7 @@ class TestSecureRepresentations:
         assert "sk-super-secret-key-12345" not in str_str
 
     def test_computor_config_repr_hides_all_secrets(self):
-        """Test that ComputorConfig repr hides all secrets."""
+        """Test that ComputorConfig repr hides all secrets (passwords, api keys)."""
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
@@ -836,7 +890,8 @@ class TestSecureRepresentations:
         )
         repr_str = repr(config)
         assert "super-secret-password" not in repr_str
-        assert "secret-user" not in repr_str
+        # Username is shown (it's an identifier, not a secret)
+        assert "secret-user" in repr_str
         assert "sk-secret-key" not in repr_str
 
     def test_computor_config_str_hides_all_secrets(self):

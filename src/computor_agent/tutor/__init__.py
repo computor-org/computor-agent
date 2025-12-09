@@ -119,6 +119,7 @@ from computor_agent.tutor.trigger import (
     STAFF_ROLES,
 )
 from computor_agent.tutor.scheduler import TutorScheduler, SchedulerConfig
+from computor_agent.tutor.client_adapter import TutorClientAdapter, TutorLLMAdapter
 
 __all__ = [
     # Main agent
@@ -127,6 +128,9 @@ __all__ = [
     # Scheduler
     "TutorScheduler",
     "SchedulerConfig",
+    # Adapters
+    "TutorClientAdapter",
+    "TutorLLMAdapter",
     # Trigger detection
     "TriggerChecker",
     "TriggerCheckResult",

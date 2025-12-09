@@ -73,6 +73,12 @@ ENV LLM_TEMPERATURE=0.7
 
 # Backend API settings - MUST be configured via environment
 # COMPUTOR_BACKEND_URL=https://api.computor.example.com
+#
+# Authentication: Use ONE of the following methods
+# Option 1: API Token (recommended)
+# COMPUTOR_BACKEND_API_TOKEN=ctp_your-token-here
+#
+# Option 2: Username/Password
 # COMPUTOR_BACKEND_USERNAME=agent-user
 # COMPUTOR_BACKEND_PASSWORD=secret
 

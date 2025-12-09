@@ -284,9 +284,8 @@ class TutorScheduler:
         """Check for new submission artifacts with submit=True."""
         try:
             # Get submission artifacts
-            artifacts = await self.client.submissions.list(
+            artifacts = await self.client.submissions.get_artifacts(
                 submission_group_id=submission_group_id,
-                limit=10,
             )
 
             for artifact in artifacts:
@@ -328,15 +327,12 @@ class TutorScheduler:
     async def _get_submission_groups(self) -> list:
         """Get submission groups to check."""
         try:
-            params = {"limit": 100}
-
             if self.config.course_content_ids:
                 # Filter by course content IDs
                 all_groups = []
                 for cc_id in self.config.course_content_ids:
-                    groups = await self.client.submission_groups.list(
+                    groups = await self.client.submission_groups.get_submission_groups(
                         course_content_id=cc_id,
-                        **params,
                     )
                     all_groups.extend(groups)
                 return all_groups
@@ -345,16 +341,15 @@ class TutorScheduler:
                 # Filter by course IDs
                 all_groups = []
                 for course_id in self.config.course_ids:
-                    groups = await self.client.submission_groups.list(
+                    groups = await self.client.submission_groups.get_submission_groups(
                         course_id=course_id,
-                        **params,
                     )
                     all_groups.extend(groups)
                 return all_groups
 
             else:
-                # Get all (this might need pagination in production)
-                return await self.client.submission_groups.list(**params)
+                # Get all submission groups
+                return await self.client.submission_groups.get_submission_groups()
 
         except Exception as e:
             logger.error(f"Failed to get submission groups: {e}")

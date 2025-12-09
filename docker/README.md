@@ -18,8 +18,9 @@ nano docker/.env
 
 **Required settings:**
 - `COMPUTOR_BACKEND_URL` - Backend API URL
-- `COMPUTOR_BACKEND_USERNAME` - API username
-- `COMPUTOR_BACKEND_PASSWORD` - API password
+- Authentication (choose one):
+  - `COMPUTOR_BACKEND_API_TOKEN` - API token (recommended, format: `ctp_<32chars>`)
+  - OR `COMPUTOR_BACKEND_USERNAME` + `COMPUTOR_BACKEND_PASSWORD` - Basic auth
 - Git credentials file (see below)
 
 ### 2. Start LLM Server
@@ -77,9 +78,12 @@ docker-compose -f docker/docker-compose.yml down
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `COMPUTOR_BACKEND_URL` | **required** | Backend API URL |
-| `COMPUTOR_BACKEND_USERNAME` | **required** | API username |
-| `COMPUTOR_BACKEND_PASSWORD` | **required** | API password |
+| `COMPUTOR_BACKEND_API_TOKEN` | - | API token (recommended, format: `ctp_<32chars>`) |
+| `COMPUTOR_BACKEND_USERNAME` | - | API username (for basic auth) |
+| `COMPUTOR_BACKEND_PASSWORD` | - | API password (for basic auth) |
 | `COMPUTOR_BACKEND_TIMEOUT` | `30` | Request timeout (seconds) |
+
+**Authentication:** Use either `COMPUTOR_BACKEND_API_TOKEN` or both `COMPUTOR_BACKEND_USERNAME` + `COMPUTOR_BACKEND_PASSWORD`. API token is recommended for service accounts.
 
 ### Agent Configuration
 
