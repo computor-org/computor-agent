@@ -2,10 +2,11 @@
 Scheduler for the Tutor AI Agent.
 
 Polls for:
-1. Submission groups with unanswered student messages
+1. Submission groups with messages tagged with request tags (e.g., #ai::request)
 2. New submission artifacts with submit=True
 
 The scheduler is configurable and calls the TutorAgent when triggers are detected.
+Tag-based trigger detection uses the TriggerConfig from tutor config.
 """
 
 import asyncio
@@ -17,6 +18,7 @@ from typing import Callable, Optional, Protocol, Set
 
 from pydantic import BaseModel, Field
 
+from computor_agent.tutor.config import TriggerConfig
 from computor_agent.tutor.trigger import (
     TriggerChecker,
     TriggerCheckResult,
@@ -100,15 +102,20 @@ class TutorScheduler:
     Scheduler that polls for tutor triggers and invokes processing.
 
     The scheduler:
-    1. Polls submission groups for unanswered student messages
+    1. Polls submission groups for messages with configured request tags
     2. Polls for new submission artifacts with submit=True
     3. Invokes a callback when triggers are detected
     4. Manages cooldowns and concurrent processing limits
 
     Usage:
+        trigger_config = TriggerConfig(
+            request_tags=[TriggerTag(scope="ai", value="request")],
+            response_tag=TriggerTag(scope="ai", value="response"),
+        )
         scheduler = TutorScheduler(
             client=computor_client,
             config=scheduler_config,
+            trigger_config=trigger_config,
             on_message_trigger=handle_message,
             on_submission_trigger=handle_submission,
         )
@@ -124,6 +131,7 @@ class TutorScheduler:
         self,
         client: ComputorClientProtocol,
         config: SchedulerConfig,
+        trigger_config: Optional[TriggerConfig] = None,
         on_message_trigger: Optional[Callable] = None,
         on_submission_trigger: Optional[Callable] = None,
     ) -> None:
@@ -133,6 +141,7 @@ class TutorScheduler:
         Args:
             client: Computor API client
             config: Scheduler configuration
+            trigger_config: Tag-based trigger configuration (uses defaults if not provided)
             on_message_trigger: Async callback when message trigger detected
                 Signature: async def callback(trigger: TriggerCheckResult, submission_group: dict) -> None
             on_submission_trigger: Async callback when submission trigger detected
@@ -140,12 +149,14 @@ class TutorScheduler:
         """
         self.client = client
         self.config = config
+        self.trigger_config = trigger_config or TriggerConfig()
         self.on_message_trigger = on_message_trigger
         self.on_submission_trigger = on_submission_trigger
 
         self._trigger_checker = TriggerChecker(
             messages_client=client.messages,
             course_members_client=client.course_members,
+            config=self.trigger_config,
         )
 
         # State tracking
@@ -380,6 +391,7 @@ class TutorScheduler:
             "tracked_groups": len(self._states),
             "processed_artifacts": len(self._processed_artifacts),
             "config": self.config.model_dump(),
+            "trigger_config": self.trigger_config.model_dump(),
         }
 
     def reset_state(self, submission_group_id: Optional[str] = None) -> None:

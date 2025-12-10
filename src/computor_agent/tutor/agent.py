@@ -263,10 +263,12 @@ class TutorAgent:
             # Send response if configured
             message_sent = False
             if send_response and response.message_content:
+                # Add response tag to title for trigger detection
+                formatted_title = self._format_response_title(response.message_title)
                 await self.client.create_message(
                     submission_group_id=submission_group_id,
                     content=response.message_content,
-                    title=response.message_title or "",
+                    title=formatted_title,
                 )
                 message_sent = True
 
@@ -381,10 +383,14 @@ class TutorAgent:
             # Send response if configured
             message_sent = False
             if send_response and response.message_content:
+                # Add response tag to title for trigger detection
+                formatted_title = self._format_response_title(
+                    response.message_title, default="Submission Review"
+                )
                 await self.client.create_message(
                     submission_group_id=submission_group_id,
                     content=response.message_content,
-                    title=response.message_title or "Submission Review",
+                    title=formatted_title,
                 )
                 message_sent = True
 
@@ -429,6 +435,26 @@ class TutorAgent:
             # Always destroy context
             if context:
                 context.destroy()
+
+    def _format_response_title(self, title: Optional[str], default: str = "") -> str:
+        """
+        Format the response title with the configured response tag.
+
+        Adds the response tag (e.g., #ai::response) to the title so the
+        trigger checker can identify messages sent by the agent.
+
+        Args:
+            title: Original title (can be None or empty)
+            default: Default title if none provided
+
+        Returns:
+            Title with response tag prepended
+        """
+        response_tag = str(self.config.triggers.response_tag)  # e.g., "#ai::response"
+        base_title = title or default
+        if base_title:
+            return f"{response_tag} {base_title}"
+        return response_tag
 
     def _get_strategy_config(self, intent: Intent):
         """Get the strategy config for an intent."""

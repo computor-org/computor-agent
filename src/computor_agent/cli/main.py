@@ -648,6 +648,7 @@ async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bo
         scheduler = TutorScheduler(
             client=client,
             config=scheduler_config,
+            trigger_config=tutor_config.triggers,
             on_message_trigger=on_message_trigger,
             on_submission_trigger=on_submission_trigger,
         )

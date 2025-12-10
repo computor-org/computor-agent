@@ -98,6 +98,8 @@ from computor_agent.tutor.config import (
     ContextConfig,
     GradingConfig,
     StrategyConfig,
+    TriggerConfig,
+    TriggerTag,
 )
 from computor_agent.tutor.intents import Intent, IntentClassification, IntentClassifier
 from computor_agent.tutor.security import (
@@ -145,6 +147,8 @@ __all__ = [
     "ContextConfig",
     "GradingConfig",
     "StrategyConfig",
+    "TriggerConfig",
+    "TriggerTag",
     # Context
     "ConversationContext",
     "ContextBuilder",

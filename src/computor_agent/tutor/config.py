@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class PersonalityTone(str, Enum):
@@ -229,6 +229,111 @@ class StrategiesConfig(BaseModel):
     )
 
 
+class TriggerTag(BaseModel):
+    """
+    A tag that triggers the tutor agent to respond.
+
+    Tags in message titles follow the format: #scope::value
+    Example: #ai::request, #tutor::help, #review::needed
+
+    The agent will respond to messages containing any of the configured trigger tags.
+    """
+
+    scope: str = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        description="Tag scope (e.g., 'ai', 'tutor', 'review')",
+    )
+    value: str = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        description="Tag value (e.g., 'request', 'help', 'needed')",
+    )
+
+    @field_validator("scope", "value")
+    @classmethod
+    def validate_no_special_chars(cls, v: str) -> str:
+        """Ensure scope and value don't contain special characters."""
+        if "::" in v or "#" in v:
+            raise ValueError("Tag scope/value cannot contain '::' or '#'")
+        return v.strip().lower()
+
+    @property
+    def full_tag(self) -> str:
+        """Return the full tag string (e.g., 'ai::request')."""
+        return f"{self.scope}::{self.value}"
+
+    def __str__(self) -> str:
+        return f"#{self.full_tag}"
+
+
+class TriggerConfig(BaseModel):
+    """
+    Configuration for message trigger detection.
+
+    Defines which tags in message titles trigger the tutor agent to respond.
+    The agent queries the backend for messages with these tags and responds
+    to any unprocessed matches.
+
+    If request_tags are defined, triggers are enabled automatically.
+    Set enabled=False explicitly to disable triggers even with tags defined.
+
+    Example YAML configuration:
+        ```yaml
+        triggers:
+          request_tags:
+            - scope: "ai"
+              value: "request"
+            - scope: "tutor"
+              value: "help"
+          response_tag:
+            scope: "ai"
+            value: "response"
+          check_submissions: true
+        ```
+    """
+
+    enabled: Optional[bool] = Field(
+        default=None,
+        description="Enable tag-based trigger detection. If not set, enabled when request_tags are defined.",
+    )
+    request_tags: list[TriggerTag] = Field(
+        default_factory=list,
+        description="Tags that trigger the agent to respond (message must have at least one)",
+    )
+    response_tag: TriggerTag = Field(
+        default_factory=lambda: TriggerTag(scope="ai", value="response"),
+        description="Tag added to agent responses (used to avoid duplicate responses)",
+    )
+    check_submissions: bool = Field(
+        default=True,
+        description="Also trigger on submission artifacts with submit=True",
+    )
+    require_all_tags: bool = Field(
+        default=False,
+        description="If True, message must have ALL request_tags. If False, ANY tag triggers.",
+    )
+
+    @property
+    def is_enabled(self) -> bool:
+        """Check if triggers are enabled. True if enabled is set, or if request_tags are defined."""
+        if self.enabled is not None:
+            return self.enabled
+        return len(self.request_tags) > 0
+
+    @property
+    def request_tag_strings(self) -> list[str]:
+        """Return list of full tag strings for API queries."""
+        return [tag.full_tag for tag in self.request_tags]
+
+    @property
+    def response_tag_string(self) -> str:
+        """Return the response tag string for API queries."""
+        return self.response_tag.full_tag
+
+
 class TutorConfig(BaseModel):
     """
     Complete configuration for the Tutor AI Agent.
@@ -255,6 +360,16 @@ class TutorConfig(BaseModel):
           enabled: false
           auto_submit_grade: false
 
+        triggers:
+          request_tags:
+            - scope: "ai"
+              value: "request"
+            - scope: "tutor"
+              value: "help"
+          response_tag:
+            scope: "ai"
+            value: "response"
+
         strategies:
           question_example:
             enabled: true
@@ -280,6 +395,10 @@ class TutorConfig(BaseModel):
     grading: GradingConfig = Field(
         default_factory=GradingConfig,
         description="Automated grading settings",
+    )
+    triggers: TriggerConfig = Field(
+        default_factory=TriggerConfig,
+        description="Tag-based trigger detection settings",
     )
     strategies: StrategiesConfig = Field(
         default_factory=StrategiesConfig,

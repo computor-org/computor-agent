@@ -2,17 +2,12 @@
 Trigger detection for the Tutor AI Agent.
 
 Determines when the tutor agent should respond based on:
-1. Message triggers: Student wrote the last message (unanswered by staff)
+1. Message triggers: Messages tagged with configured request tags (e.g., #ai::request)
 2. Submission triggers: New submission artifact with submit=True
 
-Course roles that count as "staff" (can answer students):
-- _tutor
-- _lecturer
-- _maintainer
-- _owner
-
-Course roles that count as "student" (need answers):
-- _student
+The agent uses tag-based filtering to:
+- Find messages that request AI assistance (configurable request_tags)
+- Avoid duplicate responses by checking for response_tag
 """
 
 import logging
@@ -20,10 +15,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Protocol
 
+from computor_agent.tutor.config import TriggerConfig
+
 logger = logging.getLogger(__name__)
 
 
-# Staff roles - these users can answer students
+# Staff roles - these users can answer students (kept for backwards compatibility)
 STAFF_ROLES = {"_tutor", "_lecturer", "_maintainer", "_owner"}
 
 # Student role - these users need answers
@@ -73,43 +70,50 @@ class TriggerCheckResult:
     """The submission that triggered (if submission trigger)."""
 
 
-class ComputorClientProtocol(Protocol):
-    """Protocol for the Computor API client."""
+class MessagesClientProtocol(Protocol):
+    """Protocol for the messages API client."""
 
     async def list(self, **kwargs) -> list:
-        """List resources."""
+        """List messages with optional filters."""
+        ...
+
+
+class CourseMembersClientProtocol(Protocol):
+    """Protocol for the course_members API client."""
+
+    async def get_course_members(self, **kwargs) -> list:
+        """Get course members."""
         ...
 
 
 class TriggerChecker:
     """
-    Checks if the tutor agent should respond to a submission group.
+    Checks if the tutor agent should respond based on message tags.
 
     The tutor should respond when:
-    1. A student wrote the last message AND no staff has replied after it
-    2. A new submission artifact with submit=True is created
+    1. A message has a configured request tag (e.g., #ai::request)
+    2. No response with the response tag exists yet for that submission group
+    3. A new submission artifact with submit=True is created (if enabled)
 
     Usage:
-        checker = TriggerChecker(messages_client, course_members_client, submissions_client)
+        config = TriggerConfig(
+            request_tags=[TriggerTag(scope="ai", value="request")],
+            response_tag=TriggerTag(scope="ai", value="response"),
+        )
+        checker = TriggerChecker(messages_client, course_members_client, config)
 
-        # Check if should respond to messages
+        # Check if should respond to messages in a submission group
         result = await checker.check_message_trigger(submission_group_id, course_id)
         if result.should_respond:
             # Process result.message_trigger
-            pass
-
-        # Check if should respond to submission
-        result = await checker.check_submission_trigger(submission_group_id, artifact)
-        if result.should_respond:
-            # Process result.submission_trigger
             pass
     """
 
     def __init__(
         self,
-        messages_client: ComputorClientProtocol,
-        course_members_client: ComputorClientProtocol,
-        submissions_client: Optional[ComputorClientProtocol] = None,
+        messages_client: MessagesClientProtocol,
+        course_members_client: CourseMembersClientProtocol,
+        config: Optional[TriggerConfig] = None,
     ) -> None:
         """
         Initialize the trigger checker.
@@ -117,11 +121,11 @@ class TriggerChecker:
         Args:
             messages_client: Client for messages API
             course_members_client: Client for course_members API
-            submissions_client: Client for submissions API (optional)
+            config: Trigger configuration (uses defaults if not provided)
         """
         self.messages = messages_client
         self.course_members = course_members_client
-        self.submissions = submissions_client
+        self.config = config or TriggerConfig()
 
         # Cache for course_member role lookups
         self._role_cache: dict[str, str] = {}
@@ -132,11 +136,11 @@ class TriggerChecker:
         course_id: str,
     ) -> TriggerCheckResult:
         """
-        Check if the tutor should respond based on messages.
+        Check if the tutor should respond based on message tags.
 
         The tutor should respond when:
-        - The last message was written by a student (_student role)
-        - No staff member has replied after that message
+        - A message in the submission group has a configured request tag
+        - No message with the response tag exists yet (to avoid duplicates)
 
         Args:
             submission_group_id: The submission group to check
@@ -145,56 +149,86 @@ class TriggerChecker:
         Returns:
             TriggerCheckResult indicating if/why to respond
         """
-        try:
-            # Get unread messages for this submission group
-            messages = await self.messages.list(
-                submission_group_id=submission_group_id,
-                is_read=False,
+        if not self.config.is_enabled:
+            return TriggerCheckResult(
+                should_respond=False,
+                reason="Tag-based triggers are disabled (no request_tags defined)",
             )
 
-            if not messages:
+        try:
+            # First, check if we already responded (has response tag)
+            existing_responses = await self.messages.list(
+                submission_group_id=submission_group_id,
+                tag_scope=self.config.response_tag.scope,
+            )
+
+            # Filter to only messages with the exact response tag
+            response_tag = self.config.response_tag_string
+            has_response = any(
+                response_tag in (getattr(m, "title", "") or "")
+                for m in existing_responses
+            )
+
+            if has_response:
                 return TriggerCheckResult(
                     should_respond=False,
-                    reason="No unread messages in submission group",
+                    reason=f"Already responded (found #{response_tag} tag)",
+                )
+
+            # Query for messages with request tags
+            request_messages = await self.messages.list(
+                submission_group_id=submission_group_id,
+                tags=self.config.request_tag_strings,
+                tags_match_all=self.config.require_all_tags,
+            )
+
+            if not request_messages:
+                return TriggerCheckResult(
+                    should_respond=False,
+                    reason="No messages with request tags found",
                 )
 
             # Sort by created_at (oldest first to process in order)
             messages_sorted = sorted(
-                messages,
+                request_messages,
                 key=lambda m: getattr(m, "created_at", datetime.min) or datetime.min,
             )
 
-            # Find the oldest unread message from a student
-            for message in messages_sorted:
-                author_id = message.author_id
-                author_role = await self._get_author_role(author_id, course_id)
+            # Get the oldest request message
+            message = messages_sorted[0]
+            author_id = getattr(message, "author_id", "")
 
-                if author_role is None:
-                    continue
+            # Get author info
+            author_role = ""
+            author_course_member_id = ""
 
-                # Check if the author is a student (not staff)
-                if author_role not in STAFF_ROLES:
-                    course_member = await self._get_course_member_by_user_id(author_id, course_id)
+            # Try to get author_course_member info if available
+            author_cm = getattr(message, "author_course_member", None)
+            if author_cm:
+                author_role = getattr(author_cm, "course_role_id", "") or ""
+                author_course_member_id = getattr(author_cm, "id", "") or ""
+            else:
+                # Fall back to looking up course member
+                course_member = await self._get_course_member_by_user_id(
+                    author_id, course_id
+                )
+                if course_member:
+                    author_role = getattr(course_member, "course_role_id", "") or ""
+                    author_course_member_id = getattr(course_member, "id", "") or ""
 
-                    return TriggerCheckResult(
-                        should_respond=True,
-                        reason=f"Unread message from student (role: {author_role}) needs response",
-                        message_trigger=MessageTrigger(
-                            message_id=message.id,
-                            submission_group_id=submission_group_id,
-                            author_id=author_id,
-                            author_course_member_id=course_member.id if course_member else "",
-                            author_role=author_role,
-                            content=message.content,
-                            title=message.title,
-                            created_at=getattr(message, "created_at", None),
-                        ),
-                    )
-
-            # All unread messages are from staff
             return TriggerCheckResult(
-                should_respond=False,
-                reason="No unread student messages",
+                should_respond=True,
+                reason=f"Found message with request tag(s): {self.config.request_tag_strings}",
+                message_trigger=MessageTrigger(
+                    message_id=getattr(message, "id", ""),
+                    submission_group_id=submission_group_id,
+                    author_id=author_id,
+                    author_course_member_id=author_course_member_id,
+                    author_role=author_role,
+                    content=getattr(message, "content", "") or "",
+                    title=getattr(message, "title", "") or "",
+                    created_at=getattr(message, "created_at", None),
+                ),
             )
 
         except Exception as e:
@@ -212,6 +246,9 @@ class TriggerChecker:
         """
         Check if a submission artifact should trigger a review.
 
+        Also checks if a response already exists (via response tag) to avoid
+        duplicate reviews.
+
         Args:
             submission_group_id: The submission group
             artifact: The submission artifact dict (must have submit=True)
@@ -219,12 +256,40 @@ class TriggerChecker:
         Returns:
             TriggerCheckResult indicating if/why to respond
         """
+        if not self.config.check_submissions:
+            return TriggerCheckResult(
+                should_respond=False,
+                reason="Submission triggers are disabled",
+            )
+
         # Check if this is an official submission
         if not artifact.get("submit", False):
             return TriggerCheckResult(
                 should_respond=False,
                 reason="Artifact is not marked as submit=True",
             )
+
+        # Check if we already responded to this submission group
+        try:
+            existing_responses = await self.messages.list(
+                submission_group_id=submission_group_id,
+                tag_scope=self.config.response_tag.scope,
+            )
+
+            response_tag = self.config.response_tag_string
+            has_response = any(
+                response_tag in (getattr(m, "title", "") or "")
+                for m in existing_responses
+            )
+
+            if has_response:
+                return TriggerCheckResult(
+                    should_respond=False,
+                    reason=f"Already responded to submission (found #{response_tag} tag)",
+                )
+        except Exception as e:
+            logger.warning(f"Could not check for existing responses: {e}")
+            # Continue anyway - better to potentially duplicate than miss
 
         return TriggerCheckResult(
             should_respond=True,
@@ -239,41 +304,15 @@ class TriggerChecker:
             ),
         )
 
-    async def _get_author_role(
-        self,
-        user_id: str,
-        course_id: str,
-    ) -> Optional[str]:
-        """
-        Get the course role for a user.
-
-        Args:
-            user_id: The user ID
-            course_id: The course ID
-
-        Returns:
-            The course_role_id or None if not found
-        """
-        cache_key = f"{user_id}:{course_id}"
-
-        if cache_key in self._role_cache:
-            return self._role_cache[cache_key]
-
-        course_member = await self._get_course_member_by_user_id(user_id, course_id)
-
-        if course_member:
-            role = course_member.course_role_id
-            self._role_cache[cache_key] = role
-            return role
-
-        return None
-
     async def _get_course_member_by_user_id(
         self,
         user_id: str,
         course_id: str,
     ):
         """Get course member by user_id and course_id."""
+        if not user_id or not course_id:
+            return None
+
         try:
             members = await self.course_members.get_course_members(
                 user_id=user_id,
@@ -298,10 +337,11 @@ class TriggerChecker:
 
 
 async def should_tutor_respond(
-    messages_client: ComputorClientProtocol,
-    course_members_client: ComputorClientProtocol,
+    messages_client: MessagesClientProtocol,
+    course_members_client: CourseMembersClientProtocol,
     submission_group_id: str,
     course_id: str,
+    config: Optional[TriggerConfig] = None,
 ) -> TriggerCheckResult:
     """
     Convenience function to check if tutor should respond.
@@ -311,9 +351,10 @@ async def should_tutor_respond(
         course_members_client: Client for course_members API
         submission_group_id: The submission group to check
         course_id: The course ID
+        config: Trigger configuration (uses defaults if not provided)
 
     Returns:
         TriggerCheckResult
     """
-    checker = TriggerChecker(messages_client, course_members_client)
+    checker = TriggerChecker(messages_client, course_members_client, config)
     return await checker.check_message_trigger(submission_group_id, course_id)
