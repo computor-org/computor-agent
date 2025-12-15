@@ -9,7 +9,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from computor_agent.tutor.services.test_results import TestResult
+    from computor_agent.tutor.services.history import SubmissionHistory
+    from computor_agent.tutor.services.reference import ReferenceComparison
+    from computor_agent.tutor.services.progress import MemberProgress
+    from computor_agent.tutor.services.artifacts import ArtifactContent
 
 
 class TriggerType(str, Enum):
@@ -152,6 +159,22 @@ class ConversationContext:
     reference_code: Optional[CodeContext] = None
     """Reference solution code (if enabled)."""
 
+    # Enhanced context from services
+    test_results: Optional["TestResult"] = None
+    """Parsed test results from submission artifact."""
+
+    submission_history: Optional["SubmissionHistory"] = None
+    """History of previous submissions for this assignment."""
+
+    reference_comparison: Optional["ReferenceComparison"] = None
+    """Comparison between student code and reference solution."""
+
+    student_progress: Optional["MemberProgress"] = None
+    """Student's overall progress in the course."""
+
+    artifact_content: Optional["ArtifactContent"] = None
+    """Extracted content from submission artifact."""
+
     # Metadata
     created_at: datetime = field(default_factory=datetime.now)
     """When this context was created."""
@@ -182,6 +205,31 @@ class ConversationContext:
     def has_reference(self) -> bool:
         """Check if reference code is available."""
         return self.reference_code is not None and bool(self.reference_code.files)
+
+    @property
+    def has_test_results(self) -> bool:
+        """Check if test results are available."""
+        return self.test_results is not None
+
+    @property
+    def has_submission_history(self) -> bool:
+        """Check if submission history is available."""
+        return self.submission_history is not None and self.submission_history.total_attempts > 0
+
+    @property
+    def has_reference_comparison(self) -> bool:
+        """Check if reference comparison is available."""
+        return self.reference_comparison is not None
+
+    @property
+    def has_student_progress(self) -> bool:
+        """Check if student progress is available."""
+        return self.student_progress is not None
+
+    @property
+    def has_artifact_content(self) -> bool:
+        """Check if artifact content is available."""
+        return self.artifact_content is not None and bool(self.artifact_content.files)
 
     def get_formatted_previous_messages(self, max_messages: int = 3) -> str:
         """
@@ -251,6 +299,104 @@ class ConversationContext:
         user_id = self.primary_user_id or "unknown"
         return notes_dir / f"{user_id}.txt"
 
+    def get_formatted_test_results(self, include_raw: bool = False) -> str:
+        """
+        Format test results for inclusion in prompts.
+
+        Args:
+            include_raw: Include raw console output
+
+        Returns:
+            Formatted string of test results
+        """
+        if not self.has_test_results:
+            return "(No test results available)"
+        return self.test_results.format_for_prompt(include_raw_output=include_raw)
+
+    def get_formatted_submission_history(self) -> str:
+        """
+        Format submission history for inclusion in prompts.
+
+        Returns:
+            Formatted string of submission history
+        """
+        if not self.has_submission_history:
+            return "(No submission history)"
+        return self.submission_history.format_for_prompt()
+
+    def get_formatted_reference_comparison(
+        self,
+        max_diffs: int = 5,
+        max_lines: int = 50,
+    ) -> str:
+        """
+        Format reference comparison for inclusion in prompts.
+
+        Args:
+            max_diffs: Maximum file diffs to include
+            max_lines: Maximum lines per diff
+
+        Returns:
+            Formatted string of comparison
+        """
+        if not self.has_reference_comparison:
+            return "(No reference comparison available)"
+        return self.reference_comparison.format_for_prompt(
+            max_diffs=max_diffs,
+            max_lines_per_diff=max_lines,
+        )
+
+    def get_formatted_progress(self) -> str:
+        """
+        Format student progress for inclusion in prompts.
+
+        Returns:
+            Formatted string of progress
+        """
+        if not self.has_student_progress:
+            return "(No progress information available)"
+        return self.student_progress.format_for_prompt()
+
+    def get_formatted_artifact_content(self, max_lines: int = 1000) -> str:
+        """
+        Format artifact content for inclusion in prompts.
+
+        Args:
+            max_lines: Maximum lines to include
+
+        Returns:
+            Formatted string of artifact content
+        """
+        if not self.has_artifact_content:
+            return "(No artifact content available)"
+        return self.artifact_content.format_for_prompt(max_lines=max_lines)
+
+    def get_enhanced_context_summary(self) -> str:
+        """
+        Get a summary of all available enhanced context.
+
+        Returns:
+            Summary string listing what context is available
+        """
+        available = []
+        if self.has_test_results:
+            tr = self.test_results
+            available.append(f"Test Results: {tr.total_passed}/{tr.total_tests} passed")
+        if self.has_submission_history:
+            sh = self.submission_history
+            available.append(f"History: {sh.total_attempts} attempts")
+        if self.has_reference_comparison:
+            rc = self.reference_comparison
+            available.append(f"Reference: {rc.overall_similarity:.0%} similar")
+        if self.has_student_progress:
+            sp = self.student_progress
+            available.append(f"Progress: {sp.completion_rate:.0%} complete")
+
+        if not available:
+            return "(No enhanced context)"
+
+        return "Enhanced Context: " + ", ".join(available)
+
     def destroy(self) -> None:
         """
         Clean up the context.
@@ -267,6 +413,16 @@ class ConversationContext:
 
         if self.reference_code:
             self.reference_code.files.clear()
+
+        # Clear enhanced context
+        self.test_results = None
+        self.submission_history = None
+        self.reference_comparison = None
+        self.student_progress = None
+
+        if self.artifact_content:
+            self.artifact_content.files.clear()
+            self.artifact_content = None
 
         self.extra.clear()
 

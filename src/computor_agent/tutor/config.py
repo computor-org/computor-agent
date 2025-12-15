@@ -129,6 +129,34 @@ class ContextConfig(BaseModel):
         description="Directory for student notes (uses user UUID as filename)",
     )
 
+    # Enhanced context options
+    include_test_results: bool = Field(
+        default=True,
+        description="Include parsed test results in context",
+    )
+    include_submission_history: bool = Field(
+        default=True,
+        description="Include submission history and improvement analysis",
+    )
+    include_reference_comparison: bool = Field(
+        default=False,
+        description="Include diff comparison with reference solution",
+    )
+    include_student_progress: bool = Field(
+        default=False,
+        description="Include student's overall course progress",
+    )
+    include_artifact_content: bool = Field(
+        default=False,
+        description="Include extracted artifact content (alternative to repo code)",
+    )
+    max_history_attempts: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of historical submissions to analyze",
+    )
+
 
 class GradingConfig(BaseModel):
     """

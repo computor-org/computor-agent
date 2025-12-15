@@ -170,12 +170,13 @@ Student's Code:
 ---
 {student_code}
 ---
-
+{test_results_section}
 {personality_prompt}
 
 The student has an error or bug they can't find.
 Help them identify the issue without just giving them the fix.
 Guide them through debugging methodology.
+Use the test results to help pinpoint the problem if available.
 Ask clarifying questions if needed.
 
 Language: {language}""",
@@ -191,7 +192,8 @@ Student's Code:
 ---
 {student_code}
 ---
-
+{test_results_section}
+{reference_comparison_section}
 {personality_prompt}
 
 Provide constructive feedback on:
@@ -200,6 +202,8 @@ Provide constructive feedback on:
 - Potential improvements
 - Good practices they've followed
 
+If test results are available, mention specific failing tests.
+If reference comparison is available, highlight key differences.
 Be balanced - mention both strengths and areas for improvement.
 
 Language: {language}""",
@@ -217,7 +221,10 @@ Student's Submission:
 ---
 {student_code}
 ---
-
+{test_results_section}
+{submission_history_section}
+{reference_comparison_section}
+{student_progress_section}
 {personality_prompt}
 
 Evaluate the submission based on:
@@ -225,6 +232,12 @@ Evaluate the submission based on:
 2. Completeness: Are all requirements met?
 3. Code Quality: Is the code well-written and readable?
 4. Best Practices: Does it follow good programming practices?
+
+Additional considerations:
+- If test results are available, reference specific failing tests in your feedback
+- If submission history shows improvement, acknowledge the student's progress
+- If reference comparison is available, highlight key differences from expected solution
+- Consider the student's overall progress in the course when giving feedback
 
 Provide detailed feedback that helps the student learn.
 {grading_instructions}

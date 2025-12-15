@@ -20,6 +20,12 @@ from computor_agent.tutor.context import (
     SubmissionInfo,
     TriggerType,
 )
+from computor_agent.tutor.services.test_results import TestResultsService
+from computor_agent.tutor.services.artifacts import ArtifactsService
+from computor_agent.tutor.services.reference import ReferenceService
+from computor_agent.tutor.services.history import HistoryService
+from computor_agent.tutor.services.comments import CommentsService
+from computor_agent.tutor.services.progress import ProgressService
 
 if TYPE_CHECKING:
     from computor_agent.tutor.config import ContextConfig
@@ -70,6 +76,14 @@ class ContextBuilder:
         """
         self.client = client
         self.config = config
+
+        # Initialize services for enhanced context
+        self.test_results_service = TestResultsService(client)
+        self.artifacts_service = ArtifactsService(client)
+        self.reference_service = ReferenceService(client)
+        self.history_service = HistoryService(client)
+        self.comments_service = CommentsService(client)
+        self.progress_service = ProgressService(client)
 
     async def build_for_message(
         self,
@@ -191,7 +205,8 @@ class ContextBuilder:
                 max_files=self.config.max_code_files,
             )
 
-        return ConversationContext(
+        # Build the basic context first
+        context = ConversationContext(
             trigger_type=trigger_type,
             submission_group_id=submission_group_id,
             trigger_message=trigger_message,
@@ -204,6 +219,84 @@ class ContextBuilder:
             student_code=student_code,
             reference_code=reference_code,
         )
+
+        # Add enhanced context from services
+        await self._add_enhanced_context(
+            context,
+            assignment_info,
+            student_info,
+            trigger_submission,
+        )
+
+        return context
+
+    async def _add_enhanced_context(
+        self,
+        context: ConversationContext,
+        assignment_info: Optional[AssignmentInfo],
+        student_info: StudentInfo,
+        trigger_submission: Optional[SubmissionInfo],
+    ) -> None:
+        """
+        Add enhanced context from services.
+
+        Modifies context in place to add:
+        - Test results
+        - Submission history
+        - Reference comparison
+        - Student progress
+        - Artifact content
+        """
+        submission_group_id = context.submission_group_id
+
+        # Get test results if enabled
+        if self.config.include_test_results:
+            try:
+                context.test_results = await self.test_results_service.get_for_submission_group(
+                    submission_group_id
+                )
+            except Exception as e:
+                logger.debug(f"Failed to get test results: {e}")
+
+        # Get submission history if enabled
+        if self.config.include_submission_history:
+            try:
+                context.submission_history = await self.history_service.get_history(
+                    submission_group_id
+                )
+            except Exception as e:
+                logger.debug(f"Failed to get submission history: {e}")
+
+        # Get reference comparison if enabled and we have both student and reference code
+        if self.config.include_reference_comparison and context.has_code and context.has_reference:
+            try:
+                context.reference_comparison = self.reference_service.compare_code(
+                    student_files=context.student_code.files,
+                    reference_files=context.reference_code.files,
+                )
+            except Exception as e:
+                logger.debug(f"Failed to generate reference comparison: {e}")
+
+        # Get student progress if enabled
+        if self.config.include_student_progress and assignment_info and student_info.course_member_ids:
+            try:
+                course_id = assignment_info.course_id
+                course_member_id = student_info.course_member_ids[0]
+                if course_id:
+                    context.student_progress = await self.progress_service.get_member_progress(
+                        course_id, course_member_id
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to get student progress: {e}")
+
+        # Get artifact content if enabled (for submission triggers)
+        if self.config.include_artifact_content and trigger_submission:
+            try:
+                context.artifact_content = await self.artifacts_service.download_and_extract(
+                    trigger_submission.artifact_id
+                )
+            except Exception as e:
+                logger.debug(f"Failed to get artifact content: {e}")
 
     async def _get_student_info(self, submission_group_id: str) -> StudentInfo:
         """Get student information from submission group."""

@@ -148,6 +148,38 @@ from computor_agent.tutor.scheduler import TutorScheduler, SchedulerConfig
 from computor_agent.tutor.client_adapter import TutorLLMAdapter
 from computor_agent.tutor.summary_store import SummaryStore, AgentNote
 
+# Services for enhanced context
+from computor_agent.tutor.services import (
+    # Test Results
+    TestResultsService,
+    TestResult,
+    TestCase,
+    TestSuite,
+    TestStatus,
+    # Artifacts
+    ArtifactsService,
+    Artifact,
+    ArtifactContent,
+    # Reference Comparison
+    ReferenceService,
+    ReferenceComparison,
+    FileDiff,
+    DiffLine,
+    # Submission History
+    HistoryService,
+    SubmissionHistory,
+    SubmissionAttempt,
+    ImprovementAnalysis,
+    # Tutor Comments
+    CommentsService,
+    TutorComment,
+    # Progress Tracking
+    ProgressService,
+    CourseProgress,
+    MemberProgress,
+    ContentProgress,
+)
+
 __all__ = [
     # Main agent
     "TutorAgent",
@@ -193,4 +225,33 @@ __all__ = [
     # Summary storage (AI's notes to itself)
     "SummaryStore",
     "AgentNote",
+    # Services for enhanced context
+    # Test Results
+    "TestResultsService",
+    "TestResult",
+    "TestCase",
+    "TestSuite",
+    "TestStatus",
+    # Artifacts
+    "ArtifactsService",
+    "Artifact",
+    "ArtifactContent",
+    # Reference Comparison
+    "ReferenceService",
+    "ReferenceComparison",
+    "FileDiff",
+    "DiffLine",
+    # Submission History
+    "HistoryService",
+    "SubmissionHistory",
+    "SubmissionAttempt",
+    "ImprovementAnalysis",
+    # Tutor Comments
+    "CommentsService",
+    "TutorComment",
+    # Progress Tracking
+    "ProgressService",
+    "CourseProgress",
+    "MemberProgress",
+    "ContentProgress",
 ]

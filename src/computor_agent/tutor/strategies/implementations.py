@@ -76,6 +76,11 @@ class BaseStrategyImpl(BaseStrategy):
             "previous_messages": context.get_formatted_previous_messages(),
             "reference_solution_section": self._get_reference_section(context),
             "grading_instructions": "",  # Set by submission strategy
+            # Enhanced context sections
+            "test_results_section": self._get_test_results_section(context),
+            "submission_history_section": self._get_submission_history_section(context),
+            "reference_comparison_section": self._get_reference_comparison_section(context),
+            "student_progress_section": self._get_student_progress_section(context),
         }
 
         # Apply custom prefix/suffix
@@ -141,6 +146,50 @@ class BaseStrategyImpl(BaseStrategy):
         return f"""Reference Solution:
 ---
 {chr(10).join(formatted)}
+---"""
+
+    def _get_test_results_section(self, context: "ConversationContext") -> str:
+        """Get test results section if available."""
+        if not context.has_test_results:
+            return ""
+
+        return f"""
+Test Results:
+---
+{context.test_results.format_for_prompt()}
+---"""
+
+    def _get_submission_history_section(self, context: "ConversationContext") -> str:
+        """Get submission history section if available."""
+        if not context.has_submission_history:
+            return ""
+
+        return f"""
+Submission History:
+---
+{context.submission_history.format_for_prompt()}
+---"""
+
+    def _get_reference_comparison_section(self, context: "ConversationContext") -> str:
+        """Get reference comparison section if available."""
+        if not context.has_reference_comparison:
+            return ""
+
+        return f"""
+Reference Comparison:
+---
+{context.reference_comparison.format_for_prompt(max_diffs=3, max_lines_per_diff=30)}
+---"""
+
+    def _get_student_progress_section(self, context: "ConversationContext") -> str:
+        """Get student progress section if available."""
+        if not context.has_student_progress:
+            return ""
+
+        return f"""
+Student Progress:
+---
+{context.student_progress.format_for_prompt()}
 ---"""
 
 
@@ -239,6 +288,11 @@ status: <value>
             "student_code": context.get_formatted_code() if context.has_code else "(No code available)",
             "reference_solution_section": self._get_reference_section(context),
             "grading_instructions": grading_instructions,
+            # Enhanced context sections
+            "test_results_section": self._get_test_results_section(context),
+            "submission_history_section": self._get_submission_history_section(context),
+            "reference_comparison_section": self._get_reference_comparison_section(context),
+            "student_progress_section": self._get_student_progress_section(context),
         }
 
         base_prompt = template.format(**variables)
