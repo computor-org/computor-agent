@@ -15,12 +15,20 @@ Architecture:
                                │
                                ▼
     ┌─────────────────────────────────────────────────────────┐
+    │                  TRIGGER CHECKER                         │
+    │  Checks for:                                             │
+    │  - Messages with request tags (e.g., #ai::request)      │
+    │  - Replies in conversation chains where AI responded    │
+    │  - Submission artifacts with submit=True                │
+    └─────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+    ┌─────────────────────────────────────────────────────────┐
     │              CONVERSATION CONTEXT                        │
     │  Fresh per interaction, contains:                        │
     │  - Trigger (message or submission)                       │
-    │  - Previous messages (configurable N)                    │
-    │  - Course member comments (optional)                     │
-    │  - Student notes from filesystem (optional)              │
+    │  - Message chain (via parent_id links)                  │
+    │  - AI's previous notes about this context               │
     │  - Assignment description                                │
     │  - Student repository code                               │
     └─────────────────────────────────────────────────────────┘
@@ -54,27 +62,39 @@ Architecture:
                                ▼
     ┌─────────────────────────────────────────────────────────┐
     │                 RESPONSE HANDLER                         │
-    │  - Post to /messages API                                │
+    │  - Post reply to message chain (with parent_id)         │
+    │  - Tag response with #ai::response                      │
     │  - Optionally post grade                                │
-    │  - Log interaction                                       │
-    │  - Update student notes file                            │
+    │  - Save AI notes for future context                     │
     └─────────────────────────────────────────────────────────┘
+
+Conversation Model:
+    - Conversations are message chains linked by parent_id
+    - A conversation starts when a message has a request tag
+    - The AI responds as a reply (with parent_id)
+    - Any student reply in the chain triggers another AI response
+    - No external state tracking needed - the chain IS the conversation
 
 Example:
     ```python
-    from computor_agent.tutor import TutorAgent, TutorConfig
+    from computor_agent.tutor import TutorAgent
     from computor_agent.settings import ComputorConfig
     from computor_client import ComputorClient
 
-    # Load configuration
+    # Load unified configuration (includes backend, llm, credentials, tutor)
     config = ComputorConfig.from_file("~/.computor/config.yaml")
-    tutor_config = TutorConfig.from_file("~/.computor/tutor.yaml")
+    tutor_config = config.get_tutor_config()
+    git_credentials = config.get_credentials_store()
 
     async with ComputorClient(base_url=config.backend.url) as client:
-        await client.login(
-            username=config.backend.username,
-            password=config.backend.get_password(),
-        )
+        # Authenticate (API token or basic auth)
+        if config.backend.auth_method == "api_token":
+            client.headers["X-API-Token"] = config.backend.get_api_token()
+        else:
+            await client.login(
+                username=config.backend.username,
+                password=config.backend.get_password(),
+            )
 
         # Create tutor agent
         agent = TutorAgent(
@@ -83,10 +103,13 @@ Example:
             llm_provider=llm,
         )
 
-        # Handle a message (typically called by scheduler)
-        await agent.handle_message(
+        # Handle a submission (typically called by scheduler)
+        await agent.process_submission(
             submission_group_id="sg-123",
-            message_id="msg-456",
+            artifact_id="art-456",
+            course_member_id="cm-789",
+            course_content_id="cc-101",
+            submit_grade=True,  # Will auto-grade if tutor.grading.enabled
         )
     ```
 """
@@ -100,6 +123,7 @@ from computor_agent.tutor.config import (
     StrategyConfig,
     TriggerConfig,
     TriggerTag,
+    NotesConfig,
 )
 from computor_agent.tutor.intents import Intent, IntentClassification, IntentClassifier
 from computor_agent.tutor.security import (
@@ -122,6 +146,7 @@ from computor_agent.tutor.trigger import (
 )
 from computor_agent.tutor.scheduler import TutorScheduler, SchedulerConfig
 from computor_agent.tutor.client_adapter import TutorClientAdapter, TutorLLMAdapter
+from computor_agent.tutor.summary_store import SummaryStore, AgentNote
 
 __all__ = [
     # Main agent
@@ -149,6 +174,7 @@ __all__ = [
     "StrategyConfig",
     "TriggerConfig",
     "TriggerTag",
+    "NotesConfig",
     # Context
     "ConversationContext",
     "ContextBuilder",
@@ -165,4 +191,7 @@ __all__ = [
     # Strategies
     "StrategyRegistry",
     "StrategyResponse",
+    # Summary storage (AI's notes to itself)
+    "SummaryStore",
+    "AgentNote",
 ]

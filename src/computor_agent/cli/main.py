@@ -453,13 +453,7 @@ def providers():
     "-c",
     type=click.Path(exists=True),
     default="config.yaml",
-    help="Path to config file (default: config.yaml)",
-)
-@click.option(
-    "--credentials",
-    type=click.Path(exists=True),
-    default="credentials.yaml",
-    help="Path to Git credentials file (default: credentials.yaml)",
+    help="Path to config file (default: config.yaml). Contains backend, llm, credentials, and tutor settings.",
 )
 @click.option(
     "--verbose",
@@ -474,7 +468,6 @@ def providers():
 )
 def tutor(
     config: str,
-    credentials: str,
     verbose: bool,
     dry_run: bool,
 ):
@@ -484,42 +477,41 @@ def tutor(
     The tutor agent polls for student messages and submissions,
     and responds automatically using the configured LLM.
 
+    Configuration file should contain all settings:
+    - backend: API authentication
+    - llm: LLM provider settings
+    - credentials: Git repository access tokens
+    - tutor: Agent behavior and grading settings
+
     Examples:
 
-        # Start with config files in current directory
+        # Start with config file in current directory
         computor-agent tutor
 
-        # Use specific config files
+        # Use specific config file
         computor-agent tutor -c ~/.computor/config.yaml
 
-        # Verbose mode
-        computor-agent tutor -v
+        # Verbose mode with dry run
+        computor-agent tutor -v --dry-run
     """
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
 
     # Load configuration
     config_path = Path(config)
-    credentials_path = Path(credentials)
 
     try:
-        from computor_agent.settings import ComputorConfig, GitCredentialsStore
-        from computor_agent.tutor import TutorConfig
+        from computor_agent.settings import ComputorConfig
 
         logger.info(f"Loading config from {config_path}")
         computor_config = ComputorConfig.from_file(config_path)
 
-        logger.info(f"Loading credentials from {credentials_path}")
-        git_credentials = GitCredentialsStore.from_file(credentials_path)
+        # Get tutor config and credentials from unified config
+        tutor_config = computor_config.get_tutor_config()
+        git_credentials = computor_config.get_credentials_store()
 
-        # Load tutor config if exists
-        tutor_config_path = config_path.parent / "tutor.yaml"
-        if tutor_config_path.exists():
-            logger.info(f"Loading tutor config from {tutor_config_path}")
-            tutor_config = TutorConfig.from_file(tutor_config_path)
-        else:
-            logger.info("Using default tutor config")
-            tutor_config = TutorConfig()
+        logger.info(f"Tutor grading: enabled={tutor_config.grading.enabled}, auto_submit={tutor_config.grading.auto_submit_grade}")
+        logger.info(f"Git credentials: {len(git_credentials)} mapping(s)")
 
     except FileNotFoundError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
@@ -529,6 +521,7 @@ def tutor(
         sys.exit(1)
 
     # Show configuration summary
+    grading_status = "enabled" if tutor_config.grading.enabled and tutor_config.grading.auto_submit_grade else "disabled"
     console.print(
         Panel(
             f"[bold cyan]Tutor AI Agent[/bold cyan]\n\n"
@@ -537,6 +530,7 @@ def tutor(
             f"LLM: [green]{computor_config.llm.provider if computor_config.llm else 'not configured'}[/green] "
             f"([green]{computor_config.llm.model if computor_config.llm else 'n/a'}[/green])\n"
             f"Git credentials: [green]{len(git_credentials)} mapping(s)[/green]\n"
+            f"Auto-grading: [green]{grading_status}[/green]\n"
             f"Dry run: [yellow]{dry_run}[/yellow]\n\n"
             f"Press [yellow]Ctrl+C[/yellow] to stop.",
             title="Starting",
@@ -640,9 +634,24 @@ async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bo
             artifact = {
                 "id": result.submission_trigger.artifact_id,
             }
+
+            # Extract course_member_id and course_content_id from enriched submission group
+            # These are needed for the tutors grading endpoint
+            course_content_id = submission_group.get("course_content_id")
+            members = submission_group.get("members", [])
+            course_member_id = members[0].get("course_member_id") if members else None
+
+            logger.debug(
+                f"Submission details: artifact={result.submission_trigger.artifact_id}, "
+                f"course_content_id={course_content_id}, course_member_id={course_member_id}"
+            )
+
             await agent.process_submission(
                 submission_group_id=result.submission_trigger.submission_group_id,
                 artifact=artifact,
+                course_member_id=course_member_id,
+                course_content_id=course_content_id,
+                submit_grade=True,  # Enable grade submission
             )
 
         scheduler = TutorScheduler(

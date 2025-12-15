@@ -3,10 +3,15 @@ Scheduler for the Tutor AI Agent.
 
 Polls for:
 1. Submission groups with messages tagged with request tags (e.g., #ai::request)
-2. New submission artifacts with submit=True
+2. Ungraded submissions via tutor endpoint (has_ungraded_submissions=true)
 
 The scheduler is configurable and calls the TutorAgent when triggers are detected.
 Tag-based trigger detection uses the TriggerConfig from tutor config.
+
+Key endpoints used:
+- GET /tutors/submission-groups?has_ungraded_submissions=true
+- GET /tutors/submission-groups/{id} for details
+- GET /messages?tags=...&unread=true for message triggers
 """
 
 import asyncio
@@ -22,6 +27,7 @@ from computor_agent.tutor.config import TriggerConfig
 from computor_agent.tutor.trigger import (
     TriggerChecker,
     TriggerCheckResult,
+    SubmissionTrigger,
     STAFF_ROLES,
 )
 
@@ -95,6 +101,9 @@ class ComputorClientProtocol(Protocol):
 
     @property
     def submissions(self): ...
+
+    @property
+    def tutors(self): ...
 
 
 class TutorScheduler:
@@ -214,38 +223,61 @@ class TutorScheduler:
 
     async def _poll_once(self) -> None:
         """Perform one polling cycle."""
-        # Get submission groups to check
-        submission_groups = await self._get_submission_groups()
-
-        logger.debug(f"Checking {len(submission_groups)} submission groups")
-
-        # Check each submission group
         tasks = []
-        for sg in submission_groups:
-            sg_id = sg.id if hasattr(sg, "id") else sg.get("id")
-            course_id = sg.course_id if hasattr(sg, "course_id") else sg.get("course_id")
 
-            if not sg_id or not course_id:
-                continue
+        # =====================================================================
+        # 1. Check for ungraded submissions via tutor endpoint
+        # =====================================================================
+        if self.config.check_submissions and self.on_submission_trigger:
+            try:
+                ungraded_groups = await self._get_ungraded_submission_groups()
+                logger.debug(f"Found {len(ungraded_groups)} groups with ungraded submissions")
 
-            # Check if we should skip due to cooldown
-            if self._should_skip(sg_id):
-                continue
+                for sg in ungraded_groups:
+                    sg_id = sg.get("id") if isinstance(sg, dict) else getattr(sg, "id", None)
+                    if not sg_id:
+                        continue
 
-            # Create check task
-            tasks.append(self._check_and_process(sg_id, course_id, sg))
+                    # Check if we should skip due to cooldown
+                    if self._should_skip(sg_id, check_type="submission"):
+                        continue
+
+                    tasks.append(self._process_ungraded_submission(sg))
+            except Exception as e:
+                logger.warning(f"Error checking ungraded submissions: {e}")
+
+        # =====================================================================
+        # 2. Check for message triggers (tag-based)
+        # =====================================================================
+        if self.config.check_messages and self.on_message_trigger:
+            submission_groups = await self._get_submission_groups()
+            logger.debug(f"Checking {len(submission_groups)} submission groups for messages")
+
+            for sg in submission_groups:
+                sg_id = sg.id if hasattr(sg, "id") else sg.get("id")
+                course_id = sg.course_id if hasattr(sg, "course_id") else sg.get("course_id")
+
+                if not sg_id or not course_id:
+                    continue
+
+                # Check if we should skip due to cooldown
+                if self._should_skip(sg_id, check_type="message"):
+                    continue
+
+                # Create check task for message triggers
+                tasks.append(self._check_message_trigger(sg_id, course_id, sg))
 
         # Run all checks concurrently (limited by semaphore)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _check_and_process(
+    async def _check_message_trigger(
         self,
         submission_group_id: str,
         course_id: str,
         submission_group: dict,
     ) -> None:
-        """Check triggers and process if needed."""
+        """Check for message triggers (tag-based) and process if needed."""
         async with self._semaphore:
             state = self._get_or_create_state(submission_group_id)
 
@@ -255,85 +287,168 @@ class TutorScheduler:
             state.processing = True
 
             try:
-                # Check message trigger
-                if self.config.check_messages and self.on_message_trigger:
-                    result = await self._trigger_checker.check_message_trigger(
-                        submission_group_id,
-                        course_id,
-                    )
+                result = await self._trigger_checker.check_message_trigger(
+                    submission_group_id,
+                    course_id,
+                )
 
-                    if result.should_respond and result.message_trigger:
-                        # Check if this message was already processed
-                        if state.last_message_id != result.message_trigger.message_id:
-                            logger.info(
-                                f"Message trigger for {submission_group_id}: "
-                                f"{result.reason}"
-                            )
+                if result.should_respond and result.message_trigger:
+                    # Check if this message was already processed
+                    if state.last_message_id != result.message_trigger.message_id:
+                        logger.info(
+                            f"Message trigger for {submission_group_id}: "
+                            f"{result.reason}"
+                        )
 
-                            await self.on_message_trigger(result, submission_group)
+                        await self.on_message_trigger(result, submission_group)
 
-                            state.last_message_id = result.message_trigger.message_id
-                            state.last_processed = datetime.now()
-
-                # Check submission trigger
-                if self.config.check_submissions and self.on_submission_trigger:
-                    await self._check_submission_triggers(
-                        submission_group_id,
-                        submission_group,
-                        state,
-                    )
+                        state.last_message_id = result.message_trigger.message_id
+                        state.last_processed = datetime.now()
 
             finally:
                 state.processing = False
 
-    async def _check_submission_triggers(
-        self,
-        submission_group_id: str,
-        submission_group: dict,
-        state: ProcessingState,
-    ) -> None:
-        """Check for new submission artifacts with submit=True."""
+    async def _process_ungraded_submission(self, submission_group: dict) -> None:
+        """
+        Process an ungraded submission detected via tutor endpoint.
+
+        This uses the tutor endpoints which provide pre-filtered data:
+        - GET /tutors/submission-groups?has_ungraded_submissions=true
+        - GET /tutors/submission-groups/{id} for details
+        """
+        async with self._semaphore:
+            sg_id = submission_group.get("id")
+            if not sg_id:
+                return
+
+            state = self._get_or_create_state(sg_id)
+
+            if state.processing:
+                return
+
+            state.processing = True
+
+            try:
+                # Get detailed info from tutor endpoint
+                sg_details = await self._get_tutor_submission_group_details(sg_id)
+                if not sg_details:
+                    return
+
+                # Extract key info
+                course_content_id = sg_details.get("course_content_id")
+                course_id = sg_details.get("course_id")
+                latest_submission_id = sg_details.get("latest_submission_id")
+                members = sg_details.get("members", [])
+
+                # Skip if no submission or already processed
+                if not latest_submission_id:
+                    return
+
+                if latest_submission_id in self._processed_artifacts:
+                    return
+
+                # Build trigger result
+                result = TriggerCheckResult(
+                    should_respond=True,
+                    reason=f"Ungraded submission detected (has_ungraded_submissions=true)",
+                    submission_trigger=SubmissionTrigger(
+                        artifact_id=latest_submission_id,
+                        submission_group_id=sg_id,
+                        uploaded_by_course_member_id=members[0].get("course_member_id") if members else None,
+                        version_identifier=None,
+                        file_size=0,
+                        uploaded_at=sg_details.get("latest_submission_at"),
+                    ),
+                )
+
+                logger.info(
+                    f"Ungraded submission for {sg_id}: "
+                    f"artifact={latest_submission_id}, "
+                    f"course_content={course_content_id}"
+                )
+
+                # Call the callback with enriched submission group data
+                enriched_sg = {
+                    **submission_group,
+                    **sg_details,
+                    "course_content_id": course_content_id,
+                    "course_id": course_id,
+                }
+
+                await self.on_submission_trigger(result, enriched_sg)
+
+                self._processed_artifacts.add(latest_submission_id)
+                state.last_artifact_id = latest_submission_id
+                state.last_processed = datetime.now()
+
+            except Exception as e:
+                logger.warning(f"Error processing ungraded submission {sg_id}: {e}")
+
+            finally:
+                state.processing = False
+
+    async def _get_ungraded_submission_groups(self) -> list:
+        """
+        Get submission groups with ungraded submissions via tutor endpoint.
+
+        Uses: GET /tutors/submission-groups?has_ungraded_submissions=true
+        """
         try:
-            # Get submission artifacts
-            artifacts = await self.client.submissions.get_artifacts(
-                submission_group_id=submission_group_id,
-            )
+            kwargs = {"has_ungraded_submissions": True}
 
-            for artifact in artifacts:
-                artifact_id = artifact.id if hasattr(artifact, "id") else artifact.get("id")
-                submit = artifact.submit if hasattr(artifact, "submit") else artifact.get("submit")
-
-                if not artifact_id or not submit:
-                    continue
-
-                # Skip if already processed
-                if artifact_id in self._processed_artifacts:
-                    continue
-
-                # Check trigger
-                artifact_dict = (
-                    artifact.model_dump() if hasattr(artifact, "model_dump")
-                    else artifact
-                )
-                result = await self._trigger_checker.check_submission_trigger(
-                    submission_group_id,
-                    artifact_dict,
-                )
-
-                if result.should_respond:
-                    logger.info(
-                        f"Submission trigger for {submission_group_id}: "
-                        f"artifact={artifact_id}"
+            if self.config.course_content_ids:
+                # Filter by first course content ID (API might only support one)
+                # For multiple, we'd need to make multiple calls
+                all_groups = []
+                for cc_id in self.config.course_content_ids:
+                    groups = await self.client.tutors.get_submission_groups(
+                        has_ungraded_submissions=True,
+                        course_content_id=cc_id,
                     )
+                    all_groups.extend(groups)
+                return [
+                    g.model_dump() if hasattr(g, "model_dump") else g
+                    for g in all_groups
+                ]
 
-                    await self.on_submission_trigger(result, submission_group)
+            elif self.config.course_ids:
+                all_groups = []
+                for course_id in self.config.course_ids:
+                    groups = await self.client.tutors.get_submission_groups(
+                        has_ungraded_submissions=True,
+                        course_id=course_id,
+                    )
+                    all_groups.extend(groups)
+                return [
+                    g.model_dump() if hasattr(g, "model_dump") else g
+                    for g in all_groups
+                ]
 
-                    self._processed_artifacts.add(artifact_id)
-                    state.last_artifact_id = artifact_id
-                    state.last_processed = datetime.now()
+            else:
+                groups = await self.client.tutors.get_submission_groups(
+                    has_ungraded_submissions=True,
+                )
+                return [
+                    g.model_dump() if hasattr(g, "model_dump") else g
+                    for g in groups
+                ]
 
         except Exception as e:
-            logger.warning(f"Error checking submission triggers: {e}")
+            logger.error(f"Failed to get ungraded submission groups: {e}")
+            return []
+
+    async def _get_tutor_submission_group_details(self, submission_group_id: str) -> dict:
+        """
+        Get detailed submission group info via tutor endpoint.
+
+        Uses: GET /tutors/submission-groups/{id}
+        """
+        try:
+            sg = await self.client.tutors.submission_groups(submission_group_id)
+            return sg.model_dump() if hasattr(sg, "model_dump") else dict(sg)
+        except Exception as e:
+            logger.warning(f"Failed to get tutor submission group details {submission_group_id}: {e}")
+            return {}
 
     async def _get_submission_groups(self) -> list:
         """Get submission groups to check."""
@@ -342,7 +457,7 @@ class TutorScheduler:
                 # Filter by course content IDs
                 all_groups = []
                 for cc_id in self.config.course_content_ids:
-                    groups = await self.client.submission_groups.get_submission_groups(
+                    groups = await self.client.submission_groups.list(
                         course_content_id=cc_id,
                     )
                     all_groups.extend(groups)
@@ -352,22 +467,32 @@ class TutorScheduler:
                 # Filter by course IDs
                 all_groups = []
                 for course_id in self.config.course_ids:
-                    groups = await self.client.submission_groups.get_submission_groups(
+                    groups = await self.client.submission_groups.list(
                         course_id=course_id,
                     )
                     all_groups.extend(groups)
                 return all_groups
 
             else:
-                # Get all submission groups
-                return await self.client.submission_groups.get_submission_groups()
+                # Get all submission groups (should typically filter by course)
+                logger.warning(
+                    "No course_ids or course_content_ids configured - "
+                    "this may return many submission groups"
+                )
+                return await self.client.submission_groups.list()
 
         except Exception as e:
             logger.error(f"Failed to get submission groups: {e}")
             return []
 
-    def _should_skip(self, submission_group_id: str) -> bool:
-        """Check if a submission group should be skipped due to cooldown."""
+    def _should_skip(self, submission_group_id: str, check_type: str = "any") -> bool:
+        """
+        Check if a submission group should be skipped due to cooldown.
+
+        Args:
+            submission_group_id: The submission group to check
+            check_type: Type of check ("message", "submission", or "any")
+        """
         state = self._states.get(submission_group_id)
 
         if not state or not state.last_processed:

@@ -72,6 +72,7 @@ class ComputorClientProtocol(Protocol):
         submission_group_id: str,
         content: str,
         title: str = "",
+        parent_id: Optional[str] = None,
     ) -> dict:
         """Create a message in a submission group."""
         ...
@@ -83,7 +84,31 @@ class ComputorClientProtocol(Protocol):
         grade: Optional[float] = None,
         comment: Optional[str] = None,
     ) -> dict:
-        """Update grading for a submission."""
+        """Update grading for a submission (deprecated, use submit_tutor_grade)."""
+        ...
+
+    async def submit_tutor_grade(
+        self,
+        course_member_id: str,
+        course_content_id: str,
+        grade: float,
+        status: int,
+        feedback: str,
+        artifact_id: Optional[str] = None,
+    ) -> dict:
+        """Submit a grade via the tutors endpoint."""
+        ...
+
+    async def get_student_course_content(
+        self,
+        course_member_id: str,
+        course_content_id: str,
+    ) -> dict:
+        """Get student's work and test results via tutor endpoint."""
+        ...
+
+    async def mark_message_read(self, message_id: str) -> None:
+        """Mark a message as read."""
         ...
 
 
@@ -121,6 +146,9 @@ class ProcessingResult:
 
     context_id: Optional[str] = None
     """ID of the context used for processing."""
+
+    response_message_id: Optional[str] = None
+    """ID of the response message that was created (if sent)."""
 
 
 class TutorAgent:
@@ -190,6 +218,7 @@ class TutorAgent:
         repository_path: Optional[Path] = None,
         reference_path: Optional[Path] = None,
         send_response: bool = True,
+        reply_to_message_id: Optional[str] = None,
     ) -> ProcessingResult:
         """
         Process a student message and generate a response.
@@ -200,6 +229,7 @@ class TutorAgent:
             repository_path: Path to student's cloned repository
             reference_path: Path to reference solution (if enabled)
             send_response: Whether to send the response via API
+            reply_to_message_id: ID of message to reply to (creates message chain)
 
         Returns:
             ProcessingResult with all processing information
@@ -262,15 +292,30 @@ class TutorAgent:
 
             # Send response if configured
             message_sent = False
+            response_message_id = None
             if send_response and response.message_content:
                 # Add response tag to title for trigger detection
                 formatted_title = self._format_response_title(response.message_title)
-                await self.client.create_message(
+
+                # Reply to the triggering message to create a chain
+                parent_id = reply_to_message_id or message.get("id")
+
+                created_message = await self.client.create_message(
                     submission_group_id=submission_group_id,
                     content=response.message_content,
                     title=formatted_title,
+                    parent_id=parent_id,
                 )
                 message_sent = True
+                response_message_id = created_message.get("id")
+
+            # Mark the original message as read to prevent re-processing
+            message_id = message.get("id")
+            if message_id:
+                try:
+                    await self.client.mark_message_read(message_id)
+                except Exception as e:
+                    logger.warning(f"Failed to mark message {message_id} as read: {e}")
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -282,6 +327,7 @@ class TutorAgent:
                 security_result=security_result,
                 processing_time_ms=elapsed_ms,
                 context_id=context_id,
+                response_message_id=response_message_id,
             )
 
         except Exception as e:
@@ -308,6 +354,8 @@ class TutorAgent:
         reference_path: Optional[Path] = None,
         send_response: bool = True,
         submit_grade: bool = False,
+        course_member_id: Optional[str] = None,
+        course_content_id: Optional[str] = None,
     ) -> ProcessingResult:
         """
         Process a submission (artifact with submit=True) and generate a review.
@@ -319,6 +367,8 @@ class TutorAgent:
             reference_path: Path to reference solution (if enabled)
             send_response: Whether to send the review message via API
             submit_grade: Whether to submit the grade via API
+            course_member_id: Course member ID (for tutor grading endpoint)
+            course_content_id: Course content ID (for tutor grading endpoint)
 
         Returns:
             ProcessingResult with all processing information
@@ -394,19 +444,50 @@ class TutorAgent:
                 )
                 message_sent = True
 
-            # Submit grade if configured and available
+            # Submit grade via tutors endpoint if configured and available
             if (
                 submit_grade
                 and self.config.grading.enabled
                 and self.config.grading.auto_submit_grade
                 and response.grade is not None
             ):
-                await self.client.update_submission_grading(
-                    submission_group_id=submission_group_id,
-                    status=response.grade_status or self.config.grading.default_status,
-                    grade=response.grade,
-                    comment=response.grade_comment,
-                )
+                # Use tutor grading endpoint if we have required IDs
+                if course_member_id and course_content_id:
+                    try:
+                        await self.client.submit_tutor_grade(
+                            course_member_id=course_member_id,
+                            course_content_id=course_content_id,
+                            grade=response.grade,
+                            status=response.grade_status or self.config.grading.default_status,
+                            feedback=response.grade_comment or "",
+                            artifact_id=artifact.get("id"),
+                        )
+                        logger.info(
+                            f"Grade submitted via tutors endpoint: "
+                            f"cm={course_member_id}, cc={course_content_id}, "
+                            f"grade={response.grade}, status={response.grade_status}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to submit grade via tutors endpoint: {e}")
+                        # Fall back to old method
+                        await self.client.update_submission_grading(
+                            submission_group_id=submission_group_id,
+                            status=response.grade_status or self.config.grading.default_status,
+                            grade=response.grade,
+                            comment=response.grade_comment,
+                        )
+                else:
+                    # Fall back to old method if IDs not provided
+                    logger.warning(
+                        "course_member_id or course_content_id not provided, "
+                        "using legacy grading method"
+                    )
+                    await self.client.update_submission_grading(
+                        submission_group_id=submission_group_id,
+                        status=response.grade_status or self.config.grading.default_status,
+                        grade=response.grade,
+                        comment=response.grade_comment,
+                    )
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 

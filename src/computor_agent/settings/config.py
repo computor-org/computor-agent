@@ -8,7 +8,7 @@ including backend API settings, user credentials, and agent identity.
 import os
 import json
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator
@@ -205,7 +205,8 @@ class ComputorConfig(BaseModel):
     """
     Complete Computor Agent configuration.
 
-    Combines backend, agent, and LLM settings into a single configuration object.
+    Combines backend, agent, LLM, credentials, and tutor settings into a single
+    configuration object. This is the unified configuration file format.
 
     SECURITY: This configuration contains sensitive credentials (passwords, API keys).
     - String representations (__repr__, __str__) mask all secrets
@@ -217,14 +218,19 @@ class ComputorConfig(BaseModel):
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.computor.example.com",
-                username="tutor-agent",
-                password="secret",
+                api_token="ctp_xxxx",
             ),
             llm=LLMSettings(
                 provider="openai",
                 model="gpt-oss-120b",
                 base_url="http://localhost:11434/v1",
             ),
+            credentials=[
+                {"pattern": "https://gitlab.example.com", "token": "glpat-xxx"},
+            ],
+            tutor={
+                "grading": {"enabled": True, "auto_submit_grade": True},
+            },
         )
 
         # Load from file
@@ -247,6 +253,14 @@ class ComputorConfig(BaseModel):
     llm: Optional[LLMSettings] = Field(
         default=None,
         description="LLM provider settings"
+    )
+    credentials: Optional[list[dict[str, Any]]] = Field(
+        default=None,
+        description="Git credentials mappings (list of {pattern, token, ...})"
+    )
+    tutor: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Tutor agent configuration (nested under 'tutor' key)"
     )
 
     def __repr__(self) -> str:
@@ -483,3 +497,33 @@ class ComputorConfig(BaseModel):
         # Write with restricted permissions
         path.write_text(content)
         os.chmod(path, 0o600)
+
+    def get_tutor_config(self) -> Any:
+        """
+        Get TutorConfig from the tutor section.
+
+        Returns:
+            TutorConfig instance (defaults if tutor section is not present)
+
+        Note: Import is done lazily to avoid circular imports.
+        """
+        from computor_agent.tutor.config import TutorConfig
+
+        if self.tutor:
+            return TutorConfig.from_dict(self.tutor)
+        return TutorConfig()
+
+    def get_credentials_store(self) -> Any:
+        """
+        Get GitCredentialsStore from the credentials section.
+
+        Returns:
+            GitCredentialsStore instance (empty if credentials not present)
+
+        Note: Import is done lazily to avoid circular imports.
+        """
+        from computor_agent.settings.credentials import GitCredentialsStore
+
+        if self.credentials:
+            return GitCredentialsStore.from_dict({"credentials": self.credentials})
+        return GitCredentialsStore()

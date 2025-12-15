@@ -3,11 +3,14 @@ Trigger detection for the Tutor AI Agent.
 
 Determines when the tutor agent should respond based on:
 1. Message triggers: Messages tagged with configured request tags (e.g., #ai::request)
-2. Submission triggers: New submission artifact with submit=True
+2. Reply chain triggers: Unread replies to AI responses (in same message chain)
+3. Submission triggers: New submission artifact with submit=True
 
-The agent uses tag-based filtering to:
-- Find messages that request AI assistance (configurable request_tags)
-- Avoid duplicate responses by checking for response_tag
+Conversation model:
+- A conversation is a chain of messages linked by parent_id
+- Conversation starts when a message has a configured request tag
+- If the AI replies, any student reply to that chain triggers a new response
+- No external state needed - the message chain IS the conversation
 """
 
 import logging
@@ -20,7 +23,7 @@ from computor_agent.tutor.config import TriggerConfig
 logger = logging.getLogger(__name__)
 
 
-# Staff roles - these users can answer students (kept for backwards compatibility)
+# Staff roles - these users can answer students
 STAFF_ROLES = {"_tutor", "_lecturer", "_maintainer", "_owner"}
 
 # Student role - these users need answers
@@ -39,6 +42,16 @@ class MessageTrigger:
     content: str
     title: str
     created_at: Optional[datetime] = None
+
+    # Conversation context
+    root_message_id: Optional[str] = None
+    """Root message ID of the conversation (the message with request tag)."""
+
+    parent_id: Optional[str] = None
+    """ID of the message this is replying to (None if root message)."""
+
+    is_follow_up: bool = False
+    """True if this is a follow-up reply in an existing conversation."""
 
 
 @dataclass
@@ -69,6 +82,9 @@ class TriggerCheckResult:
     submission_trigger: Optional[SubmissionTrigger] = None
     """The submission that triggered (if submission trigger)."""
 
+    root_message_id: Optional[str] = None
+    """Root message ID of the conversation (for context building)."""
+
 
 class MessagesClientProtocol(Protocol):
     """Protocol for the messages API client."""
@@ -77,36 +93,36 @@ class MessagesClientProtocol(Protocol):
         """List messages with optional filters."""
         ...
 
+    async def get(self, id: str, **kwargs):
+        """Get a single message by ID."""
+        ...
+
 
 class CourseMembersClientProtocol(Protocol):
     """Protocol for the course_members API client."""
 
-    async def get_course_members(self, **kwargs) -> list:
-        """Get course members."""
+    async def list(self, **kwargs) -> list:
+        """List course members with optional filters."""
         ...
 
 
 class TriggerChecker:
     """
-    Checks if the tutor agent should respond based on message tags.
+    Checks if the tutor agent should respond based on message tags and reply chains.
 
     The tutor should respond when:
-    1. A message has a configured request tag (e.g., #ai::request)
-    2. No response with the response tag exists yet for that submission group
-    3. A new submission artifact with submit=True is created (if enabled)
+    1. A message has a configured request tag (starts new conversation)
+    2. An unread reply exists to a message chain where AI already responded
+    3. A new submission artifact with submit=True is created
+
+    No external conversation state is needed - the message chain (parent_id links)
+    defines the conversation, and AI response tags identify where the AI participated.
 
     Usage:
-        config = TriggerConfig(
-            request_tags=[TriggerTag(scope="ai", value="request")],
-            response_tag=TriggerTag(scope="ai", value="response"),
-        )
         checker = TriggerChecker(messages_client, course_members_client, config)
 
-        # Check if should respond to messages in a submission group
+        # Check for triggers in a submission group
         result = await checker.check_message_trigger(submission_group_id, course_id)
-        if result.should_respond:
-            # Process result.message_trigger
-            pass
     """
 
     def __init__(
@@ -136,11 +152,11 @@ class TriggerChecker:
         course_id: str,
     ) -> TriggerCheckResult:
         """
-        Check if the tutor should respond based on message tags.
+        Check if the tutor should respond to messages.
 
-        The tutor should respond when:
-        - A message in the submission group has a configured request tag
-        - No message with the response tag exists yet (to avoid duplicates)
+        Checks for:
+        1. New messages with request tags (starts conversation)
+        2. Unread replies in conversations where AI already participated
 
         Args:
             submission_group_id: The submission group to check
@@ -156,79 +172,23 @@ class TriggerChecker:
             )
 
         try:
-            # First, check if we already responded (has response tag)
-            existing_responses = await self.messages.list(
-                submission_group_id=submission_group_id,
-                tag_scope=self.config.response_tag.scope,
+            # Step 1: Check for new messages with request tags
+            result = await self._check_new_conversation_trigger(
+                submission_group_id, course_id
             )
+            if result.should_respond:
+                return result
 
-            # Filter to only messages with the exact response tag
-            response_tag = self.config.response_tag_string
-            has_response = any(
-                response_tag in (getattr(m, "title", "") or "")
-                for m in existing_responses
+            # Step 2: Check for follow-up replies to AI responses
+            result = await self._check_follow_up_trigger(
+                submission_group_id, course_id
             )
-
-            if has_response:
-                return TriggerCheckResult(
-                    should_respond=False,
-                    reason=f"Already responded (found #{response_tag} tag)",
-                )
-
-            # Query for messages with request tags
-            request_messages = await self.messages.list(
-                submission_group_id=submission_group_id,
-                tags=self.config.request_tag_strings,
-                tags_match_all=self.config.require_all_tags,
-            )
-
-            if not request_messages:
-                return TriggerCheckResult(
-                    should_respond=False,
-                    reason="No messages with request tags found",
-                )
-
-            # Sort by created_at (oldest first to process in order)
-            messages_sorted = sorted(
-                request_messages,
-                key=lambda m: getattr(m, "created_at", datetime.min) or datetime.min,
-            )
-
-            # Get the oldest request message
-            message = messages_sorted[0]
-            author_id = getattr(message, "author_id", "")
-
-            # Get author info
-            author_role = ""
-            author_course_member_id = ""
-
-            # Try to get author_course_member info if available
-            author_cm = getattr(message, "author_course_member", None)
-            if author_cm:
-                author_role = getattr(author_cm, "course_role_id", "") or ""
-                author_course_member_id = getattr(author_cm, "id", "") or ""
-            else:
-                # Fall back to looking up course member
-                course_member = await self._get_course_member_by_user_id(
-                    author_id, course_id
-                )
-                if course_member:
-                    author_role = getattr(course_member, "course_role_id", "") or ""
-                    author_course_member_id = getattr(course_member, "id", "") or ""
+            if result.should_respond:
+                return result
 
             return TriggerCheckResult(
-                should_respond=True,
-                reason=f"Found message with request tag(s): {self.config.request_tag_strings}",
-                message_trigger=MessageTrigger(
-                    message_id=getattr(message, "id", ""),
-                    submission_group_id=submission_group_id,
-                    author_id=author_id,
-                    author_course_member_id=author_course_member_id,
-                    author_role=author_role,
-                    content=getattr(message, "content", "") or "",
-                    title=getattr(message, "title", "") or "",
-                    created_at=getattr(message, "created_at", None),
-                ),
+                should_respond=False,
+                reason="No new request tags or follow-ups found",
             )
 
         except Exception as e:
@@ -238,6 +198,219 @@ class TriggerChecker:
                 reason=f"Error checking trigger: {e}",
             )
 
+    async def _check_new_conversation_trigger(
+        self,
+        submission_group_id: str,
+        course_id: str,
+    ) -> TriggerCheckResult:
+        """Check for new messages with request tags that start a conversation."""
+
+        # Query for messages with request tags
+        request_messages = await self.messages.list(
+            submission_group_id=submission_group_id,
+            tags=self.config.request_tag_strings,
+            tags_match_all=self.config.require_all_tags,
+            unread=True,  # Only unread messages
+        )
+
+        if not request_messages:
+            return TriggerCheckResult(
+                should_respond=False,
+                reason="No unread messages with request tags found",
+            )
+
+        # Sort by created_at (oldest first to process in order)
+        messages_sorted = sorted(
+            request_messages,
+            key=lambda m: getattr(m, "created_at", datetime.min) or datetime.min,
+        )
+
+        # Get the oldest unread request message
+        message = messages_sorted[0]
+        message_id = getattr(message, "id", "")
+
+        # Build trigger info
+        trigger = await self._build_message_trigger(
+            message, submission_group_id, course_id
+        )
+        trigger.root_message_id = message_id  # This message is the root
+        trigger.is_follow_up = False
+
+        return TriggerCheckResult(
+            should_respond=True,
+            reason=f"New conversation: message with request tag(s): {self.config.request_tag_strings}",
+            message_trigger=trigger,
+            root_message_id=message_id,
+        )
+
+    async def _check_follow_up_trigger(
+        self,
+        submission_group_id: str,
+        course_id: str,
+    ) -> TriggerCheckResult:
+        """
+        Check for unread follow-up messages in conversations where AI participated.
+
+        The AI should respond to any unread reply in a chain where:
+        - The AI previously responded (message has response_tag in title)
+        - The reply is from a student (not staff)
+        """
+
+        # Get all unread messages in this submission group
+        unread_messages = await self.messages.list(
+            submission_group_id=submission_group_id,
+            unread=True,
+        )
+
+        if not unread_messages:
+            return TriggerCheckResult(
+                should_respond=False,
+                reason="No unread messages",
+            )
+
+        # Find messages that are replies (have parent_id)
+        for message in unread_messages:
+            parent_id = getattr(message, "parent_id", None)
+            if not parent_id:
+                continue
+
+            # Check if author is a student (not staff/agent)
+            author_role = await self._get_author_role_from_message(message, course_id)
+            if author_role in STAFF_ROLES:
+                continue
+
+            # Trace up the chain to find if AI participated
+            root_id = await self._find_ai_conversation_root(parent_id)
+
+            if root_id:
+                # Found a conversation where AI participated - respond to this follow-up
+                trigger = await self._build_message_trigger(
+                    message, submission_group_id, course_id
+                )
+                trigger.root_message_id = root_id
+                trigger.parent_id = parent_id
+                trigger.is_follow_up = True
+
+                return TriggerCheckResult(
+                    should_respond=True,
+                    reason=f"Follow-up reply in conversation (root: {root_id})",
+                    message_trigger=trigger,
+                    root_message_id=root_id,
+                )
+
+        return TriggerCheckResult(
+            should_respond=False,
+            reason="No follow-up messages requiring response",
+        )
+
+    async def _find_ai_conversation_root(
+        self,
+        message_id: str,
+        max_depth: int = 50,
+    ) -> Optional[str]:
+        """
+        Trace up the parent chain to find the root of a conversation where AI participated.
+
+        The AI participated if any message in the chain has:
+        - The response_tag in its title (AI's own response)
+        - A request_tag in its title (conversation start)
+
+        Args:
+            message_id: The message ID to start from (parent of the new message)
+            max_depth: Maximum depth to traverse (prevents infinite loops)
+
+        Returns:
+            The root message ID if AI participated, None otherwise
+        """
+        current_id = message_id
+        visited = set()
+        found_ai_response = False
+        root_id = None
+
+        for _ in range(max_depth):
+            if current_id in visited:
+                break
+            visited.add(current_id)
+
+            try:
+                message = await self.messages.get(id=current_id)
+                title = getattr(message, "title", "") or ""
+                parent_id = getattr(message, "parent_id", None)
+
+                # Check if this message is an AI response
+                if self.config.response_tag_string in title:
+                    found_ai_response = True
+
+                # Check if this message has a request tag (conversation start)
+                for tag in self.config.request_tag_strings:
+                    if tag in title:
+                        root_id = current_id
+                        break
+
+                if not parent_id:
+                    # Reached the root of the chain
+                    if root_id is None:
+                        root_id = current_id
+                    break
+
+                current_id = parent_id
+
+            except Exception as e:
+                logger.warning(f"Failed to get message {current_id}: {e}")
+                break
+
+        # Only return root if AI participated in this conversation
+        return root_id if found_ai_response else None
+
+    async def _build_message_trigger(
+        self,
+        message,
+        submission_group_id: str,
+        course_id: str,
+    ) -> MessageTrigger:
+        """Build a MessageTrigger from a message object."""
+        author_id = getattr(message, "author_id", "")
+        author_role = ""
+        author_course_member_id = ""
+
+        # Try to get author info from embedded data
+        author_cm = getattr(message, "author_course_member", None)
+        if author_cm:
+            author_role = getattr(author_cm, "course_role_id", "") or ""
+            author_course_member_id = getattr(author_cm, "id", "") or ""
+        else:
+            # Fall back to lookup
+            course_member = await self._get_course_member_by_user_id(author_id, course_id)
+            if course_member:
+                author_role = getattr(course_member, "course_role_id", "") or ""
+                author_course_member_id = getattr(course_member, "id", "") or ""
+
+        return MessageTrigger(
+            message_id=getattr(message, "id", ""),
+            submission_group_id=submission_group_id,
+            author_id=author_id,
+            author_course_member_id=author_course_member_id,
+            author_role=author_role,
+            content=getattr(message, "content", "") or "",
+            title=getattr(message, "title", "") or "",
+            created_at=getattr(message, "created_at", None),
+            parent_id=getattr(message, "parent_id", None),
+        )
+
+    async def _get_author_role_from_message(self, message, course_id: str) -> str:
+        """Get the author's role from a message."""
+        author_cm = getattr(message, "author_course_member", None)
+        if author_cm:
+            return getattr(author_cm, "course_role_id", "") or ""
+
+        author_id = getattr(message, "author_id", "")
+        if author_id:
+            course_member = await self._get_course_member_by_user_id(author_id, course_id)
+            if course_member:
+                return getattr(course_member, "course_role_id", "") or ""
+
+        return ""
+
     async def check_submission_trigger(
         self,
         submission_group_id: str,
@@ -245,9 +418,6 @@ class TriggerChecker:
     ) -> TriggerCheckResult:
         """
         Check if a submission artifact should trigger a review.
-
-        Also checks if a response already exists (via response tag) to avoid
-        duplicate reviews.
 
         Args:
             submission_group_id: The submission group
@@ -289,7 +459,6 @@ class TriggerChecker:
                 )
         except Exception as e:
             logger.warning(f"Could not check for existing responses: {e}")
-            # Continue anyway - better to potentially duplicate than miss
 
         return TriggerCheckResult(
             should_respond=True,
@@ -304,17 +473,19 @@ class TriggerChecker:
             ),
         )
 
-    async def _get_course_member_by_user_id(
-        self,
-        user_id: str,
-        course_id: str,
-    ):
+    async def _get_course_member_by_user_id(self, user_id: str, course_id: str):
         """Get course member by user_id and course_id."""
         if not user_id or not course_id:
             return None
 
+        cache_key = f"{user_id}:{course_id}"
+        if cache_key in self._role_cache:
+            # Note: cache stores role string, not full course_member
+            # For full object, we need to fetch anyway
+            pass
+
         try:
-            members = await self.course_members.get_course_members(
+            members = await self.course_members.list(
                 user_id=user_id,
                 course_id=course_id,
             )
