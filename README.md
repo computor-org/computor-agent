@@ -213,6 +213,108 @@ For the Tutor AI Agent, we recommend these models based on your use case:
 
 Start with a smaller model to test, then upgrade if you need better quality responses.
 
+## Tutor AI Agent
+
+The Tutor AI Agent is an autonomous agent that monitors student submissions and messages, responding automatically using an LLM. It's designed for educational platforms where students can request AI assistance.
+
+### Quick Start
+
+```bash
+# Start the tutor agent with config file in current directory
+computor-agent tutor
+
+# Use specific config file
+computor-agent tutor -c ~/.computor/config.yaml
+
+# Verbose mode for debugging
+computor-agent tutor -v
+
+# Dry run (logs what would happen without sending responses)
+computor-agent tutor --dry-run
+```
+
+### Configuration
+
+All settings are in a single `config.yaml` file. See `examples/config.example.yaml` for a complete template.
+
+```yaml
+# Backend API connection
+backend:
+  url: https://api.computor.example.com
+  api_token: ctp_your_api_token_here  # or use username/password
+
+# LLM provider settings
+llm:
+  provider: ollama
+  model: qwen2.5-coder:7b
+  base_url: http://localhost:11434/v1
+
+# Git credentials for accessing student repositories
+credentials:
+  - pattern: https://gitlab.example.com
+    token: glpat-your-token
+
+# Tutor agent behavior
+tutor:
+  personality:
+    name: "Tutor AI"
+    tone: "friendly_professional"
+
+  # IMPORTANT: Enable for automatic grading
+  grading:
+    enabled: true
+    auto_submit_grade: true
+
+  # Message triggers
+  triggers:
+    request_tags:
+      - scope: "ai"
+        value: "request"
+    check_submissions: true
+```
+
+### How It Works
+
+**Two Approaches:**
+
+1. **Message-Based Help**: Students add `#ai::request` to message titles to request help. The agent responds in the message thread.
+
+2. **Submission Review**: When students submit work (`submit=True`), the agent automatically reviews and grades it via the tutors API endpoint.
+
+**Processing Flow:**
+
+1. **Polling**: Agent polls for ungraded submissions and tagged messages
+2. **Security Gate**: Checks for prompt injection attempts
+3. **Intent Classification**: Determines student needs (question, debug, review)
+4. **Response Generation**: Uses LLM to generate appropriate response
+5. **Grade Submission**: For submissions, posts grade via `PATCH /tutors/course-members/{id}/course-contents/{id}`
+
+### CLI Options
+
+```
+Usage: computor-agent tutor [OPTIONS]
+
+Options:
+  -c, --config PATH  Path to config file (default: config.yaml)
+  -v, --verbose      Enable verbose logging
+  --dry-run          Don't send responses, just log what would happen
+  --help             Show this message and exit
+```
+
+### Example Workflow
+
+**Message Help:**
+1. **Student** creates message: `Help with my code #ai::request`
+2. **Agent** detects tag and responds in thread
+3. **Student** replies (no tag needed for follow-ups)
+4. **Agent** continues conversation automatically
+
+**Submission Grading:**
+1. **Student** submits work with `submit=True`
+2. **Agent** detects via `/tutors/submission-groups?has_ungraded_submissions=true`
+3. **Agent** reviews code, runs analysis
+4. **Agent** submits grade via tutors endpoint
+
 ## Configuration
 
 ### Environment Variables
