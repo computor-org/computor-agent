@@ -1,24 +1,37 @@
-# Computor Agent configuration
+# Computor Agent Configuration
 #
 # Copy this file to ~/.computor/config.yaml and update with your settings.
 # Make sure to set proper permissions: chmod 600 ~/.computor/config.yaml
 #
-# Required: backend configuration for API authentication
-# Optional: agent identity and LLM settings
+# This is the single configuration file for the entire agent, including:
+# - Backend API authentication
+# - LLM provider settings
+# - Git credentials for repository access
+# - Tutor agent behavior and settings
 
-# Backend API configuration (required)
+# =============================================================================
+# BACKEND API CONFIGURATION (required)
+# =============================================================================
 backend:
   url: https://api.computor.example.com
-  username: tutor-agent
-  password: your-secret-password
-  timeout: 30  # HTTP request timeout in seconds (optional, default: 30)
+  # Choose ONE authentication method:
+  # Option 1: API Token (recommended)
+  api_token: ctp_your-api-token-here
+  # Option 2: Username/Password
+  # username: tutor-agent
+  # password: your-secret-password
+  timeout: 30  # HTTP request timeout in seconds
 
-# Agent identity (optional)
+# =============================================================================
+# AGENT IDENTITY (optional)
+# =============================================================================
 agent:
   name: Tutor AI
   description: Automated grading assistant for course submissions
 
-# LLM configuration (optional - for AI-powered features)
+# =============================================================================
+# LLM CONFIGURATION (required for tutor)
+# =============================================================================
 llm:
   provider: openai  # openai, ollama, lmstudio, dummy
   model: gpt-4
@@ -26,3 +39,113 @@ llm:
   # api_key: sk-xxx  # Required for OpenAI, optional for local providers
   temperature: 0.7
   # max_tokens: 4096  # Optional token limit
+
+# =============================================================================
+# GIT CREDENTIALS (required for accessing student repositories)
+# =============================================================================
+# Scope is automatically inferred from the pattern:
+#   - No path (e.g., https://gitlab.com) -> matches ALL repos on that host
+#   - One path segment (e.g., https://gitlab.com/group) -> matches repos in that group
+#   - Two+ segments (e.g., https://gitlab.com/group/repo) -> matches exact repository
+# More specific patterns always take precedence over less specific ones.
+credentials:
+  # Host-level: matches all repos on gitlab.example.com
+  - pattern: https://gitlab.example.com
+    token: glpat-your-gitlab-token-here
+
+  # Group-level: matches repos in the course-2024-ws group
+  - pattern: https://gitlab.example.com/course-2024-ws
+    token: glpat-course-specific-token
+
+  # GitHub (provider auto-detected from hostname)
+  - pattern: https://github.com
+    token: ghp-your-github-token-here
+
+# =============================================================================
+# TUTOR AGENT CONFIGURATION
+# =============================================================================
+tutor:
+  # Personality - how the tutor presents itself
+  personality:
+    name: "Tutor AI"
+    tone: "friendly_professional"  # friendly_professional, strict, casual, encouraging
+    language: "en"  # ISO 639-1 language code
+
+  # Security - threat detection and blocking
+  security:
+    enabled: true
+    require_confirmation: true  # Use 2nd LLM call to confirm threats
+    block_on_threat: true       # Block response if threat confirmed
+    check_messages: true        # Check student messages for prompt injection
+    check_code: true            # Check code for malicious content
+
+  # Context - what information to include
+  context:
+    include_previous_messages: 3  # Number of previous messages (0-20)
+    include_course_member_comments: true
+    include_reference_solution: false
+    max_code_lines: 1000
+    max_code_files: 20
+
+  # Grading - automated grade assignment
+  # IMPORTANT: Set enabled and auto_submit_grade to true for automatic grading!
+  grading:
+    enabled: true               # Enable grading for submissions
+    auto_submit_grade: true     # Automatically submit grade via API
+    default_status: 1           # 0=NOT_REVIEWED, 1=CORRECTED, 2=CORRECTION_NECESSARY, 3=IMPROVEMENT_POSSIBLE
+    require_human_review: false # Flag for human review after grading
+
+  # Triggers - when the agent responds
+  triggers:
+    # Tags that trigger the agent to respond to messages
+    request_tags:
+      - scope: "ai"
+        value: "request"
+    # Tag added to agent responses
+    response_tag:
+      scope: "ai"
+      value: "response"
+    # Also trigger on new submission artifacts
+    check_submissions: true
+
+  # Notes - AI's memory across sessions
+  notes:
+    enabled: true
+    max_notes_in_context: 3
+
+  # Strategy-specific settings
+  strategies:
+    question_example:
+      enabled: true
+      max_response_tokens: 1000
+      temperature: 0.7
+
+    question_howto:
+      enabled: true
+      max_response_tokens: 1000
+      temperature: 0.7
+
+    help_debug:
+      enabled: true
+      max_response_tokens: 1500
+      temperature: 0.5
+
+    help_review:
+      enabled: true
+      max_response_tokens: 1500
+      temperature: 0.5
+
+    submission_review:
+      enabled: true
+      max_response_tokens: 2000
+      temperature: 0.5
+
+    clarification:
+      enabled: true
+      max_response_tokens: 800
+      temperature: 0.7
+
+    other:
+      enabled: true
+      max_response_tokens: 1000
+      temperature: 0.7
