@@ -492,6 +492,10 @@ class TutorConfig(BaseModel):
         default_factory=TriggerConfig,
         description="Tag-based trigger detection settings",
     )
+    scheduler: Optional[dict] = Field(
+        default=None,
+        description="Scheduler configuration (SchedulerConfig dict). Loaded separately by CLI.",
+    )
     notes: NotesConfig = Field(
         default_factory=NotesConfig,
         description="AI note-taking (memory) settings",

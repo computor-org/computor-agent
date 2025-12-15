@@ -546,7 +546,7 @@ async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bo
 
     from computor_agent.llm.config import LLMConfig, ProviderType
     from computor_agent.llm.factory import get_provider
-    from computor_agent.tutor import TutorAgent, TutorScheduler, SchedulerConfig, TutorClientAdapter, TutorLLMAdapter
+    from computor_agent.tutor import TutorAgent, TutorScheduler, SchedulerConfig, TutorLLMAdapter
 
     logger = logging.getLogger(__name__)
 
@@ -588,23 +588,20 @@ async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bo
                 console.print(f"[bold red]Authentication failed:[/bold red] {e}")
                 sys.exit(1)
 
-        # Wrap client with adapter for TutorAgent compatibility
-        tutor_client = TutorClientAdapter(client)
-
-        # Create tutor agent
+        # Create tutor agent (uses ComputorClient directly)
         agent = TutorAgent(
             config=tutor_config,
             llm=tutor_llm,
-            client=tutor_client,
+            client=client,
         )
 
-        # Create scheduler
-        scheduler_config = SchedulerConfig(
-            enabled=True,
-            poll_interval_seconds=tutor_config.scheduler.poll_interval_seconds
-            if hasattr(tutor_config, "scheduler") and tutor_config.scheduler
-            else 30,
-        )
+        # Create scheduler config from tutor config or defaults
+        if tutor_config.scheduler:
+            scheduler_config = SchedulerConfig.model_validate(tutor_config.scheduler)
+            logger.info(f"Scheduler config: poll={scheduler_config.poll_interval_seconds}s, cache={scheduler_config.cache.enabled}")
+        else:
+            scheduler_config = SchedulerConfig()
+            logger.info("Using default scheduler config")
 
         async def on_message_trigger(result, submission_group):
             logger.info(f"Processing message trigger: {result.reason}")
@@ -635,11 +632,11 @@ async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bo
                 "id": result.submission_trigger.artifact_id,
             }
 
-            # Extract course_member_id and course_content_id from enriched submission group
+            # Extract course_member_id and course_content_id from TutorSubmissionGroupGet
             # These are needed for the tutors grading endpoint
-            course_content_id = submission_group.get("course_content_id")
-            members = submission_group.get("members", [])
-            course_member_id = members[0].get("course_member_id") if members else None
+            course_content_id = submission_group.course_content_id
+            members = submission_group.members or []
+            course_member_id = members[0].course_member_id if members else None
 
             logger.debug(
                 f"Submission details: artifact={result.submission_trigger.artifact_id}, "

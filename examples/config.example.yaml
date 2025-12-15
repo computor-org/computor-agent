@@ -108,6 +108,21 @@ tutor:
     # Also trigger on new submission artifacts
     check_submissions: true
 
+  # Scheduler - polling and caching configuration
+  scheduler:
+    enabled: true
+    poll_interval_seconds: 30       # How often to poll (5-3600)
+    max_concurrent_processing: 5    # Max concurrent submissions (1-50)
+    cooldown_seconds: 60            # Min time between processing same group
+    check_messages: true            # Check for tagged messages
+    check_submissions: true         # Check for ungraded submissions
+
+    # Cache - reduce API calls by caching course member data
+    cache:
+      enabled: true
+      course_members_ttl_seconds: 10800  # 3 hours - how long to cache member list
+      course_content_ttl_seconds: 300    # 5 minutes - how long to cache content details
+
   # Notes - AI's memory across sessions
   notes:
     enabled: true

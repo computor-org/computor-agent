@@ -16,7 +16,12 @@ Conversation model:
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Protocol
+from typing import Optional, Protocol, Union
+
+# Import API types from computor-types (source of truth)
+from computor_types.artifacts import SubmissionArtifactList
+from computor_types.course_members import CourseMemberList
+from computor_types.messages import MessageGet, MessageList
 
 from computor_agent.tutor.config import TriggerConfig
 
@@ -89,11 +94,11 @@ class TriggerCheckResult:
 class MessagesClientProtocol(Protocol):
     """Protocol for the messages API client."""
 
-    async def list(self, **kwargs) -> list:
+    async def list(self, **kwargs) -> list[MessageList]:
         """List messages with optional filters."""
         ...
 
-    async def get(self, id: str, **kwargs):
+    async def get(self, id: str, **kwargs) -> MessageGet:
         """Get a single message by ID."""
         ...
 
@@ -101,7 +106,7 @@ class MessagesClientProtocol(Protocol):
 class CourseMembersClientProtocol(Protocol):
     """Protocol for the course_members API client."""
 
-    async def list(self, **kwargs) -> list:
+    async def list(self, **kwargs) -> list[CourseMemberList]:
         """List course members with optional filters."""
         ...
 
@@ -364,64 +369,66 @@ class TriggerChecker:
 
     async def _build_message_trigger(
         self,
-        message,
+        message: Union[MessageList, MessageGet],
         submission_group_id: str,
         course_id: str,
     ) -> MessageTrigger:
-        """Build a MessageTrigger from a message object."""
-        author_id = getattr(message, "author_id", "")
+        """Build a MessageTrigger from a MessageList or MessageGet object."""
+        author_id = message.author_id
         author_role = ""
         author_course_member_id = ""
 
-        # Try to get author info from embedded data
-        author_cm = getattr(message, "author_course_member", None)
+        # Try to get author info from embedded data (MessageAuthorCourseMember)
+        author_cm = message.author_course_member
         if author_cm:
-            author_role = getattr(author_cm, "course_role_id", "") or ""
-            author_course_member_id = getattr(author_cm, "id", "") or ""
+            author_role = author_cm.course_role_id or ""
+            author_course_member_id = author_cm.id or ""
         else:
             # Fall back to lookup
             course_member = await self._get_course_member_by_user_id(author_id, course_id)
             if course_member:
-                author_role = getattr(course_member, "course_role_id", "") or ""
-                author_course_member_id = getattr(course_member, "id", "") or ""
+                author_role = course_member.course_role_id or ""
+                author_course_member_id = course_member.id or ""
 
         return MessageTrigger(
-            message_id=getattr(message, "id", ""),
+            message_id=message.id,
             submission_group_id=submission_group_id,
             author_id=author_id,
             author_course_member_id=author_course_member_id,
             author_role=author_role,
-            content=getattr(message, "content", "") or "",
-            title=getattr(message, "title", "") or "",
-            created_at=getattr(message, "created_at", None),
-            parent_id=getattr(message, "parent_id", None),
+            content=message.content or "",
+            title=message.title or "",
+            created_at=message.created_at if hasattr(message, "created_at") else None,
+            parent_id=message.parent_id,
         )
 
-    async def _get_author_role_from_message(self, message, course_id: str) -> str:
+    async def _get_author_role_from_message(
+        self, message: Union[MessageList, MessageGet], course_id: str
+    ) -> str:
         """Get the author's role from a message."""
-        author_cm = getattr(message, "author_course_member", None)
+        author_cm = message.author_course_member
         if author_cm:
-            return getattr(author_cm, "course_role_id", "") or ""
+            return author_cm.course_role_id or ""
 
-        author_id = getattr(message, "author_id", "")
+        author_id = message.author_id
         if author_id:
             course_member = await self._get_course_member_by_user_id(author_id, course_id)
             if course_member:
-                return getattr(course_member, "course_role_id", "") or ""
+                return course_member.course_role_id or ""
 
         return ""
 
     async def check_submission_trigger(
         self,
         submission_group_id: str,
-        artifact: dict,
+        artifact: Union[SubmissionArtifactList, dict],
     ) -> TriggerCheckResult:
         """
         Check if a submission artifact should trigger a review.
 
         Args:
             submission_group_id: The submission group
-            artifact: The submission artifact dict (must have submit=True)
+            artifact: The submission artifact (SubmissionArtifactList or dict with submit=True)
 
         Returns:
             TriggerCheckResult indicating if/why to respond
@@ -432,8 +439,24 @@ class TriggerChecker:
                 reason="Submission triggers are disabled",
             )
 
+        # Handle both typed object and dict
+        if isinstance(artifact, dict):
+            submit_flag = artifact.get("submit", False)
+            artifact_id = artifact.get("id", "")
+            uploaded_by = artifact.get("uploaded_by_course_member_id")
+            version_id = artifact.get("version_identifier")
+            file_size = artifact.get("file_size", 0)
+            uploaded_at = artifact.get("uploaded_at")
+        else:
+            submit_flag = artifact.submit if hasattr(artifact, "submit") else False
+            artifact_id = artifact.id
+            uploaded_by = artifact.uploaded_by_course_member_id if hasattr(artifact, "uploaded_by_course_member_id") else None
+            version_id = artifact.version_identifier if hasattr(artifact, "version_identifier") else None
+            file_size = artifact.file_size if hasattr(artifact, "file_size") else 0
+            uploaded_at = artifact.uploaded_at if hasattr(artifact, "uploaded_at") else None
+
         # Check if this is an official submission
-        if not artifact.get("submit", False):
+        if not submit_flag:
             return TriggerCheckResult(
                 should_respond=False,
                 reason="Artifact is not marked as submit=True",
@@ -448,7 +471,7 @@ class TriggerChecker:
 
             response_tag = self.config.response_tag_string
             has_response = any(
-                response_tag in (getattr(m, "title", "") or "")
+                response_tag in (m.title or "")
                 for m in existing_responses
             )
 
@@ -464,16 +487,18 @@ class TriggerChecker:
             should_respond=True,
             reason="New submission artifact with submit=True",
             submission_trigger=SubmissionTrigger(
-                artifact_id=artifact.get("id", ""),
+                artifact_id=artifact_id,
                 submission_group_id=submission_group_id,
-                uploaded_by_course_member_id=artifact.get("uploaded_by_course_member_id"),
-                version_identifier=artifact.get("version_identifier"),
-                file_size=artifact.get("file_size", 0),
-                uploaded_at=artifact.get("uploaded_at"),
+                uploaded_by_course_member_id=uploaded_by,
+                version_identifier=version_id,
+                file_size=file_size,
+                uploaded_at=uploaded_at,
             ),
         )
 
-    async def _get_course_member_by_user_id(self, user_id: str, course_id: str):
+    async def _get_course_member_by_user_id(
+        self, user_id: str, course_id: str
+    ) -> Optional[CourseMemberList]:
         """Get course member by user_id and course_id."""
         if not user_id or not course_id:
             return None

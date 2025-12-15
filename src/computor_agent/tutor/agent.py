@@ -10,6 +10,8 @@ This is the main entry point for tutor functionality. It:
 
 Note: The agent does NOT schedule itself. A separate scheduler
 should call process_message() or process_submission() when needed.
+
+Uses ComputorClient from computor-client package directly.
 """
 
 import logging
@@ -17,7 +19,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Any, Optional, Protocol, Union
+
+# Import API types from computor-types (source of truth)
+from computor_types.messages import MessageCreate, MessageGet
+from computor_types.tutor_grading import TutorGradeCreate, TutorGradeResponse
 
 from computor_agent.tutor.config import TutorConfig
 from computor_agent.tutor.context import ConversationContext
@@ -41,74 +47,6 @@ class LLMClient(Protocol):
         temperature: float = 0.7,
     ) -> str:
         """Generate a completion for the given prompt."""
-        ...
-
-
-class ComputorClientProtocol(Protocol):
-    """Protocol for the Computor API client."""
-
-    async def get_submission_group(self, submission_group_id: str) -> dict:
-        """Get submission group details."""
-        ...
-
-    async def get_messages(self, submission_group_id: str) -> list[dict]:
-        """Get messages for a submission group."""
-        ...
-
-    async def get_course_member_comments(self, course_member_id: str) -> list[dict]:
-        """Get comments for a course member."""
-        ...
-
-    async def get_course_content(self, course_content_id: str) -> dict:
-        """Get course content (assignment) details."""
-        ...
-
-    async def get_course_members(self, submission_group_id: str) -> list[dict]:
-        """Get course members for a submission group."""
-        ...
-
-    async def create_message(
-        self,
-        submission_group_id: str,
-        content: str,
-        title: str = "",
-        parent_id: Optional[str] = None,
-    ) -> dict:
-        """Create a message in a submission group."""
-        ...
-
-    async def update_submission_grading(
-        self,
-        submission_group_id: str,
-        status: int,
-        grade: Optional[float] = None,
-        comment: Optional[str] = None,
-    ) -> dict:
-        """Update grading for a submission (deprecated, use submit_tutor_grade)."""
-        ...
-
-    async def submit_tutor_grade(
-        self,
-        course_member_id: str,
-        course_content_id: str,
-        grade: float,
-        status: int,
-        feedback: str,
-        artifact_id: Optional[str] = None,
-    ) -> dict:
-        """Submit a grade via the tutors endpoint."""
-        ...
-
-    async def get_student_course_content(
-        self,
-        course_member_id: str,
-        course_content_id: str,
-    ) -> dict:
-        """Get student's work and test results via tutor endpoint."""
-        ...
-
-    async def mark_message_read(self, message_id: str) -> None:
-        """Mark a message as read."""
         ...
 
 
@@ -165,30 +103,37 @@ class TutorAgent:
     The agent is stateless - each call processes a single interaction
     with a fresh context that is destroyed after use.
 
+    Uses ComputorClient from computor-client package directly.
+
     Usage:
-        agent = TutorAgent(
-            config=config,
-            llm=llm_client,
-            client=computor_client,
-        )
+        from computor_client import ComputorClient
 
-        # Process a message
-        result = await agent.process_message(
-            submission_group_id="...",
-            message={...},
-            repository_path=Path("/path/to/repo"),
-        )
+        async with ComputorClient(base_url=url) as client:
+            await client.login(username=user, password=password)
 
-        if result.success and not result.blocked_by_security:
-            # Message was sent to student
-            pass
+            agent = TutorAgent(
+                config=config,
+                llm=llm_client,
+                client=client,
+            )
+
+            # Process a message
+            result = await agent.process_message(
+                submission_group_id="...",
+                message={...},
+                repository_path=Path("/path/to/repo"),
+            )
+
+            if result.success and not result.blocked_by_security:
+                # Message was sent to student
+                pass
     """
 
     def __init__(
         self,
         config: TutorConfig,
         llm: LLMClient,
-        client: ComputorClientProtocol,
+        client: Any,  # ComputorClient from computor-client
     ) -> None:
         """
         Initialize the tutor agent.
@@ -196,7 +141,7 @@ class TutorAgent:
         Args:
             config: Complete tutor configuration
             llm: LLM client for all AI operations
-            client: Computor API client
+            client: ComputorClient instance from computor-client package
         """
         self.config = config
         self.llm = llm
@@ -300,20 +245,24 @@ class TutorAgent:
                 # Reply to the triggering message to create a chain
                 parent_id = reply_to_message_id or message.get("id")
 
-                created_message = await self.client.create_message(
-                    submission_group_id=submission_group_id,
-                    content=response.message_content,
-                    title=formatted_title,
-                    parent_id=parent_id,
-                )
+                # Use ComputorClient.messages.create() directly
+                message_data: dict[str, Any] = {
+                    "submission_group_id": submission_group_id,
+                    "content": response.message_content,
+                    "title": formatted_title,
+                }
+                if parent_id:
+                    message_data["parent_id"] = parent_id
+
+                created_message = await self.client.messages.create(data=message_data)
                 message_sent = True
-                response_message_id = created_message.get("id")
+                response_message_id = created_message.id
 
             # Mark the original message as read to prevent re-processing
             message_id = message.get("id")
             if message_id:
                 try:
-                    await self.client.mark_message_read(message_id)
+                    await self.client.messages.reads(id=message_id)
                 except Exception as e:
                     logger.warning(f"Failed to mark message {message_id} as read: {e}")
 
@@ -437,11 +386,13 @@ class TutorAgent:
                 formatted_title = self._format_response_title(
                     response.message_title, default="Submission Review"
                 )
-                await self.client.create_message(
-                    submission_group_id=submission_group_id,
-                    content=response.message_content,
-                    title=formatted_title,
-                )
+                # Use ComputorClient.messages.create() directly
+                message_data: dict[str, Any] = {
+                    "submission_group_id": submission_group_id,
+                    "content": response.message_content,
+                    "title": formatted_title,
+                }
+                await self.client.messages.create(data=message_data)
                 message_sent = True
 
             # Submit grade via tutors endpoint if configured and available
@@ -454,13 +405,20 @@ class TutorAgent:
                 # Use tutor grading endpoint if we have required IDs
                 if course_member_id and course_content_id:
                     try:
-                        await self.client.submit_tutor_grade(
+                        # Use ComputorClient.tutors.course_members_course_contents() directly
+                        grade_data: dict[str, Any] = {
+                            "grade": response.grade,
+                            "status": response.grade_status or self.config.grading.default_status,
+                            "feedback": response.grade_comment or "",
+                        }
+                        artifact_id = artifact.get("id")
+                        if artifact_id:
+                            grade_data["artifact_id"] = artifact_id
+
+                        await self.client.tutors.course_members_course_contents(
                             course_member_id=course_member_id,
                             course_content_id=course_content_id,
-                            grade=response.grade,
-                            status=response.grade_status or self.config.grading.default_status,
-                            feedback=response.grade_comment or "",
-                            artifact_id=artifact.get("id"),
+                            data=grade_data,
                         )
                         logger.info(
                             f"Grade submitted via tutors endpoint: "
@@ -469,12 +427,18 @@ class TutorAgent:
                         )
                     except Exception as e:
                         logger.warning(f"Failed to submit grade via tutors endpoint: {e}")
-                        # Fall back to old method
-                        await self.client.update_submission_grading(
-                            submission_group_id=submission_group_id,
-                            status=response.grade_status or self.config.grading.default_status,
-                            grade=response.grade,
-                            comment=response.grade_comment,
+                        # Fall back to submission_groups.update method
+                        update_data: dict[str, Any] = {
+                            "status": response.grade_status or self.config.grading.default_status,
+                        }
+                        if response.grade is not None:
+                            update_data["grade"] = response.grade
+                        if response.grade_comment is not None:
+                            update_data["comment"] = response.grade_comment
+
+                        await self.client.submission_groups.update(
+                            id=submission_group_id,
+                            data=update_data,
                         )
                 else:
                     # Fall back to old method if IDs not provided
@@ -482,11 +446,17 @@ class TutorAgent:
                         "course_member_id or course_content_id not provided, "
                         "using legacy grading method"
                     )
-                    await self.client.update_submission_grading(
-                        submission_group_id=submission_group_id,
-                        status=response.grade_status or self.config.grading.default_status,
-                        grade=response.grade,
-                        comment=response.grade_comment,
+                    update_data = {
+                        "status": response.grade_status or self.config.grading.default_status,
+                    }
+                    if response.grade is not None:
+                        update_data["grade"] = response.grade
+                    if response.grade_comment is not None:
+                        update_data["comment"] = response.grade_comment
+
+                    await self.client.submission_groups.update(
+                        id=submission_group_id,
+                        data=update_data,
                     )
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000

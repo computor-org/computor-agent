@@ -145,7 +145,7 @@ from computor_agent.tutor.trigger import (
     STAFF_ROLES,
 )
 from computor_agent.tutor.scheduler import TutorScheduler, SchedulerConfig
-from computor_agent.tutor.client_adapter import TutorClientAdapter, TutorLLMAdapter
+from computor_agent.tutor.client_adapter import TutorLLMAdapter
 from computor_agent.tutor.summary_store import SummaryStore, AgentNote
 
 __all__ = [
@@ -155,8 +155,7 @@ __all__ = [
     # Scheduler
     "TutorScheduler",
     "SchedulerConfig",
-    # Adapters
-    "TutorClientAdapter",
+    # Adapters (TutorClientAdapter removed - use ComputorClient directly)
     "TutorLLMAdapter",
     # Trigger detection
     "TriggerChecker",

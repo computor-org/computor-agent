@@ -19,9 +19,19 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Optional, Protocol, Set
+from typing import Callable, Generic, Optional, Protocol, Set, TypeVar, Union
 
 from pydantic import BaseModel, Field
+
+# Import API types from computor-types (source of truth)
+from computor_types.grading import GradingStatus
+from computor_types.student_course_contents import CourseContentStudentGet
+from computor_types.submission_groups import SubmissionGroupList
+from computor_types.tutor_course_members import TutorCourseMemberList
+from computor_types.tutor_submission_groups import (
+    TutorSubmissionGroupGet,
+    TutorSubmissionGroupList,
+)
 
 from computor_agent.tutor.config import TriggerConfig
 from computor_agent.tutor.trigger import (
@@ -31,7 +41,45 @@ from computor_agent.tutor.trigger import (
     STAFF_ROLES,
 )
 
+# Type variable for generic cache entries
+T = TypeVar("T")
+
 logger = logging.getLogger(__name__)
+
+
+class CacheConfig(BaseModel):
+    """Configuration for data caching."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable caching of course member data",
+    )
+    course_members_ttl_seconds: int = Field(
+        default=10800,  # 3 hours
+        ge=60,
+        le=86400,
+        description="How long to cache course member list (seconds)",
+    )
+    course_content_ttl_seconds: int = Field(
+        default=300,  # 5 minutes
+        ge=30,
+        le=3600,
+        description="How long to cache course content details (seconds)",
+    )
+    persist_to_file: bool = Field(
+        default=False,
+        description="Persist cache to file for restart survival",
+    )
+    cache_dir: Optional[Path] = Field(
+        default=None,
+        description="Directory for cache files (default: ~/.computor/cache)",
+    )
+
+    def get_cache_dir(self) -> Path:
+        """Get cache directory path."""
+        if self.cache_dir:
+            return Path(self.cache_dir).expanduser().resolve()
+        return Path("~/.computor/cache").expanduser().resolve()
 
 
 class SchedulerConfig(BaseModel):
@@ -66,13 +114,9 @@ class SchedulerConfig(BaseModel):
         default=True,
         description="Check for new submissions with submit=True",
     )
-    course_content_ids: Optional[list[str]] = Field(
-        default=None,
-        description="Limit to specific course content IDs (None = all)",
-    )
-    course_ids: Optional[list[str]] = Field(
-        default=None,
-        description="Limit to specific course IDs (None = all)",
+    cache: CacheConfig = Field(
+        default_factory=CacheConfig,
+        description="Cache configuration for reducing API calls",
     )
 
 
@@ -85,6 +129,120 @@ class ProcessingState:
     processing: bool = False
     last_message_id: Optional[str] = None
     last_artifact_id: Optional[str] = None
+
+
+@dataclass
+class CacheEntry(Generic[T]):
+    """Generic cache entry with timestamp and typed data."""
+
+    data: T
+    fetched_at: datetime = field(default_factory=datetime.now)
+
+
+class TutorCache:
+    """
+    Cache for tutor API data to reduce API calls.
+
+    Caches the actual API response types from computor-types:
+    - list[TutorCourseMemberList] from GET /tutors/course-members
+    - CourseContentStudentGet from GET /tutors/course-members/{id}/course-contents/{id}
+
+    TTL-based invalidation with configurable durations.
+    """
+
+    def __init__(self, config: CacheConfig) -> None:
+        self.config = config
+        # course_id -> CacheEntry containing list of TutorCourseMemberList
+        self._course_members: dict[str, CacheEntry[list[TutorCourseMemberList]]] = {}
+        # f"{course_member_id}:{course_content_id}" -> CacheEntry containing CourseContentStudentGet
+        self._course_contents: dict[str, CacheEntry[CourseContentStudentGet]] = {}
+
+    def _is_stale(self, entry: Optional[CacheEntry], ttl_seconds: int) -> bool:
+        """Check if a cache entry is stale."""
+        if not self.config.enabled or entry is None:
+            return True
+        ttl = timedelta(seconds=ttl_seconds)
+        return datetime.now() - entry.fetched_at > ttl
+
+    def get_course_members(self, course_id: str) -> Optional[list[TutorCourseMemberList]]:
+        """
+        Get cached course members if not stale.
+
+        Returns:
+            List of TutorCourseMemberList objects, or None if stale/missing
+        """
+        entry = self._course_members.get(course_id)
+        if self._is_stale(entry, self.config.course_members_ttl_seconds):
+            return None
+        return entry.data if entry else None
+
+    def set_course_members(self, course_id: str, members: list[TutorCourseMemberList]) -> None:
+        """
+        Cache course members.
+
+        Args:
+            course_id: Course ID
+            members: List of TutorCourseMemberList from GET /tutors/course-members
+        """
+        self._course_members[course_id] = CacheEntry(data=members)
+
+    def get_course_content(
+        self, course_member_id: str, course_content_id: str
+    ) -> Optional[CourseContentStudentGet]:
+        """
+        Get cached course content if not stale.
+
+        Returns:
+            CourseContentStudentGet object, or None if stale/missing
+        """
+        key = f"{course_member_id}:{course_content_id}"
+        entry = self._course_contents.get(key)
+        if self._is_stale(entry, self.config.course_content_ttl_seconds):
+            return None
+        return entry.data if entry else None
+
+    def set_course_content(
+        self, course_member_id: str, course_content_id: str, content: CourseContentStudentGet
+    ) -> None:
+        """
+        Cache course content.
+
+        Args:
+            course_member_id: Course member ID
+            course_content_id: Course content ID
+            content: CourseContentStudentGet from GET /tutors/course-members/{id}/course-contents/{id}
+        """
+        key = f"{course_member_id}:{course_content_id}"
+        self._course_contents[key] = CacheEntry(data=content)
+
+    def invalidate_course_content(self, course_member_id: str, course_content_id: str) -> None:
+        """Invalidate specific course content cache entry."""
+        key = f"{course_member_id}:{course_content_id}"
+        self._course_contents.pop(key, None)
+
+    def invalidate_course_members(self, course_id: str) -> None:
+        """Invalidate course members cache for a course."""
+        self._course_members.pop(course_id, None)
+
+    def clear(self) -> None:
+        """Clear all cached data."""
+        self._course_members.clear()
+        self._course_contents.clear()
+
+    def get_stats(self) -> dict:
+        """Get cache statistics."""
+        return {
+            "courses_cached": len(self._course_members),
+            "total_members_cached": sum(
+                len(e.data) for e in self._course_members.values() if e.data
+            ),
+            "course_contents_cached": len(self._course_contents),
+            "config": {
+                "enabled": self.config.enabled,
+                "course_members_ttl": self.config.course_members_ttl_seconds,
+                "course_content_ttl": self.config.course_content_ttl_seconds,
+            },
+        }
 
 
 class ComputorClientProtocol(Protocol):
@@ -152,9 +310,15 @@ class TutorScheduler:
             config: Scheduler configuration
             trigger_config: Tag-based trigger configuration (uses defaults if not provided)
             on_message_trigger: Async callback when message trigger detected
-                Signature: async def callback(trigger: TriggerCheckResult, submission_group: dict) -> None
+                Signature: async def callback(
+                    trigger: TriggerCheckResult,
+                    submission_group: SubmissionGroupList
+                ) -> None
             on_submission_trigger: Async callback when submission trigger detected
-                Signature: async def callback(trigger: TriggerCheckResult, submission_group: dict) -> None
+                Signature: async def callback(
+                    trigger: TriggerCheckResult,
+                    submission_group: TutorSubmissionGroupGet
+                ) -> None
         """
         self.client = client
         self.config = config
@@ -167,6 +331,9 @@ class TutorScheduler:
             course_members_client=client.course_members,
             config=self.trigger_config,
         )
+
+        # Cache for reducing API calls
+        self._cache = TutorCache(config.cache)
 
         # State tracking
         self._states: dict[str, ProcessingState] = {}
@@ -234,12 +401,12 @@ class TutorScheduler:
                 logger.debug(f"Found {len(ungraded_groups)} groups with ungraded submissions")
 
                 for sg in ungraded_groups:
-                    sg_id = sg.get("id") if isinstance(sg, dict) else getattr(sg, "id", None)
-                    if not sg_id:
+                    # TutorSubmissionGroupList has .id attribute
+                    if not sg.id:
                         continue
 
                     # Check if we should skip due to cooldown
-                    if self._should_skip(sg_id, check_type="submission"):
+                    if self._should_skip(sg.id, check_type="submission"):
                         continue
 
                     tasks.append(self._process_ungraded_submission(sg))
@@ -254,18 +421,16 @@ class TutorScheduler:
             logger.debug(f"Checking {len(submission_groups)} submission groups for messages")
 
             for sg in submission_groups:
-                sg_id = sg.id if hasattr(sg, "id") else sg.get("id")
-                course_id = sg.course_id if hasattr(sg, "course_id") else sg.get("course_id")
-
-                if not sg_id or not course_id:
+                # SubmissionGroupList has .id and .course_id attributes
+                if not sg.id or not sg.course_id:
                     continue
 
                 # Check if we should skip due to cooldown
-                if self._should_skip(sg_id, check_type="message"):
+                if self._should_skip(sg.id, check_type="message"):
                     continue
 
                 # Create check task for message triggers
-                tasks.append(self._check_message_trigger(sg_id, course_id, sg))
+                tasks.append(self._check_message_trigger(sg.id, sg.course_id, sg))
 
         # Run all checks concurrently (limited by semaphore)
         if tasks:
@@ -275,7 +440,7 @@ class TutorScheduler:
         self,
         submission_group_id: str,
         course_id: str,
-        submission_group: dict,
+        submission_group: SubmissionGroupList,
     ) -> None:
         """Check for message triggers (tag-based) and process if needed."""
         async with self._semaphore:
@@ -308,16 +473,21 @@ class TutorScheduler:
             finally:
                 state.processing = False
 
-    async def _process_ungraded_submission(self, submission_group: dict) -> None:
+    async def _process_ungraded_submission(
+        self, submission_group: TutorSubmissionGroupList
+    ) -> None:
         """
         Process an ungraded submission detected via tutor endpoint.
 
         This uses the tutor endpoints which provide pre-filtered data:
         - GET /tutors/submission-groups?has_ungraded_submissions=true
         - GET /tutors/submission-groups/{id} for details
+
+        Args:
+            submission_group: TutorSubmissionGroupList from the list endpoint
         """
         async with self._semaphore:
-            sg_id = submission_group.get("id")
+            sg_id = submission_group.id
             if not sg_id:
                 return
 
@@ -334,11 +504,11 @@ class TutorScheduler:
                 if not sg_details:
                     return
 
-                # Extract key info
-                course_content_id = sg_details.get("course_content_id")
-                course_id = sg_details.get("course_id")
-                latest_submission_id = sg_details.get("latest_submission_id")
-                members = sg_details.get("members", [])
+                # Extract key info from TutorSubmissionGroupGet
+                course_content_id = sg_details.course_content_id
+                course_id = sg_details.course_id
+                latest_submission_id = sg_details.latest_submission_id
+                members = sg_details.members  # List[TutorSubmissionGroupMember]
 
                 # Skip if no submission or already processed
                 if not latest_submission_id:
@@ -350,14 +520,14 @@ class TutorScheduler:
                 # Build trigger result
                 result = TriggerCheckResult(
                     should_respond=True,
-                    reason=f"Ungraded submission detected (has_ungraded_submissions=true)",
+                    reason="Ungraded submission detected (has_ungraded_submissions=true)",
                     submission_trigger=SubmissionTrigger(
                         artifact_id=latest_submission_id,
                         submission_group_id=sg_id,
-                        uploaded_by_course_member_id=members[0].get("course_member_id") if members else None,
+                        uploaded_by_course_member_id=members[0].course_member_id if members else None,
                         version_identifier=None,
                         file_size=0,
-                        uploaded_at=sg_details.get("latest_submission_at"),
+                        uploaded_at=sg_details.latest_submission_at,
                     ),
                 )
 
@@ -367,15 +537,8 @@ class TutorScheduler:
                     f"course_content={course_content_id}"
                 )
 
-                # Call the callback with enriched submission group data
-                enriched_sg = {
-                    **submission_group,
-                    **sg_details,
-                    "course_content_id": course_content_id,
-                    "course_id": course_id,
-                }
-
-                await self.on_submission_trigger(result, enriched_sg)
+                # Call the callback with the detailed submission group data
+                await self.on_submission_trigger(result, sg_details)
 
                 self._processed_artifacts.add(latest_submission_id)
                 state.last_artifact_id = latest_submission_id
@@ -387,100 +550,148 @@ class TutorScheduler:
             finally:
                 state.processing = False
 
-    async def _get_ungraded_submission_groups(self) -> list:
+    # =========================================================================
+    # Course Member Based Methods (with caching)
+    # =========================================================================
+
+    async def _get_course_members(self, course_id: str) -> list[TutorCourseMemberList]:
+        """
+        Get course members for a course, using cache if available.
+
+        Uses: GET /tutors/course-members?course_id={course_id}
+        Returns: List of TutorCourseMemberList objects
+        """
+        # Check cache first
+        cached = self._cache.get_course_members(course_id)
+        if cached is not None:
+            logger.debug(f"Using cached course members for {course_id} ({len(cached)} members)")
+            return cached
+
+        # Fetch from API
+        try:
+            members = await self.client.tutors.get_course_members(course_id=course_id)
+            self._cache.set_course_members(course_id, members)
+            logger.debug(f"Fetched and cached {len(members)} course members for {course_id}")
+            return members
+        except Exception as e:
+            logger.error(f"Failed to get course members for {course_id}: {e}")
+            return []
+
+    async def _get_course_member_content(
+        self, course_member_id: str, course_content_id: str
+    ) -> Optional[CourseContentStudentGet]:
+        """
+        Get detailed course content for a course member, using cache if available.
+
+        Uses: GET /tutors/course-members/{course_member_id}/course-contents/{course_content_id}
+        Returns: CourseContentStudentGet object or None
+        """
+        # Check cache first
+        cached = self._cache.get_course_content(course_member_id, course_content_id)
+        if cached is not None:
+            logger.debug(f"Using cached course content for {course_member_id}:{course_content_id}")
+            return cached
+
+        # Fetch from API
+        try:
+            content = await self.client.tutors.get_course_members_course_contents(
+                course_member_id, course_content_id
+            )
+            self._cache.set_course_content(course_member_id, course_content_id, content)
+            logger.debug(f"Fetched and cached course content for {course_member_id}:{course_content_id}")
+            return content
+        except Exception as e:
+            logger.warning(f"Failed to get course content {course_member_id}:{course_content_id}: {e}")
+            return None
+
+    def _needs_grading(self, content: Optional[CourseContentStudentGet]) -> tuple[bool, Optional[str]]:
+        """
+        Determine if a course content needs grading based on its state.
+
+        Args:
+            content: CourseContentStudentGet object from computor-types
+
+        Returns:
+            Tuple of (needs_grading: bool, artifact_id: str or None)
+        """
+        if content is None:
+            return False, None
+
+        # Check if there's a submission group with submissions
+        # CourseContentStudentGet.submission_group is Optional[SubmissionGroupStudentGet]
+        sg = content.submission_group
+        if sg is None:
+            return False, None
+
+        # Check submission count - SubmissionGroupStudentGet has 'count' field
+        submission_count = sg.count if sg.count else content.submission_count
+        if submission_count == 0:
+            return False, None
+
+        # Check if there are gradings - SubmissionGroupStudentGet.gradings is list[SubmissionGroupGradingList]
+        gradings = sg.gradings if hasattr(sg, "gradings") and sg.gradings else []
+
+        # If no gradings at all, needs grading
+        if not gradings:
+            return True, None
+
+        # Check if the latest submission is graded
+        # gradings are sorted by created_at, so the last one is the latest
+        latest_grading = gradings[-1] if gradings else None
+
+        # Compare submission count with grading count
+        # If more submissions than gradings, needs grading
+        if len(gradings) < submission_count:
+            return True, None
+
+        # Check grading status - if NOT_REVIEWED (0), needs grading
+        if latest_grading:
+            status = latest_grading.status
+            if status is not None and status == GradingStatus.NOT_REVIEWED:
+                return True, None
+
+        return False, None
+
+    async def _get_ungraded_submission_groups(self) -> list[TutorSubmissionGroupList]:
         """
         Get submission groups with ungraded submissions via tutor endpoint.
 
         Uses: GET /tutors/submission-groups?has_ungraded_submissions=true
+        Returns: List of TutorSubmissionGroupList objects
         """
         try:
-            kwargs = {"has_ungraded_submissions": True}
-
-            if self.config.course_content_ids:
-                # Filter by first course content ID (API might only support one)
-                # For multiple, we'd need to make multiple calls
-                all_groups = []
-                for cc_id in self.config.course_content_ids:
-                    groups = await self.client.tutors.get_submission_groups(
-                        has_ungraded_submissions=True,
-                        course_content_id=cc_id,
-                    )
-                    all_groups.extend(groups)
-                return [
-                    g.model_dump() if hasattr(g, "model_dump") else g
-                    for g in all_groups
-                ]
-
-            elif self.config.course_ids:
-                all_groups = []
-                for course_id in self.config.course_ids:
-                    groups = await self.client.tutors.get_submission_groups(
-                        has_ungraded_submissions=True,
-                        course_id=course_id,
-                    )
-                    all_groups.extend(groups)
-                return [
-                    g.model_dump() if hasattr(g, "model_dump") else g
-                    for g in all_groups
-                ]
-
-            else:
-                groups = await self.client.tutors.get_submission_groups(
-                    has_ungraded_submissions=True,
-                )
-                return [
-                    g.model_dump() if hasattr(g, "model_dump") else g
-                    for g in groups
-                ]
-
+            groups = await self.client.tutors.get_submission_groups(
+                has_ungraded_submissions=True,
+            )
+            return groups
         except Exception as e:
             logger.error(f"Failed to get ungraded submission groups: {e}")
             return []
 
-    async def _get_tutor_submission_group_details(self, submission_group_id: str) -> dict:
+    async def _get_tutor_submission_group_details(
+        self, submission_group_id: str
+    ) -> Optional[TutorSubmissionGroupGet]:
         """
         Get detailed submission group info via tutor endpoint.
 
         Uses: GET /tutors/submission-groups/{id}
+        Returns: TutorSubmissionGroupGet object or None
         """
         try:
-            sg = await self.client.tutors.submission_groups(submission_group_id)
-            return sg.model_dump() if hasattr(sg, "model_dump") else dict(sg)
+            return await self.client.tutors.submission_groups(submission_group_id)
         except Exception as e:
             logger.warning(f"Failed to get tutor submission group details {submission_group_id}: {e}")
-            return {}
+            return None
 
-    async def _get_submission_groups(self) -> list:
-        """Get submission groups to check."""
+    async def _get_submission_groups(self) -> list[SubmissionGroupList]:
+        """
+        Get submission groups to check for message triggers.
+
+        Uses: GET /submission-groups
+        Returns: List of SubmissionGroupList objects
+        """
         try:
-            if self.config.course_content_ids:
-                # Filter by course content IDs
-                all_groups = []
-                for cc_id in self.config.course_content_ids:
-                    groups = await self.client.submission_groups.list(
-                        course_content_id=cc_id,
-                    )
-                    all_groups.extend(groups)
-                return all_groups
-
-            elif self.config.course_ids:
-                # Filter by course IDs
-                all_groups = []
-                for course_id in self.config.course_ids:
-                    groups = await self.client.submission_groups.list(
-                        course_id=course_id,
-                    )
-                    all_groups.extend(groups)
-                return all_groups
-
-            else:
-                # Get all submission groups (should typically filter by course)
-                logger.warning(
-                    "No course_ids or course_content_ids configured - "
-                    "this may return many submission groups"
-                )
-                return await self.client.submission_groups.list()
-
+            return await self.client.submission_groups.list()
         except Exception as e:
             logger.error(f"Failed to get submission groups: {e}")
             return []
@@ -515,6 +726,7 @@ class TutorScheduler:
             "running": self._running,
             "tracked_groups": len(self._states),
             "processed_artifacts": len(self._processed_artifacts),
+            "cache": self._cache.get_stats(),
             "config": self.config.model_dump(),
             "trigger_config": self.trigger_config.model_dump(),
         }
@@ -532,3 +744,4 @@ class TutorScheduler:
         else:
             self._states.clear()
             self._processed_artifacts.clear()
+            self._cache.clear()

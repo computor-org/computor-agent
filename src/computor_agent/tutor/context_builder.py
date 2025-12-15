@@ -3,11 +3,13 @@ Context builder for the Tutor AI Agent.
 
 Builds ConversationContext from API data, gathering all required
 information before processing a student interaction.
+
+Uses ComputorClient from computor-client package directly.
 """
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional
 
 from computor_agent.tutor.context import (
     AssignmentInfo,
@@ -25,33 +27,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ComputorClientProtocol(Protocol):
-    """Protocol for the Computor API client."""
-
-    async def get_submission_group(self, submission_group_id: str) -> dict:
-        """Get submission group details."""
-        ...
-
-    async def get_messages(self, submission_group_id: str) -> list[dict]:
-        """Get messages for a submission group."""
-        ...
-
-    async def get_course_member_comments(self, course_member_id: str) -> list[dict]:
-        """Get comments for a course member."""
-        ...
-
-    async def get_course_content(self, course_content_id: str) -> dict:
-        """Get course content (assignment) details."""
-        ...
-
-    async def get_course_members(self, submission_group_id: str) -> list[dict]:
-        """Get course members for a submission group."""
-        ...
-
-
 class ContextBuilder:
     """
     Builds ConversationContext from API data.
+
+    Uses ComputorClient from computor-client package directly.
 
     Gathers:
     - Student information from submission group
@@ -63,25 +43,29 @@ class ContextBuilder:
     - Assignment information
 
     Usage:
-        builder = ContextBuilder(client, config)
-        context = await builder.build_for_message(
-            submission_group_id="...",
-            message_id="...",
-        )
-        # Use context, then destroy
-        context.destroy()
+        from computor_client import ComputorClient
+
+        async with ComputorClient(base_url=url) as client:
+            await client.login(...)
+            builder = ContextBuilder(client, config)
+            context = await builder.build_for_message(
+                submission_group_id="...",
+                message={...},
+            )
+            # Use context, then destroy
+            context.destroy()
     """
 
     def __init__(
         self,
-        client: ComputorClientProtocol,
+        client: Any,  # ComputorClient from computor-client
         config: "ContextConfig",
     ) -> None:
         """
         Initialize the context builder.
 
         Args:
-            client: Computor API client
+            client: ComputorClient instance from computor-client package
             config: Context configuration
         """
         self.client = client
@@ -224,22 +208,39 @@ class ContextBuilder:
     async def _get_student_info(self, submission_group_id: str) -> StudentInfo:
         """Get student information from submission group."""
         try:
-            members = await self.client.get_course_members(submission_group_id)
+            # First get the submission group to find the course_id
+            sg = await self.client.submission_groups.get(id=submission_group_id)
+            course_id = sg.course_id
+
+            if not course_id:
+                return StudentInfo()
+
+            # Get submission group members
+            sg_members = await self.client.submission_group_members.list(
+                submission_group_id=submission_group_id,
+            )
 
             user_ids = []
             names = []
             emails = []
             course_member_ids = []
 
-            for member in members:
-                if member.get("user_id"):
-                    user_ids.append(member["user_id"])
-                if member.get("display_name"):
-                    names.append(member["display_name"])
-                if member.get("email"):
-                    emails.append(member["email"])
-                if member.get("id"):
-                    course_member_ids.append(member["id"])
+            # Get course member details for each submission group member
+            for sgm in sg_members:
+                course_member_id = sgm.course_member_id
+                if course_member_id:
+                    course_member_ids.append(course_member_id)
+                    try:
+                        cm = await self.client.course_members.get(id=course_member_id)
+                        if cm:
+                            if cm.user_id:
+                                user_ids.append(cm.user_id)
+                            if hasattr(cm, "display_name") and cm.display_name:
+                                names.append(cm.display_name)
+                            if hasattr(cm, "email") and cm.email:
+                                emails.append(cm.email)
+                    except Exception:
+                        pass
 
             return StudentInfo(
                 user_ids=user_ids,
@@ -257,18 +258,28 @@ class ContextBuilder:
     ) -> list[MessageInfo]:
         """Get previous messages for the submission group."""
         try:
-            messages = await self.client.get_messages(submission_group_id)
+            # Use ComputorClient.messages.list() directly
+            messages = await self.client.messages.list(
+                submission_group_id=submission_group_id,
+            )
 
             result = []
             for msg in messages:
+                # msg is a MessageList object from computor-types
+                author_name = None
+                if msg.author:
+                    author_name = f"{msg.author.given_name or ''} {msg.author.family_name or ''}".strip()
+                    if not author_name:
+                        author_name = None
+
                 result.append(
                     MessageInfo(
-                        id=msg.get("id", ""),
-                        title=msg.get("title", ""),
-                        content=msg.get("content", ""),
-                        author_id=msg.get("author_id", ""),
-                        author_name=msg.get("author_name"),
-                        is_from_student=msg.get("is_from_student", True),
+                        id=msg.id,
+                        title=msg.title or "",
+                        content=msg.content or "",
+                        author_id=msg.author_id or "",
+                        author_name=author_name,
+                        is_from_student=True,  # Determined by checking role if needed
                     )
                 )
 
@@ -285,20 +296,22 @@ class ContextBuilder:
     ) -> Optional[AssignmentInfo]:
         """Get assignment information from submission group."""
         try:
-            sg = await self.client.get_submission_group(submission_group_id)
-            course_content_id = sg.get("course_content_id")
+            # Use ComputorClient.submission_groups.get() directly
+            sg = await self.client.submission_groups.get(id=submission_group_id)
+            course_content_id = sg.course_content_id
 
             if not course_content_id:
                 return None
 
-            content = await self.client.get_course_content(course_content_id)
+            # Use ComputorClient.course_contents.get() directly
+            content = await self.client.course_contents.get(id=course_content_id)
 
             return AssignmentInfo(
                 course_content_id=course_content_id,
-                title=content.get("title"),
-                description=content.get("description"),
-                course_id=content.get("course_id"),
-                course_title=content.get("course_title"),
+                title=content.title,
+                description=content.description,
+                course_id=content.course_id,
+                course_title=getattr(content, "course_title", None),
             )
         except Exception as e:
             logger.warning(f"Failed to get assignment info: {e}")
@@ -310,8 +323,12 @@ class ContextBuilder:
     ) -> list[str]:
         """Get comments for a course member."""
         try:
-            comments = await self.client.get_course_member_comments(course_member_id)
-            return [c.get("content", "") for c in comments if c.get("content")]
+            # Use ComputorClient.course_member_comments.list() directly
+            comments = await self.client.course_member_comments.list(
+                course_member_id=course_member_id,
+            )
+            # comments is list[CourseMemberCommentList] from computor-types
+            return [c.content for c in comments if c.content]
         except Exception as e:
             logger.warning(f"Failed to get course member comments: {e}")
             return []
