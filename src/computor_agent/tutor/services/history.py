@@ -197,6 +197,7 @@ class HistoryService:
         submission_group_id: str,
         *,
         include_analysis: bool = True,
+        prefetched_gradings: Optional[list] = None,
     ) -> SubmissionHistory:
         """
         Get complete submission history for a submission group.
@@ -204,46 +205,68 @@ class HistoryService:
         Args:
             submission_group_id: Submission group ID
             include_analysis: Whether to include improvement analysis
+            prefetched_gradings: Optional pre-fetched gradings to avoid API call
 
         Returns:
             SubmissionHistory with all attempts and analysis
         """
+        # If gradings are pre-fetched, use them directly
+        if prefetched_gradings is not None:
+            return self._parse_gradings(prefetched_gradings, submission_group_id)
+
         try:
-            # List all artifacts
-            artifacts = await self.client.submission_artifacts.list(
-                submission_group_id=submission_group_id,
-            )
-
-            if not artifacts:
-                return SubmissionHistory(submission_group_id=submission_group_id)
-
-            # Convert to attempts and sort by date
             attempts = []
-            for a in artifacts:
-                uploaded_at = None
-                if hasattr(a, "uploaded_at") and a.uploaded_at:
-                    if isinstance(a.uploaded_at, str):
-                        try:
-                            uploaded_at = datetime.fromisoformat(
-                                a.uploaded_at.replace("Z", "+00:00")
-                            )
-                        except ValueError:
-                            pass
-                    else:
-                        uploaded_at = a.uploaded_at
 
-                # Get result
-                result = None
-                latest_result = getattr(a, "latest_result", None)
-                if latest_result:
-                    result = getattr(latest_result, "result", None)
+            # Try to get history from tutor endpoint (fallback only)
+            if hasattr(self.client, 'tutors'):
+                try:
+                    sg_details = await self.client.tutors.submission_groups(submission_group_id)
+                    if sg_details:
+                        # Get gradings which represent submission attempts
+                        gradings = getattr(sg_details, 'gradings', None) or []
+                        submission_count = getattr(sg_details, 'count', 0) or len(gradings)
 
-                attempts.append(SubmissionAttempt(
-                    artifact_id=a.id,
-                    uploaded_at=uploaded_at,
-                    result=result,
-                    has_tests_passed=result is not None and result >= 1.0,
-                ))
+                        for i, grading in enumerate(gradings):
+                            uploaded_at = None
+                            created_at = getattr(grading, 'created_at', None)
+                            if created_at:
+                                if isinstance(created_at, str):
+                                    try:
+                                        uploaded_at = datetime.fromisoformat(
+                                            created_at.replace("Z", "+00:00")
+                                        )
+                                    except ValueError:
+                                        pass
+                                else:
+                                    uploaded_at = created_at
+
+                            result = getattr(grading, 'result', None)
+                            if result is not None:
+                                result = float(result)
+
+                            attempts.append(SubmissionAttempt(
+                                artifact_id=getattr(grading, 'id', f'grading-{i}'),
+                                uploaded_at=uploaded_at,
+                                result=result,
+                                has_tests_passed=result is not None and result >= 1.0,
+                            ))
+
+                        # If we have a current result but no gradings with results,
+                        # create a single attempt from the overall result
+                        if not attempts and submission_count > 0:
+                            overall_result = getattr(sg_details, 'result', None)
+                            if overall_result is not None:
+                                attempts.append(SubmissionAttempt(
+                                    artifact_id='current',
+                                    result=float(overall_result),
+                                    has_tests_passed=float(overall_result) >= 1.0,
+                                ))
+                except Exception as e:
+                    logger.debug(f"Tutor endpoint for history failed: {e}")
+
+            # If no attempts found, return empty history
+            if not attempts:
+                return SubmissionHistory(submission_group_id=submission_group_id)
 
             # Sort by upload date (oldest first)
             attempts.sort(key=lambda x: x.uploaded_at or datetime.max)
@@ -338,6 +361,75 @@ class HistoryService:
             )
 
         return analysis.message if analysis.message else None
+
+    def _parse_gradings(
+        self,
+        gradings: list[Any],
+        submission_group_id: str,
+    ) -> SubmissionHistory:
+        """
+        Parse gradings data into SubmissionHistory without making API calls.
+
+        This method is called by context_builder when gradings are already
+        available from the course content data.
+
+        Args:
+            gradings: List of grading objects from API
+            submission_group_id: The submission group ID
+
+        Returns:
+            SubmissionHistory with parsed attempts
+        """
+        attempts = []
+
+        for i, grading in enumerate(gradings):
+            uploaded_at = None
+            created_at = getattr(grading, 'created_at', None)
+            if created_at:
+                if isinstance(created_at, str):
+                    try:
+                        uploaded_at = datetime.fromisoformat(
+                            created_at.replace("Z", "+00:00")
+                        )
+                    except ValueError:
+                        pass
+                else:
+                    uploaded_at = created_at
+
+            result = getattr(grading, 'result', None)
+            if result is not None:
+                result = float(result)
+
+            attempts.append(SubmissionAttempt(
+                artifact_id=getattr(grading, 'id', f'grading-{i}'),
+                uploaded_at=uploaded_at,
+                result=result,
+                has_tests_passed=result is not None and result >= 1.0,
+            ))
+
+        if not attempts:
+            return SubmissionHistory(submission_group_id=submission_group_id)
+
+        # Sort by upload date (oldest first)
+        attempts.sort(key=lambda x: x.uploaded_at or datetime.max)
+
+        # Calculate statistics
+        results = [a.result for a in attempts if a.result is not None]
+
+        history = SubmissionHistory(
+            submission_group_id=submission_group_id,
+            attempts=attempts,
+            total_attempts=len(attempts),
+            first_submission=attempts[0].uploaded_at if attempts else None,
+            last_submission=attempts[-1].uploaded_at if attempts else None,
+            best_result=max(results) if results else None,
+            current_result=attempts[-1].result if attempts else None,
+        )
+
+        if len(attempts) >= 2:
+            history.analysis = self._analyze_improvement(attempts)
+
+        return history
 
     def _analyze_improvement(
         self,

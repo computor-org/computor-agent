@@ -111,9 +111,25 @@ class CommentsService:
             List of TutorComment objects, newest first
         """
         try:
-            comments = await self.client.course_member_comments.list(
-                course_member_id=course_member_id,
-            )
+            comments = None
+
+            # Try course_member_comments endpoint
+            if hasattr(self.client, 'course_member_comments'):
+                try:
+                    comments = await self.client.course_member_comments.list(
+                        course_member_id=course_member_id,
+                    )
+                except Exception as e:
+                    logger.debug(f"course_member_comments.list failed: {e}")
+
+            # Try tutor endpoint as fallback
+            if not comments and hasattr(self.client, 'tutors'):
+                try:
+                    comments = await self.client.tutors.course_member_comments(
+                        course_member_id=course_member_id,
+                    )
+                except Exception as e:
+                    logger.debug(f"tutors.course_member_comments failed: {e}")
 
             if not comments:
                 return []
@@ -185,14 +201,32 @@ class CommentsService:
             Created TutorComment or None on failure
         """
         try:
-            created = await self.client.course_member_comments.create(
-                data={
-                    "course_member_id": course_member_id,
-                    "content": content,
-                }
-            )
+            created = None
+
+            # Try course_member_comments endpoint
+            if hasattr(self.client, 'course_member_comments'):
+                try:
+                    created = await self.client.course_member_comments.create(
+                        data={
+                            "course_member_id": course_member_id,
+                            "content": content,
+                        }
+                    )
+                except Exception as e:
+                    logger.debug(f"course_member_comments.create failed: {e}")
+
+            # Try tutor endpoint as fallback
+            if not created and hasattr(self.client, 'tutors'):
+                try:
+                    created = await self.client.tutors.create_course_member_comment(
+                        course_member_id=course_member_id,
+                        content=content,
+                    )
+                except Exception as e:
+                    logger.debug(f"tutors.create_course_member_comment failed: {e}")
 
             if not created:
+                logger.warning(f"No endpoint available to create comments for {course_member_id}")
                 return None
 
             return TutorComment(
@@ -246,12 +280,20 @@ class CommentsService:
             Updated TutorComment or None on failure
         """
         try:
-            updated = await self.client.course_member_comments.update(
-                id=comment_id,
-                data={"content": content},
-            )
+            updated = None
+
+            # Try course_member_comments endpoint
+            if hasattr(self.client, 'course_member_comments'):
+                try:
+                    updated = await self.client.course_member_comments.update(
+                        id=comment_id,
+                        data={"content": content},
+                    )
+                except Exception as e:
+                    logger.debug(f"course_member_comments.update failed: {e}")
 
             if not updated:
+                logger.warning(f"No endpoint available to update comment {comment_id}")
                 return None
 
             return TutorComment(
@@ -276,8 +318,16 @@ class CommentsService:
             True if deleted successfully
         """
         try:
-            await self.client.course_member_comments.delete(id=comment_id)
-            return True
+            # Try course_member_comments endpoint
+            if hasattr(self.client, 'course_member_comments'):
+                try:
+                    await self.client.course_member_comments.delete(id=comment_id)
+                    return True
+                except Exception as e:
+                    logger.debug(f"course_member_comments.delete failed: {e}")
+
+            logger.warning(f"No endpoint available to delete comment {comment_id}")
+            return False
         except Exception as e:
             logger.error(f"Failed to delete comment {comment_id}: {e}")
             return False

@@ -295,18 +295,20 @@ class TestResultsService:
             TestResult or None if no results available
         """
         try:
-            # Fetch artifact with result
-            artifact = await self.client.submission_artifacts.get(id=artifact_id)
+            # Try to get artifact via direct endpoint if available
+            if hasattr(self.client, 'submission_artifacts'):
+                try:
+                    artifact = await self.client.submission_artifacts.get(id=artifact_id)
+                    if artifact:
+                        result_data = getattr(artifact, "latest_result", None)
+                        if result_data:
+                            return self._parse_result(result_data)
+                except Exception as e:
+                    logger.debug(f"submission_artifacts endpoint not available: {e}")
 
-            if not artifact:
-                return None
-
-            # Check for result data
-            result_data = getattr(artifact, "latest_result", None)
-            if not result_data:
-                return None
-
-            return self._parse_result(result_data)
+            # Artifact results are typically accessed via submission group
+            # This method is primarily for direct artifact access which may not be available
+            return None
 
         except Exception as e:
             logger.warning(f"Failed to get test results for artifact {artifact_id}: {e}")
@@ -329,9 +331,9 @@ class TestResultsService:
         """
         try:
             # Use tutor endpoint to get course content with result
-            content = await self.client.tutors.course_members_course_contents_get(
-                course_member_id=course_member_id,
-                course_content_id=course_content_id,
+            # API: GET /tutors/course-members/{cm_id}/course-contents/{cc_id}
+            content = await self.client.tutors.get_course_members_course_contents(
+                course_member_id, course_content_id
             )
 
             if not content:
@@ -357,7 +359,7 @@ class TestResultsService:
         """
         Get test results for a submission group.
 
-        Gets the latest artifact's test results.
+        Uses tutor API to get submission group details with result.
 
         Args:
             submission_group_id: Submission group ID
@@ -366,23 +368,48 @@ class TestResultsService:
             TestResult or None if no results available
         """
         try:
-            # List artifacts for submission group
-            artifacts = await self.client.submission_artifacts.list(
-                submission_group_id=submission_group_id,
-            )
+            # Try to get submission group details via tutor endpoint
+            # This provides access to result data
+            if hasattr(self.client, 'tutors'):
+                try:
+                    sg_details = await self.client.tutors.submission_groups(submission_group_id)
+                    if sg_details:
+                        # Check for result on submission group
+                        result_data = getattr(sg_details, 'result', None)
+                        if result_data:
+                            return self._parse_result(result_data)
 
-            if not artifacts:
-                return None
+                        # Check for result_json directly
+                        result_json = getattr(sg_details, 'result_json', None)
+                        result_value = getattr(sg_details, 'result_value', None)
+                        if result_json or result_value is not None:
+                            return self._parse_result({
+                                'result': result_value or 0.0,
+                                'result_json': result_json,
+                            })
 
-            # Sort by upload date, get latest
-            sorted_artifacts = sorted(
-                artifacts,
-                key=lambda a: getattr(a, "uploaded_at", "") or "",
-                reverse=True,
-            )
+                        # Check gradings for result
+                        gradings = getattr(sg_details, 'gradings', None)
+                        if gradings and len(gradings) > 0:
+                            latest = gradings[-1]
+                            result_val = getattr(latest, 'result', None)
+                            if result_val is not None:
+                                return TestResult(result=float(result_val))
+                except Exception as e:
+                    logger.debug(f"Tutor endpoint failed: {e}")
 
-            latest = sorted_artifacts[0]
-            return await self.get_for_artifact(latest.id)
+            # Fallback: try via submission_groups.get endpoint
+            if hasattr(self.client, 'submission_groups'):
+                try:
+                    sg = await self.client.submission_groups.get(id=submission_group_id)
+                    if sg:
+                        result_data = getattr(sg, 'result', None)
+                        if result_data:
+                            return self._parse_result(result_data)
+                except Exception as e:
+                    logger.debug(f"Submission groups endpoint failed: {e}")
+
+            return None
 
         except Exception as e:
             logger.warning(

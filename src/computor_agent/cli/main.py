@@ -603,7 +603,14 @@ async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bo
             scheduler_config = SchedulerConfig()
             logger.info("Using default scheduler config")
 
-        async def on_message_trigger(result, submission_group):
+        async def on_message_trigger(result, course_content):
+            """
+            Handle message trigger.
+
+            Args:
+                result: TriggerCheckResult with message_trigger
+                course_content: CourseContentStudentGet from scheduler
+            """
             logger.info(f"Processing message trigger: {result.reason}")
             if dry_run:
                 logger.info(f"[DRY RUN] Would process message: {result.message_trigger.message_id}")
@@ -616,12 +623,31 @@ async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bo
                 "title": result.message_trigger.title,
                 "author_id": result.message_trigger.author_id,
             }
+
+            # Get submission_group_id from the course content
+            sg = course_content.submission_group
+            submission_group_id = sg.id if sg else result.message_trigger.submission_group_id
+
+            # Extract course_member_id from submission group members
+            course_member_id = None
+            if sg and sg.members:
+                course_member_id = sg.members[0].course_member_id if sg.members else None
+
             await agent.process_message(
-                submission_group_id=result.message_trigger.submission_group_id,
+                submission_group_id=submission_group_id,
                 message=message,
+                course_content=course_content,  # Pass pre-fetched data
+                course_member_id=course_member_id,
             )
 
-        async def on_submission_trigger(result, submission_group):
+        async def on_submission_trigger(result, course_content):
+            """
+            Handle submission trigger.
+
+            Args:
+                result: TriggerCheckResult with submission_trigger
+                course_content: CourseContentStudentGet from scheduler
+            """
             logger.info(f"Processing submission trigger")
             if dry_run:
                 logger.info(f"[DRY RUN] Would process submission: {result.submission_trigger.artifact_id}")
@@ -632,11 +658,14 @@ async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bo
                 "id": result.submission_trigger.artifact_id,
             }
 
-            # Extract course_member_id and course_content_id from TutorSubmissionGroupGet
+            # Extract course_member_id and course_content_id from CourseContentStudentGet
             # These are needed for the tutors grading endpoint
-            course_content_id = submission_group.course_content_id
-            members = submission_group.members or []
-            course_member_id = members[0].course_member_id if members else None
+            course_content_id = course_content.id
+            course_member_id = result.submission_trigger.uploaded_by_course_member_id
+
+            # Get submission_group_id from the course content
+            sg = course_content.submission_group
+            submission_group_id = sg.id if sg else result.submission_trigger.submission_group_id
 
             logger.debug(
                 f"Submission details: artifact={result.submission_trigger.artifact_id}, "
@@ -644,11 +673,12 @@ async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bo
             )
 
             await agent.process_submission(
-                submission_group_id=result.submission_trigger.submission_group_id,
+                submission_group_id=submission_group_id,
                 artifact=artifact,
                 course_member_id=course_member_id,
                 course_content_id=course_content_id,
                 submit_grade=True,  # Enable grade submission
+                course_content=course_content,  # Pass pre-fetched data
             )
 
         scheduler = TutorScheduler(

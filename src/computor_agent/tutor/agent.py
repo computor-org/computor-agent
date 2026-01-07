@@ -23,6 +23,7 @@ from typing import Any, Optional, Protocol, Union
 
 # Import API types from computor-types (source of truth)
 from computor_types.messages import MessageCreate, MessageGet
+from computor_types.student_course_contents import CourseContentStudentGet
 from computor_types.tutor_grading import TutorGradeCreate, TutorGradeResponse
 
 from computor_agent.tutor.config import TutorConfig
@@ -164,6 +165,8 @@ class TutorAgent:
         reference_path: Optional[Path] = None,
         send_response: bool = True,
         reply_to_message_id: Optional[str] = None,
+        course_content: Optional[CourseContentStudentGet] = None,
+        course_member_id: Optional[str] = None,
     ) -> ProcessingResult:
         """
         Process a student message and generate a response.
@@ -175,6 +178,8 @@ class TutorAgent:
             reference_path: Path to reference solution (if enabled)
             send_response: Whether to send the response via API
             reply_to_message_id: ID of message to reply to (creates message chain)
+            course_content: Pre-fetched CourseContentStudentGet to avoid redundant API calls
+            course_member_id: Course member ID (for efficient data extraction)
 
         Returns:
             ProcessingResult with all processing information
@@ -187,12 +192,14 @@ class TutorAgent:
         context: Optional[ConversationContext] = None
 
         try:
-            # Build context
+            # Build context (use pre-fetched course_content if available)
             context = await self.context_builder.build_for_message(
                 submission_group_id=submission_group_id,
                 message=message,
                 repository_path=repository_path,
                 reference_path=reference_path,
+                course_content=course_content,
+                course_member_id=course_member_id,
             )
             context.context_id = context_id
 
@@ -246,13 +253,17 @@ class TutorAgent:
                 parent_id = reply_to_message_id or message.get("id")
 
                 # Use ComputorClient.messages.create() directly
+                # When replying (parent_id set), don't set target - it's inherited from parent
+                # Only set submission_group_id for new threads
                 message_data: dict[str, Any] = {
-                    "submission_group_id": submission_group_id,
                     "content": response.message_content,
                     "title": formatted_title,
                 }
                 if parent_id:
                     message_data["parent_id"] = parent_id
+                else:
+                    # New message thread - must specify target
+                    message_data["submission_group_id"] = submission_group_id
 
                 created_message = await self.client.messages.create(data=message_data)
                 message_sent = True
@@ -305,6 +316,7 @@ class TutorAgent:
         submit_grade: bool = False,
         course_member_id: Optional[str] = None,
         course_content_id: Optional[str] = None,
+        course_content: Optional[CourseContentStudentGet] = None,
     ) -> ProcessingResult:
         """
         Process a submission (artifact with submit=True) and generate a review.
@@ -318,6 +330,7 @@ class TutorAgent:
             submit_grade: Whether to submit the grade via API
             course_member_id: Course member ID (for tutor grading endpoint)
             course_content_id: Course content ID (for tutor grading endpoint)
+            course_content: Pre-fetched CourseContentStudentGet to avoid redundant API calls
 
         Returns:
             ProcessingResult with all processing information
@@ -330,12 +343,14 @@ class TutorAgent:
         context: Optional[ConversationContext] = None
 
         try:
-            # Build context
+            # Build context (use pre-fetched course_content if available)
             context = await self.context_builder.build_for_submission(
                 submission_group_id=submission_group_id,
                 artifact=artifact,
                 repository_path=repository_path,
                 reference_path=reference_path,
+                course_content=course_content,
+                course_member_id=course_member_id,
             )
             context.context_id = context_id
 

@@ -5,11 +5,14 @@ Builds ConversationContext from API data, gathering all required
 information before processing a student interaction.
 
 Uses ComputorClient from computor-client package directly.
+Accepts pre-fetched CourseContentStudentGet to avoid redundant API calls.
 """
 
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+
+from computor_types.student_course_contents import CourseContentStudentGet
 
 from computor_agent.tutor.context import (
     AssignmentInfo,
@@ -91,6 +94,8 @@ class ContextBuilder:
         message: dict,
         repository_path: Optional[Path] = None,
         reference_path: Optional[Path] = None,
+        course_content: Optional[CourseContentStudentGet] = None,
+        course_member_id: Optional[str] = None,
     ) -> ConversationContext:
         """
         Build context for a message trigger.
@@ -100,6 +105,8 @@ class ContextBuilder:
             message: The message dict that triggered this
             repository_path: Path to student's cloned repository
             reference_path: Path to reference solution (if enabled)
+            course_content: Pre-fetched CourseContentStudentGet to avoid redundant API calls
+            course_member_id: Course member ID (for efficient data extraction)
 
         Returns:
             ConversationContext ready for processing
@@ -121,6 +128,8 @@ class ContextBuilder:
             trigger_submission=None,
             repository_path=repository_path,
             reference_path=reference_path,
+            course_content=course_content,
+            course_member_id=course_member_id,
         )
 
     async def build_for_submission(
@@ -129,6 +138,8 @@ class ContextBuilder:
         artifact: dict,
         repository_path: Optional[Path] = None,
         reference_path: Optional[Path] = None,
+        course_content: Optional[CourseContentStudentGet] = None,
+        course_member_id: Optional[str] = None,
     ) -> ConversationContext:
         """
         Build context for a submission trigger.
@@ -138,6 +149,8 @@ class ContextBuilder:
             artifact: The submission artifact dict that triggered this
             repository_path: Path to student's cloned repository
             reference_path: Path to reference solution (if enabled)
+            course_content: Pre-fetched CourseContentStudentGet to avoid redundant API calls
+            course_member_id: Course member ID (for efficient data extraction)
 
         Returns:
             ConversationContext ready for processing
@@ -158,6 +171,8 @@ class ContextBuilder:
             trigger_submission=trigger_submission,
             repository_path=repository_path,
             reference_path=reference_path,
+            course_content=course_content,
+            course_member_id=course_member_id,
         )
 
     async def _build_context(
@@ -168,12 +183,21 @@ class ContextBuilder:
         trigger_submission: Optional[SubmissionInfo],
         repository_path: Optional[Path],
         reference_path: Optional[Path],
+        course_content: Optional[CourseContentStudentGet] = None,
+        course_member_id: Optional[str] = None,
     ) -> ConversationContext:
         """Build the full context with all gathered data."""
-        # Gather data in parallel where possible
-        student_info = await self._get_student_info(submission_group_id)
+        # If course_content is provided, extract student and assignment info directly
+        # This avoids redundant API calls to /submission-groups, /submission-group-members, /course-contents
+        if course_content is not None:
+            student_info = self._extract_student_info(course_content, course_member_id)
+            assignment_info = self._extract_assignment_info(course_content)
+        else:
+            # Fallback: Gather data via API calls (for backward compatibility)
+            student_info = await self._get_student_info(submission_group_id)
+            assignment_info = await self._get_assignment_info(submission_group_id)
+
         previous_messages = await self._get_previous_messages(submission_group_id)
-        assignment_info = await self._get_assignment_info(submission_group_id)
 
         # Get course member comments if enabled
         course_member_comments: list[str] = []
@@ -226,6 +250,7 @@ class ContextBuilder:
             assignment_info,
             student_info,
             trigger_submission,
+            course_content,  # Pass pre-fetched data if available
         )
 
         return context
@@ -236,6 +261,7 @@ class ContextBuilder:
         assignment_info: Optional[AssignmentInfo],
         student_info: StudentInfo,
         trigger_submission: Optional[SubmissionInfo],
+        course_content_data: Optional[CourseContentStudentGet] = None,
     ) -> None:
         """
         Add enhanced context from services.
@@ -246,24 +272,71 @@ class ContextBuilder:
         - Reference comparison
         - Student progress
         - Artifact content
+
+        Args:
+            course_content_data: Pre-fetched CourseContentStudentGet to avoid redundant API calls.
+                If provided, uses this data directly. Otherwise falls back to API call.
         """
         submission_group_id = context.submission_group_id
 
-        # Get test results if enabled
+        # Get course member and course content IDs for the primary tutor endpoint
+        course_member_id = student_info.course_member_ids[0] if student_info.course_member_ids else None
+        course_content_id = assignment_info.course_content_id if assignment_info else None
+
+        # Use pre-fetched course content data if available, otherwise fetch from API
+        if course_content_data is None and course_member_id and course_content_id:
+            try:
+                if hasattr(self.client, 'tutors'):
+                    course_content_data = await self.client.tutors.get_course_members_course_contents(
+                        course_member_id, course_content_id
+                    )
+                    logger.debug(
+                        f"Fetched course content data for member={course_member_id}, "
+                        f"content={course_content_id}"
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to fetch course content data: {e}")
+
+        # Get test results from course content data
         if self.config.include_test_results:
             try:
-                context.test_results = await self.test_results_service.get_for_submission_group(
-                    submission_group_id
-                )
+                if course_content_data:
+                    # Extract result from course content data
+                    result_data = getattr(course_content_data, "result", None)
+                    if result_data:
+                        context.test_results = self.test_results_service._parse_result(result_data)
+                    # If course_content_data exists but no result, skip (no tests run yet)
+                elif course_member_id and course_content_id:
+                    # Only fallback if we don't have pre-fetched data at all
+                    context.test_results = await self.test_results_service.get_for_course_content(
+                        course_member_id, course_content_id
+                    )
             except Exception as e:
                 logger.debug(f"Failed to get test results: {e}")
 
-        # Get submission history if enabled
+        # Get submission history from course content data
         if self.config.include_submission_history:
             try:
-                context.submission_history = await self.history_service.get_history(
-                    submission_group_id
-                )
+                # Extract gradings from submission_group in course content data
+                gradings = None
+                if course_content_data:
+                    sg = getattr(course_content_data, "submission_group", None)
+                    if sg:
+                        gradings = getattr(sg, "gradings", None)
+
+                if gradings is not None:
+                    # Use pre-fetched gradings directly (no API call)
+                    # Note: gradings can be empty list [], which is valid (no submissions graded yet)
+                    context.submission_history = self.history_service._parse_gradings(
+                        gradings, submission_group_id
+                    )
+                elif course_content_data is None:
+                    # Only fallback if we don't have pre-fetched data at all
+                    # Fallback: fetch via service (will call /tutors/submission-groups)
+                    context.submission_history = await self.history_service.get_history(
+                        submission_group_id
+                    )
+                # If course_content_data exists but no submission_group, skip (no history)
             except Exception as e:
                 logger.debug(f"Failed to get submission history: {e}")
 
@@ -278,13 +351,15 @@ class ContextBuilder:
                 logger.debug(f"Failed to generate reference comparison: {e}")
 
         # Get student progress if enabled
-        if self.config.include_student_progress and assignment_info and student_info.course_member_ids:
+        if self.config.include_student_progress and assignment_info and course_member_id:
             try:
                 course_id = assignment_info.course_id
-                course_member_id = student_info.course_member_ids[0]
                 if course_id:
+                    # Pass course_content_id and prefetched data to avoid duplicate API call
+                    course_content_ids = [course_content_id] if course_content_id else None
                     context.student_progress = await self.progress_service.get_member_progress(
-                        course_id, course_member_id
+                        course_id, course_member_id, course_content_ids,
+                        prefetched_content=course_content_data,
                     )
             except Exception as e:
                 logger.debug(f"Failed to get student progress: {e}")
@@ -410,17 +485,88 @@ class ContextBuilder:
             logger.warning(f"Failed to get assignment info: {e}")
             return None
 
+    def _extract_student_info(
+        self,
+        course_content: CourseContentStudentGet,
+        course_member_id: Optional[str] = None,
+    ) -> StudentInfo:
+        """
+        Extract student information from pre-fetched CourseContentStudentGet.
+
+        This avoids redundant API calls to /submission-groups and /submission-group-members.
+
+        Args:
+            course_content: Pre-fetched CourseContentStudentGet
+            course_member_id: Course member ID (if known from scheduler)
+
+        Returns:
+            StudentInfo extracted from course content
+        """
+        user_ids = []
+        names = []
+        emails = []
+        course_member_ids = []
+
+        # Extract from submission_group.members if available
+        sg = course_content.submission_group
+        if sg and sg.members:
+            for member in sg.members:
+                if member.user_id:
+                    user_ids.append(member.user_id)
+                if member.course_member_id:
+                    course_member_ids.append(member.course_member_id)
+                if member.full_name:
+                    names.append(member.full_name)
+                if member.username:
+                    # Username can be used as fallback for name
+                    if not member.full_name:
+                        names.append(member.username)
+
+        # If course_member_id was provided but not in members, add it
+        if course_member_id and course_member_id not in course_member_ids:
+            course_member_ids.append(course_member_id)
+
+        return StudentInfo(
+            user_ids=user_ids,
+            names=names,
+            emails=emails,
+            course_member_ids=course_member_ids,
+        )
+
+    def _extract_assignment_info(
+        self,
+        course_content: CourseContentStudentGet,
+    ) -> Optional[AssignmentInfo]:
+        """
+        Extract assignment information from pre-fetched CourseContentStudentGet.
+
+        This avoids redundant API calls to /submission-groups and /course-contents.
+
+        Args:
+            course_content: Pre-fetched CourseContentStudentGet
+
+        Returns:
+            AssignmentInfo extracted from course content
+        """
+        return AssignmentInfo(
+            course_content_id=course_content.id,
+            title=course_content.title,
+            description=course_content.description,
+            course_id=course_content.course_id,
+            course_title=None,  # Not available in CourseContentStudentGet
+        )
+
     async def _get_course_member_comments(
         self,
         course_member_id: str,
     ) -> list[str]:
         """Get comments for a course member."""
         try:
-            # Use ComputorClient.course_member_comments.list() directly
-            comments = await self.client.course_member_comments.list(
+            # Use the comments service which handles endpoint availability gracefully
+            comments = await self.comments_service.get_comments(
                 course_member_id=course_member_id,
+                include_ai_notes=True,
             )
-            # comments is list[CourseMemberCommentList] from computor-types
             return [c.content for c in comments if c.content]
         except Exception as e:
             logger.warning(f"Failed to get course member comments: {e}")

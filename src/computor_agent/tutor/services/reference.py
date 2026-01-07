@@ -283,10 +283,30 @@ class ReferenceService:
                 import shutil
                 shutil.rmtree(destination)
 
-            # Download the reference ZIP
-            buffer = await self.client.course_contents.download_reference(
-                id=course_content_id,
-            )
+            # Download the reference ZIP - try multiple endpoints
+            buffer = None
+
+            # Try course_contents endpoint first
+            if hasattr(self.client, 'course_contents'):
+                try:
+                    buffer = await self.client.course_contents.download_reference(
+                        id=course_content_id,
+                    )
+                except Exception as e:
+                    logger.debug(f"course_contents.download_reference failed: {e}")
+
+            # Try tutor endpoint as fallback
+            if not buffer and hasattr(self.client, 'tutors'):
+                try:
+                    # Get course content details which may include reference
+                    cc_details = await self.client.tutors.course_contents(course_content_id)
+                    if cc_details:
+                        ref_url = getattr(cc_details, 'reference_url', None)
+                        if ref_url:
+                            # Reference URL might need separate download
+                            logger.debug(f"Reference URL available: {ref_url}")
+                except Exception as e:
+                    logger.debug(f"tutors.course_contents for reference failed: {e}")
 
             if not buffer:
                 logger.warning(f"No reference available for {course_content_id}")
@@ -319,9 +339,16 @@ class ReferenceService:
             Dict of file_path -> content, or None on failure
         """
         try:
-            buffer = await self.client.course_contents.download_reference(
-                id=course_content_id,
-            )
+            buffer = None
+
+            # Try course_contents endpoint first
+            if hasattr(self.client, 'course_contents'):
+                try:
+                    buffer = await self.client.course_contents.download_reference(
+                        id=course_content_id,
+                    )
+                except Exception as e:
+                    logger.debug(f"course_contents.download_reference failed: {e}")
 
             if not buffer:
                 return None

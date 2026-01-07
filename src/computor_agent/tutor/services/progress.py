@@ -208,74 +208,100 @@ class ProgressService:
         self,
         course_id: str,
         course_member_id: str,
+        course_content_ids: Optional[list[str]] = None,
+        *,
+        prefetched_content: Optional[Any] = None,
     ) -> Optional[MemberProgress]:
         """
         Get progress for a specific course member.
 
+        Note: The tutors API requires specific course_content_ids to fetch progress.
+        If not provided, returns basic member info without detailed content progress.
+
         Args:
             course_id: Course ID
             course_member_id: Course member ID
+            course_content_ids: Optional list of course content IDs to check progress for
+            prefetched_content: Optional pre-fetched course content data to avoid API call
 
         Returns:
             MemberProgress or None on failure
         """
         try:
-            # Get course contents for this member via tutor endpoint
-            contents = await self.client.tutors.course_members_course_contents_list(
-                course_member_id=course_member_id,
-            )
-
-            if not contents:
-                return MemberProgress(
-                    course_member_id=course_member_id,
-                    course_id=course_id,
-                )
-
-            # Build content progress
             content_progress = []
             results = []
             gradings = []
             submitted_count = 0
             passing_count = 0
 
-            for c in contents:
-                # Get result and grading
-                result = None
-                result_obj = getattr(c, "result", None)
-                if result_obj:
-                    result = getattr(result_obj, "result", None)
+            # If we have specific course_content_ids, fetch progress for each
+            if course_content_ids and hasattr(self.client, 'tutors'):
+                for cc_id in course_content_ids:
+                    try:
+                        # Use prefetched content if available and matches this course_content_id
+                        content = None
+                        if prefetched_content:
+                            prefetched_cc_id = getattr(prefetched_content, "course_content_id", None)
+                            if prefetched_cc_id == cc_id:
+                                content = prefetched_content
 
-                grading = None
-                status = None
-                submitted = getattr(c, "submitted", False)
+                        # Otherwise fetch via API: GET /tutors/course-members/{cm_id}/course-contents/{cc_id}
+                        if not content:
+                            content = await self.client.tutors.get_course_members_course_contents(
+                                course_member_id, cc_id
+                            )
+                        if content:
+                            # Extract progress data from CourseContentStudentGet
+                            result = None
+                            result_obj = getattr(content, "result", None)
+                            if result_obj:
+                                result = getattr(result_obj, "result", None)
 
-                sg = getattr(c, "submission_group", None)
-                if sg:
-                    grading = getattr(sg, "grading", None)
-                    status = getattr(sg, "status", None)
+                            grading = None
+                            status = None
+                            submitted = getattr(content, "submitted", False) or getattr(content, "submission_count", 0) > 0
 
-                # Track aggregates
-                if result is not None:
-                    results.append(result)
-                    if result >= 1.0:
-                        passing_count += 1
+                            sg = getattr(content, "submission_group", None)
+                            if sg:
+                                # Get latest grading
+                                sg_gradings = getattr(sg, "gradings", None) or []
+                                if sg_gradings:
+                                    latest = sg_gradings[-1] if sg_gradings else None
+                                    if latest:
+                                        grading = getattr(latest, "grade", None)
+                                        status = getattr(latest, "status", None)
 
-                if grading is not None:
-                    gradings.append(grading)
+                            # Track aggregates
+                            if result is not None:
+                                results.append(result)
+                                if result >= 1.0:
+                                    passing_count += 1
 
-                if submitted:
-                    submitted_count += 1
+                            if grading is not None:
+                                gradings.append(grading)
 
-                content_progress.append(ContentProgress(
-                    course_content_id=c.id,
-                    title=getattr(c, "title", None),
-                    path=getattr(c, "path", None),
-                    result=result,
-                    grading=grading,
-                    status=status,
-                    submitted=submitted,
-                    has_unread_messages=getattr(c, "unread_message_count", 0) > 0,
-                ))
+                            if submitted:
+                                submitted_count += 1
+
+                            content_progress.append(ContentProgress(
+                                course_content_id=cc_id,
+                                title=getattr(content, "title", None),
+                                path=getattr(content, "path", None),
+                                result=result,
+                                grading=grading,
+                                status=str(status) if status else None,
+                                submitted=submitted,
+                                has_unread_messages=getattr(content, "unread_message_count", 0) > 0,
+                            ))
+                    except Exception as e:
+                        logger.debug(f"Failed to get content {cc_id} for member {course_member_id}: {e}")
+
+            # If no content_progress, return basic member info
+            if not content_progress:
+                return MemberProgress(
+                    course_member_id=course_member_id,
+                    course_id=course_id,
+                )
 
             # Calculate averages
             avg_result = sum(results) / len(results) if results else None
@@ -321,11 +347,16 @@ class ProgressService:
             CourseProgress or None on failure
         """
         try:
-            # Get course members
-            members = await self.client.tutors.course_members_list(
-                course_id=course_id,
-                group_id=group_id,
-            )
+            members = None
+
+            # Get course members using correct API: GET /tutors/course-members?course_id=...
+            if hasattr(self.client, 'tutors'):
+                try:
+                    members = await self.client.tutors.get_course_members(
+                        course_id=course_id,
+                    )
+                except Exception as e:
+                    logger.debug(f"tutors.get_course_members failed: {e}")
 
             if not members:
                 return CourseProgress(course_id=course_id)
@@ -448,28 +479,58 @@ class ProgressService:
 
     async def _get_member_info(self, course_member_id: str) -> dict[str, Any]:
         """Get basic member information."""
-        try:
-            member = await self.client.course_members.get(id=course_member_id)
-            if member:
-                return {
-                    "display_name": getattr(member, "display_name", None),
-                    "email": getattr(member, "email", None),
-                }
-        except Exception:
-            pass
+        # Try course_members endpoint
+        if hasattr(self.client, 'course_members'):
+            try:
+                member = await self.client.course_members.get(id=course_member_id)
+                if member:
+                    return {
+                        "display_name": getattr(member, "display_name", None),
+                        "email": getattr(member, "email", None),
+                    }
+            except Exception:
+                pass
+
+        # Try tutors endpoint as fallback
+        if hasattr(self.client, 'tutors'):
+            try:
+                member = await self.client.tutors.course_member(course_member_id)
+                if member:
+                    return {
+                        "display_name": getattr(member, "display_name", None),
+                        "email": getattr(member, "email", None),
+                    }
+            except Exception:
+                pass
+
         return {}
 
     async def _get_course_info(self, course_id: str) -> dict[str, Any]:
         """Get basic course information."""
-        try:
-            course = await self.client.courses.get(id=course_id)
-            if course:
-                return {
-                    "title": getattr(course, "title", None),
-                    "content_count": getattr(course, "content_count", 0),
-                }
-        except Exception:
-            pass
+        # Try courses endpoint
+        if hasattr(self.client, 'courses'):
+            try:
+                course = await self.client.courses.get(id=course_id)
+                if course:
+                    return {
+                        "title": getattr(course, "title", None),
+                        "content_count": getattr(course, "content_count", 0),
+                    }
+            except Exception:
+                pass
+
+        # Try tutors endpoint as fallback
+        if hasattr(self.client, 'tutors'):
+            try:
+                course = await self.client.tutors.course(course_id)
+                if course:
+                    return {
+                        "title": getattr(course, "title", None),
+                        "content_count": getattr(course, "content_count", 0),
+                    }
+            except Exception:
+                pass
+
         return {}
 
     async def get_struggling_members(
@@ -491,7 +552,13 @@ class ProgressService:
             List of struggling MemberProgress
         """
         try:
-            members = await self.client.tutors.course_members_list(course_id=course_id)
+            members = None
+
+            if hasattr(self.client, 'tutors'):
+                try:
+                    members = await self.client.tutors.get_course_members(course_id=course_id)
+                except Exception as e:
+                    logger.debug(f"tutors.get_course_members failed: {e}")
 
             if not members:
                 return []

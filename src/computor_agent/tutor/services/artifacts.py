@@ -187,6 +187,8 @@ class ArtifactsService:
         """
         List all artifacts for a submission group.
 
+        Note: This may return limited data depending on API availability.
+
         Args:
             submission_group_id: Submission group ID
             limit: Maximum number of artifacts to return
@@ -194,51 +196,73 @@ class ArtifactsService:
         Returns:
             List of Artifact objects, sorted by upload date (newest first)
         """
+        result = []
+
         try:
-            artifacts = await self.client.submission_artifacts.list(
-                submission_group_id=submission_group_id,
-            )
+            # Try to get artifacts via tutor endpoint first
+            if hasattr(self.client, 'tutors'):
+                try:
+                    sg_details = await self.client.tutors.submission_groups(submission_group_id)
+                    if sg_details:
+                        # Get submission count
+                        count = getattr(sg_details, 'count', 0) or 0
+                        overall_result = getattr(sg_details, 'result', None)
 
-            if not artifacts:
-                return []
+                        if count > 0:
+                            # Create a single artifact entry representing latest
+                            result.append(Artifact(
+                                id=f'{submission_group_id}-latest',
+                                submission_group_id=submission_group_id,
+                                result=float(overall_result) if overall_result else None,
+                                is_latest=True,
+                            ))
+                except Exception as e:
+                    logger.debug(f"Tutor endpoint for artifacts failed: {e}")
 
-            # Convert to our model and sort
-            result = []
-            for a in artifacts:
-                uploaded_at = None
-                if hasattr(a, "uploaded_at") and a.uploaded_at:
-                    if isinstance(a.uploaded_at, str):
-                        try:
-                            uploaded_at = datetime.fromisoformat(
-                                a.uploaded_at.replace("Z", "+00:00")
-                            )
-                        except ValueError:
-                            pass
-                    else:
-                        uploaded_at = a.uploaded_at
+            # Try direct endpoint if available
+            if not result and hasattr(self.client, 'submission_artifacts'):
+                try:
+                    artifacts = await self.client.submission_artifacts.list(
+                        submission_group_id=submission_group_id,
+                    )
 
-                # Get result from latest_result if available
-                result_value = None
-                latest_result = getattr(a, "latest_result", None)
-                if latest_result:
-                    result_value = getattr(latest_result, "result", None)
+                    if artifacts:
+                        for a in artifacts:
+                            uploaded_at = None
+                            if hasattr(a, "uploaded_at") and a.uploaded_at:
+                                if isinstance(a.uploaded_at, str):
+                                    try:
+                                        uploaded_at = datetime.fromisoformat(
+                                            a.uploaded_at.replace("Z", "+00:00")
+                                        )
+                                    except ValueError:
+                                        pass
+                                else:
+                                    uploaded_at = a.uploaded_at
 
-                result.append(Artifact(
-                    id=a.id,
-                    submission_group_id=submission_group_id,
-                    uploaded_at=uploaded_at,
-                    uploaded_by_id=getattr(a, "uploaded_by_course_member_id", None),
-                    file_size=getattr(a, "file_size", 0) or 0,
-                    version_identifier=getattr(a, "version_identifier", None),
-                    result=result_value,
-                ))
+                            result_value = None
+                            latest_result = getattr(a, "latest_result", None)
+                            if latest_result:
+                                result_value = getattr(latest_result, "result", None)
 
-            # Sort by upload date, newest first
-            result.sort(key=lambda x: x.uploaded_at or datetime.min, reverse=True)
+                            result.append(Artifact(
+                                id=a.id,
+                                submission_group_id=submission_group_id,
+                                uploaded_at=uploaded_at,
+                                uploaded_by_id=getattr(a, "uploaded_by_course_member_id", None),
+                                file_size=getattr(a, "file_size", 0) or 0,
+                                version_identifier=getattr(a, "version_identifier", None),
+                                result=result_value,
+                            ))
 
-            # Mark latest
-            if result:
-                result[0].is_latest = True
+                        # Sort by upload date, newest first
+                        result.sort(key=lambda x: x.uploaded_at or datetime.min, reverse=True)
+
+                        # Mark latest
+                        if result:
+                            result[0].is_latest = True
+                except Exception as e:
+                    logger.debug(f"submission_artifacts endpoint failed: {e}")
 
             if limit:
                 result = result[:limit]
@@ -360,8 +384,25 @@ class ArtifactsService:
     async def _download_artifact(self, artifact_id: str) -> Optional[bytes]:
         """Download artifact ZIP as bytes."""
         try:
-            # Use the client's download method
-            buffer = await self.client.submission_artifacts.download(id=artifact_id)
+            buffer = None
+
+            # Try submission_artifacts endpoint
+            if hasattr(self.client, 'submission_artifacts'):
+                try:
+                    buffer = await self.client.submission_artifacts.download(id=artifact_id)
+                except Exception as e:
+                    logger.debug(f"submission_artifacts.download failed: {e}")
+
+            # Try tutor endpoint as fallback
+            if not buffer and hasattr(self.client, 'tutors'):
+                try:
+                    buffer = await self.client.tutors.download_artifact(artifact_id)
+                except Exception as e:
+                    logger.debug(f"tutors.download_artifact failed: {e}")
+
+            if not buffer:
+                logger.warning(f"No endpoint available to download artifact {artifact_id}")
+
             return buffer
         except Exception as e:
             logger.error(f"Failed to download artifact {artifact_id}: {e}")
@@ -370,7 +411,15 @@ class ArtifactsService:
     async def _get_artifact_metadata(self, artifact_id: str) -> Optional[Artifact]:
         """Get artifact metadata."""
         try:
-            a = await self.client.submission_artifacts.get(id=artifact_id)
+            a = None
+
+            # Try submission_artifacts endpoint
+            if hasattr(self.client, 'submission_artifacts'):
+                try:
+                    a = await self.client.submission_artifacts.get(id=artifact_id)
+                except Exception as e:
+                    logger.debug(f"submission_artifacts.get failed: {e}")
+
             if not a:
                 return None
 
