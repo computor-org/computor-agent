@@ -471,11 +471,18 @@ def providers():
     is_flag=True,
     help="Run in development mode (no API calls, interactive shell)",
 )
+@click.option(
+    "--prompts-dir",
+    type=click.Path(),
+    default=None,
+    help="Directory for prompt markdown files (default: ~/.computor/prompts). Missing files will be auto-created.",
+)
 def tutor(
     config: str,
     verbose: bool,
     dry_run: bool,
     dev: bool,
+    prompts_dir: Optional[str],
 ):
     """
     Start the Tutor AI agent.
@@ -513,7 +520,8 @@ def tutor(
     if dev:
         # Run development mode
         from computor_agent.tutor.dev_mode import run_development_mode
-        asyncio.run(run_development_mode(config_path, verbose))
+        prompts_path = Path(prompts_dir) if prompts_dir else None
+        asyncio.run(run_development_mode(config_path, verbose, prompts_path))
         return
 
     try:
@@ -550,18 +558,38 @@ def tutor(
         )
     )
 
-    asyncio.run(_run_tutor(computor_config, tutor_config, git_credentials, dry_run))
+    prompts_path = Path(prompts_dir) if prompts_dir else None
+    asyncio.run(_run_tutor(computor_config, tutor_config, git_credentials, dry_run, prompts_path))
 
 
-async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bool):
+async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bool, prompts_dir: Optional[Path] = None):
     """Run the tutor agent."""
     from computor_client import ComputorClient
 
     from computor_agent.llm.config import LLMConfig, ProviderType
     from computor_agent.llm.factory import get_provider
     from computor_agent.tutor import TutorAgent, TutorScheduler, SchedulerConfig, TutorLLMAdapter
+    from computor_agent.tutor.prompts.loader import get_prompt_loader
 
     logger = logging.getLogger(__name__)
+
+    # Initialize prompt loader only if prompts_dir is specified
+    if prompts_dir is not None:
+        prompts_dir = Path(prompts_dir).expanduser().resolve()
+
+        # Auto-initialize missing files when directory is explicitly specified
+        from computor_agent.tutor.dev_mode import _ensure_prompt_files
+        _ensure_prompt_files(prompts_dir)
+
+        logger.info(f"Loading prompts from: {prompts_dir}")
+        prompt_loader = get_prompt_loader(
+            prompts_dir=prompts_dir,
+            enable_hot_reload=False,  # No hot reload in production
+            force_reload=True
+        )
+    else:
+        # No prompts directory specified - will use hardcoded templates
+        logger.info("Using built-in prompt templates")
 
     # Create LLM provider
     if not computor_config.llm:

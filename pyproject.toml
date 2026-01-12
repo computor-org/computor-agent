@@ -33,6 +33,7 @@ dependencies = [
     "PyYAML>=6.0",
     "computor-client>=0.2.0",
     "computor-types>=0.1.0",
+    "watchdog>=3.0",  # For hot reload of prompt files
 ]
 
 [project.optional-dependencies]

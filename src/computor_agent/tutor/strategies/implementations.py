@@ -56,7 +56,15 @@ class BaseStrategyImpl(BaseStrategy):
     def get_personality_prompt(self) -> str:
         """Get the personality prompt based on config."""
         tone = self.personality_config.tone.value
-        prompt = PERSONALITY_PROMPTS.get(tone, PERSONALITY_PROMPTS["friendly_professional"])
+
+        # Try to get from loader first, fall back to templates
+        try:
+            from computor_agent.tutor.prompts.loader import get_personality_prompt
+            prompt = get_personality_prompt(tone)
+        except:
+            # Fall back to hardcoded templates
+            prompt = PERSONALITY_PROMPTS.get(tone, PERSONALITY_PROMPTS["friendly_professional"])
+
         return prompt.format(tutor_name=self.personality_config.name)
 
     def build_system_prompt(
@@ -65,7 +73,13 @@ class BaseStrategyImpl(BaseStrategy):
         config: "StrategyConfig",
     ) -> str:
         """Build system prompt using template and context."""
-        template = STRATEGY_PROMPTS.get(self.prompt_key, STRATEGY_PROMPTS["other"])
+        # Try to get from loader first, fall back to templates
+        try:
+            from computor_agent.tutor.prompts.loader import get_strategy_prompt
+            template = get_strategy_prompt(self.prompt_key)
+        except:
+            # Fall back to hardcoded templates
+            template = STRATEGY_PROMPTS.get(self.prompt_key, STRATEGY_PROMPTS["other"])
 
         # Gather template variables
         variables = {

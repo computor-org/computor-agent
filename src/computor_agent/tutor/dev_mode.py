@@ -325,6 +325,85 @@ class MockSubmissionsEndpoint:
     pass
 
 
+def _ensure_prompt_files(prompts_dir: Path) -> None:
+    """
+    Ensure all required prompt files exist in the directory.
+
+    Creates missing files with default content but doesn't overwrite existing ones.
+
+    Args:
+        prompts_dir: Directory to check/create prompt files in
+    """
+    from computor_agent.tutor.prompts.templates import (
+        PERSONALITY_PROMPTS,
+        STRATEGY_PROMPTS,
+        SECURITY_DETECTION_PROMPT,
+        SECURITY_CONFIRMATION_PROMPT,
+    )
+
+    # Create directory structure
+    personality_dir = prompts_dir / "personality"
+    strategy_dir = prompts_dir / "strategy"
+    security_dir = prompts_dir / "security"
+
+    for dir_path in [personality_dir, strategy_dir, security_dir]:
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+    initialized_count = 0
+
+    # Check and create personality prompts
+    for tone, content in PERSONALITY_PROMPTS.items():
+        file_path = personality_dir / f"{tone}.md"
+        if not file_path.exists():
+            _write_prompt_file(file_path, content, f"Personality: {tone}")
+            initialized_count += 1
+            logger.debug(f"Created prompt file: {file_path}")
+
+    # Check and create strategy prompts
+    for strategy, content in STRATEGY_PROMPTS.items():
+        file_path = strategy_dir / f"{strategy}.md"
+        if not file_path.exists():
+            _write_prompt_file(file_path, content, f"Strategy: {strategy}")
+            initialized_count += 1
+            logger.debug(f"Created prompt file: {file_path}")
+
+    # Check and create security prompts
+    security_prompts = {
+        "detection": SECURITY_DETECTION_PROMPT,
+        "confirmation": SECURITY_CONFIRMATION_PROMPT,
+    }
+
+    for name, content in security_prompts.items():
+        file_path = security_dir / f"{name}.md"
+        if not file_path.exists():
+            _write_prompt_file(file_path, content, f"Security: {name}")
+            initialized_count += 1
+            logger.debug(f"Created prompt file: {file_path}")
+
+    if initialized_count > 0:
+        console.print(f"[green]✓ Initialized {initialized_count} missing prompt files[/green]")
+
+
+def _write_prompt_file(file_path: Path, content: str, title: str = "") -> None:
+    """
+    Write a prompt to a markdown file with frontmatter.
+
+    Args:
+        file_path: Path to write to
+        content: Prompt content
+        title: Title for frontmatter
+    """
+    frontmatter = f"""---
+title: {title}
+generated: true
+editable: true
+---
+
+"""
+    full_content = frontmatter + content
+    file_path.write_text(full_content)
+
+
 class DevelopmentScheduler:
     """Interactive scheduler for development mode."""
 
@@ -414,6 +493,13 @@ class DevelopmentScheduler:
             self.simulator.conversation_chains.clear()
             console.print("[yellow]All messages cleared[/yellow]")
 
+        elif cmd == "/reload":
+            # Manually reload all prompts
+            from computor_agent.tutor.prompts.loader import get_prompt_loader
+            loader = get_prompt_loader()
+            loader.load_all()
+            console.print("[green]✅ All prompts reloaded[/green]")
+
         else:
             console.print(f"[red]Unknown command: {cmd}[/red]")
 
@@ -484,21 +570,51 @@ class DevelopmentScheduler:
             logger.exception("Failed to process message")
 
 
-async def run_development_mode(config_path: Path, verbose: bool = False):
+async def run_development_mode(config_path: Path, verbose: bool = False, prompts_dir: Optional[Path] = None):
     """
     Run the tutor agent in development mode.
 
     This mode allows interactive testing without API calls.
+    Features hot reload for prompt files.
+
+    Args:
+        config_path: Path to configuration file
+        verbose: Enable verbose logging
+        prompts_dir: Directory for prompt files (default: ~/.computor/prompts)
     """
     from computor_agent.settings import ComputorConfig
     from computor_agent.llm.config import LLMConfig, ProviderType
     from computor_agent.llm.factory import get_provider
     from computor_agent.tutor import TutorAgent, TutorLLMAdapter
+    from computor_agent.tutor.prompts.loader import get_prompt_loader
 
     # Load configuration
     logger.info(f"Loading config from {config_path}")
     computor_config = ComputorConfig.from_file(config_path)
     tutor_config = computor_config.get_tutor_config()
+
+    # Setup prompt hot reload callback
+    def on_prompt_reload(filename: str):
+        """Callback when a prompt file is reloaded."""
+        console.print(f"[yellow]🔄 Prompt reloaded: {filename}[/yellow]")
+
+    # Determine prompts directory
+    if prompts_dir is None:
+        prompts_dir = Path.home() / ".computor" / "prompts"
+    else:
+        prompts_dir = Path(prompts_dir).expanduser().resolve()
+
+    # Auto-initialize missing prompt files
+    _ensure_prompt_files(prompts_dir)
+
+    console.print(f"[dim]Loading prompts from: {prompts_dir}[/dim]")
+
+    prompt_loader = get_prompt_loader(
+        prompts_dir=prompts_dir,
+        enable_hot_reload=True,
+        reload_callback=on_prompt_reload,
+        force_reload=True
+    )
 
     # Create LLM provider
     if not computor_config.llm:
@@ -527,9 +643,25 @@ async def run_development_mode(config_path: Path, verbose: bool = False):
     )
 
     # Create and start development scheduler
+    console.print(Panel(
+        "[bold green]Development Mode with Hot Reload[/bold green]\n\n"
+        f"Prompts directory: [cyan]{prompts_dir}[/cyan]\n"
+        "Hot reload: [green]Enabled[/green] - Edit .md files to see changes instantly\n\n"
+        "Commands:\n"
+        "  [yellow]/new[/yellow] - Start a new conversation\n"
+        "  [yellow]/show[/yellow] - Show conversation history\n"
+        "  [yellow]/reload[/yellow] - Manually reload all prompts\n"
+        "  [yellow]/exit[/yellow] - Exit development mode",
+        title="Tutor Agent Development Mode",
+        border_style="green"
+    ))
+
     scheduler = DevelopmentScheduler(agent, simulator)
 
     try:
         await scheduler.start()
     except KeyboardInterrupt:
         console.print("\n[yellow]Development mode stopped.[/yellow]")
+    finally:
+        # Stop watching files
+        prompt_loader.stop_watching()
