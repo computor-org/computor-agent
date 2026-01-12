@@ -1,22 +1,39 @@
 # Tutor Agent: Two Processing Approaches
 
-This document describes the two main processing approaches for the Tutor AI Agent.
+This document provides an overview of the two main tasks for the Tutor AI Agent.
+
+> **Implementation Order:**
+> 1. **Messaging** (help conversations) - See [tutor-messaging.md](./tutor-messaging.md) ← **CURRENT FOCUS**
+> 2. **Grading** (submission review) - See [tutor-grading.md](./tutor-grading.md) ← POSTPONED
 
 ---
 
 ## Overview
 
-The tutor agent handles two distinct scenarios:
+The tutor agent handles two **distinct and separate** tasks:
 
-| Approach | Trigger | Purpose | Output |
-|----------|---------|---------|--------|
-| **1. Message Help** | Student writes message with `#ai::request` tag | Answer questions, help with code | Response message |
-| **2. Submission Review** | Ungraded submission detected | Review submission, determine status | Response message + Grade + Status |
+| Task | Trigger | Purpose | Output | Status |
+|------|---------|---------|--------|--------|
+| **1. Messaging** | Message with `#ai::request` tag | Help students with questions | Response message | **IN PROGRESS** |
+| **2. Grading** | Ungraded submission | Review and grade code | Grade + Status + Feedback | POSTPONED |
 
-Both approaches share:
-- Security checks (prompt injection, malicious code detection)
-- Context gathering (conversation, code, assignment description)
-- LLM-based response generation
+These tasks are **independent** and should be implemented separately.
+
+### Shared Components
+
+Both tasks share:
+- Authentication (API tokens)
+- Security checks (prompt injection detection)
+- Assignment description fetching (from GitLab)
+
+---
+
+## Authentication
+
+| API | Header | Token Format |
+|-----|--------|--------------|
+| Computor Backend | `X-API-Token` | `ctp_<32chars>` (from config.yaml) |
+| GitLab (for repos) | `PRIVATE-TOKEN` | `glpat-<token>` (from credentials.yaml) |
 
 ---
 
@@ -28,11 +45,17 @@ The `/tutors` endpoints provide pre-aggregated information optimized for the tut
 
 | Endpoint | Purpose | Key Fields |
 |----------|---------|------------|
-| `GET /tutors/submission-groups?has_ungraded_submissions=true` | Find work needing grading | `has_ungraded_submissions`, `latest_submission_at` |
-| `GET /tutors/submission-groups/{id}` | Get submission details | `members`, `grading_statistics`, `latest_submission_id` |
-| `GET /tutors/course-members/{cm_id}/course-contents/{cc_id}` | Get student work + test results | `result`, `submission_group.gradings` |
+| `GET /tutors/course-members` | List course members with counts | `unread_message_count`, `ungraded_submissions_count` |
+| `GET /tutors/course-members/{cm_id}/course-contents` | List course contents for member | `submission_group`, `result` |
+| `GET /tutors/course-members/{cm_id}/course-contents/{cc_id}` | Get student work + test results | `result`, `submission_group.gradings`, `directory` |
 | `PATCH /tutors/course-members/{cm_id}/course-contents/{cc_id}` | Submit grade | `grade`, `status`, `feedback` |
-| `GET /tutors/course-contents/{cc_id}/reference` | Download reference solution | ZIP file |
+| `GET /students/courses/{course_id}` | Get course info (for repo paths) | `repository.provider_url`, `repository.full_path` |
+
+### Submission Endpoints
+
+| Endpoint | Purpose | Parameters |
+|----------|---------|------------|
+| `GET /submissions/artifacts/download` | Download latest submission artifact | `submission_group_id` OR (`course_content_id` + `course_member_id`) |
 
 ### Message Endpoints
 
@@ -41,6 +64,44 @@ The `/tutors` endpoints provide pre-aggregated information optimized for the tut
 | `GET /messages?tags=ai::request&unread=true` | Find tagged messages | `tags`, `unread`, `parent_id` |
 | `POST /messages` | Send response | `content`, `title`, `parent_id` |
 | `POST /messages/{id}/reads` | Mark as read | - |
+
+---
+
+## Assignment Description Location
+
+Assignment descriptions are stored in the **student-template repository** on GitLab.
+
+### How to Fetch
+
+1. Get course info: `GET /students/courses/{course_id}`
+   - Extract: `repository.provider_url` and `repository.full_path`
+
+2. Build student-template path:
+   ```
+   {provider_url}/{full_path}/student-template
+   ```
+
+3. Get assignment directory from course content's `directory` field
+
+4. Fetch README via GitLab API:
+   ```
+   GET {provider_url}/api/v4/projects/{encoded_path}/repository/files/{directory}/README_en.md?ref=main
+   ```
+
+5. Fallback order: `README_en.md` → `README_de.md` → `README.md`
+
+### Example
+
+```
+Course: Programming in Physics MATLAB
+  provider_url: http://localhost:8084
+  full_path: test/showcases/programming/matlab.sc
+
+Assignment: "Anonymous Functions"
+  directory: itpcp.pgph.mat.anonymous_function
+
+README path: test/showcases/programming/matlab.sc/student-template/itpcp.pgph.mat.anonymous_function/README_en.md
+```
 
 ---
 
@@ -114,8 +175,16 @@ A student writes a message with a configured trigger tag (e.g., `#ai::request`) 
 
 ## Approach 2: Submission Review
 
-### Trigger
-An ungraded submission is detected via the tutor endpoint.
+### Trigger Conditions
+
+A submission should be graded when **ALL** of the following are true:
+
+| Condition | Location | Check |
+|-----------|----------|-------|
+| No existing gradings | `submission_group.gradings` | `gradings == []` (empty list) |
+| Status is "not reviewed" | `submission_group.status` | `status == None` or `status == "not_reviewed"` |
+
+**Re-submissions**: Do NOT re-grade if already graded (gradings list is not empty).
 
 ### Flow
 
@@ -124,28 +193,31 @@ An ungraded submission is detected via the tutor endpoint.
 │                   SUBMISSION REVIEW FLOW                        │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  1. FIND UNGRADED SUBMISSIONS                                   │
-│     GET /tutors/submission-groups?has_ungraded_submissions=true │
-│     → Returns ONLY groups that need grading (pre-filtered!)    │
-│     → Includes: latest_submission_at, member_count, etc.       │
+│  1. FIND COURSE MEMBERS WITH WORK                               │
+│     GET /tutors/course-members                                  │
+│     → Filter by: ungraded_submissions_count > 0                │
+│     → Returns course members needing attention                  │
 │                                                                 │
-│  2. GET SUBMISSION DETAILS                                      │
-│     GET /tutors/submission-groups/{submission_group_id}         │
-│     → Get: members[], course_content_id, course_id             │
-│     → Get: grading_statistics, latest_submission_id            │
+│  2. GET COURSE CONTENTS FOR MEMBER                              │
+│     GET /tutors/course-members/{cm_id}/course-contents          │
+│     → Filter by: has_ungraded_submission=true                  │
+│     → Returns list of course contents needing grading          │
 │                                                                 │
-│  3. GET STUDENT WORK + TEST RESULTS                             │
+│  3. GET COURSE CONTENT DETAILS                                  │
 │     GET /tutors/course-members/{cm_id}/course-contents/{cc_id}  │
 │     → Get: result.result (test score float 0-1)                │
 │     → Get: result.result_json (detailed test output)           │
-│     → Get: submission_group.gradings (grading history)         │
+│     → Get: submission_group.gradings (check if empty!)         │
+│     → Get: submission_group.status (check if not_reviewed!)    │
+│     → Get: directory (for assignment description path)         │
 │                                                                 │
-│  4. DOWNLOAD CODE & REFERENCE                                   │
-│     ├─ Download student artifact (via submissions endpoint)    │
-│     │   └─ Read content/index_en.md (assignment requirements)  │
-│     ├─ Download reference solution                             │
-│     │   GET /tutors/course-contents/{cc_id}/reference          │
-│     │   └─ Read content/index_en.md (what student should do)   │
+│  4. DOWNLOAD CODE & ASSIGNMENT DESCRIPTION                      │
+│     ├─ Download student artifact                               │
+│     │   GET /submissions/artifacts/download                    │
+│     │   params: submission_group_id OR (course_content_id +    │
+│     │           course_member_id)                              │
+│     ├─ Fetch assignment description from GitLab                │
+│     │   → student-template/{directory}/README_en.md            │
 │     └─ Load AI notes for this student/group                    │
 │                                                                 │
 │  3. SECURITY CHECK                                              │
