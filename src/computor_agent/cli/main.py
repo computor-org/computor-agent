@@ -466,10 +466,16 @@ def providers():
     is_flag=True,
     help="Don't send responses, just log what would happen",
 )
+@click.option(
+    "--dev",
+    is_flag=True,
+    help="Run in development mode (no API calls, interactive shell)",
+)
 def tutor(
     config: str,
     verbose: bool,
     dry_run: bool,
+    dev: bool,
 ):
     """
     Start the Tutor AI agent.
@@ -493,12 +499,22 @@ def tutor(
 
         # Verbose mode with dry run
         computor-agent tutor -v --dry-run
+
+        # Development mode (interactive, no API calls)
+        computor-agent tutor --dev
     """
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
 
     # Load configuration
     config_path = Path(config)
+
+    # Check if running in development mode
+    if dev:
+        # Run development mode
+        from computor_agent.tutor.dev_mode import run_development_mode
+        asyncio.run(run_development_mode(config_path, verbose))
+        return
 
     try:
         from computor_agent.settings import ComputorConfig
