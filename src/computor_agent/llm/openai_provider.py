@@ -188,6 +188,7 @@ class OpenAIProvider(LLMProvider):
         }
 
         logger.debug(f"Sending completion request to {self.config.base_url}/chat/completions")
+        logger.debug(f"LLM Request messages:\n{json.dumps(messages, indent=2)}")
 
         try:
             response = await client.post(
@@ -200,9 +201,12 @@ class OpenAIProvider(LLMProvider):
 
             data = response.json()
             choice = data["choices"][0]
+            content = choice["message"]["content"]
+
+            logger.debug(f"LLM Response:\n{content}")
 
             return LLMResponse(
-                content=choice["message"]["content"],
+                content=content,
                 model=data.get("model", self.config.model),
                 finish_reason=choice.get("finish_reason"),
                 usage=data.get("usage"),
@@ -266,6 +270,7 @@ class OpenAIProvider(LLMProvider):
         }
 
         logger.debug(f"Sending streaming request to {self.config.base_url}/chat/completions")
+        logger.debug(f"LLM Request messages:\n{json.dumps(messages, indent=2)}")
 
         try:
             async with client.stream(

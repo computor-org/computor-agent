@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from computor_agent.tutor.context import ConversationContext
     from computor_agent.tutor.config import StrategyConfig
+    from computor_agent.tutor.intents.types import IntentClassification
     from computor_agent.llm import LLMProvider
 
 
@@ -134,6 +135,7 @@ class BaseStrategy(ABC):
     async def execute(
         self,
         context: "ConversationContext",
+        classification: "IntentClassification",
         llm: "LLMProvider",
         config: "StrategyConfig",
     ) -> StrategyResponse:
@@ -142,6 +144,7 @@ class BaseStrategy(ABC):
 
         Args:
             context: The conversation context
+            classification: Intent classification result (includes user_intent_description)
             llm: LLM provider for generating responses
             config: Strategy-specific configuration
 

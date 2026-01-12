@@ -8,17 +8,17 @@ Each intent maps to a strategy that:
 4. Formats the response
 
 Strategies are registered in a registry that maps Intent -> Strategy.
+When no intent matches (intent=None), the FallbackStrategy is used.
 """
 
 from computor_agent.tutor.strategies.base import BaseStrategy, StrategyResponse
 from computor_agent.tutor.strategies.implementations import (
     ClarificationStrategy,
+    FallbackStrategy,
     HelpDebugStrategy,
     HelpReviewStrategy,
-    OtherStrategy,
     QuestionExampleStrategy,
     QuestionHowtoStrategy,
-    SubmissionReviewStrategy,
 )
 from computor_agent.tutor.strategies.registry import StrategyRegistry
 
@@ -30,7 +30,6 @@ __all__ = [
     "QuestionHowtoStrategy",
     "HelpDebugStrategy",
     "HelpReviewStrategy",
-    "SubmissionReviewStrategy",
     "ClarificationStrategy",
-    "OtherStrategy",
+    "FallbackStrategy",
 ]

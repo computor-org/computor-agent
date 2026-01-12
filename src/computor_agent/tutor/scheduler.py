@@ -1,20 +1,18 @@
 """
 Scheduler for the Tutor AI Agent.
 
-Polls for:
-1. Course members with ungraded submissions (ungraded_submissions_count > 0)
-2. Course members with unread messages (unread_message_count > 0)
+Polls for course members with unread messages (unread_message_count > 0).
 
-The scheduler is configurable and calls the TutorAgent when triggers are detected.
+The scheduler is configurable and calls the TutorAgent when message triggers are detected.
 Tag-based trigger detection uses the TriggerConfig from tutor config.
 
 Efficient API flow (minimal calls):
 1. GET /tutors/course-members?course_id=...
-   → Get list with ungraded_submissions_count and unread_message_count
+   → Get list with unread_message_count
 2. GET /tutors/course-members/{cm_id}
    → Get unreviewed_course_contents list for members needing attention
 3. GET /tutors/course-members/{cm_id}/course-contents/{cc_id}
-   → Get full details (test results, gradings, submission_group) for processing
+   → Get full details for processing
 """
 
 import asyncio
@@ -22,12 +20,11 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Generic, Optional, Protocol, Set, TypeVar, Union
+from typing import Callable, Generic, Optional, Protocol, TypeVar, Union
 
 from pydantic import BaseModel, Field
 
 # Import API types from computor-types (source of truth)
-from computor_types.grading import GradingStatus
 from computor_types.student_course_contents import (
     CourseContentStudentGet,
     CourseContentStudentList,
@@ -38,7 +35,6 @@ from computor_agent.tutor.config import TriggerConfig
 from computor_agent.tutor.trigger import (
     TriggerChecker,
     TriggerCheckResult,
-    SubmissionTrigger,
     STAFF_ROLES,
 )
 
@@ -100,20 +96,12 @@ class SchedulerConfig(BaseModel):
         default=5,
         ge=1,
         le=50,
-        description="Maximum concurrent submission groups being processed",
+        description="Maximum concurrent message groups being processed",
     )
     cooldown_seconds: int = Field(
         default=60,
         ge=0,
         description="Minimum seconds between processing the same submission group",
-    )
-    check_messages: bool = Field(
-        default=True,
-        description="Check for unanswered student messages",
-    )
-    check_submissions: bool = Field(
-        default=True,
-        description="Check for new submissions with submit=True",
     )
     cache: CacheConfig = Field(
         default_factory=CacheConfig,
@@ -267,13 +255,12 @@ class ComputorClientProtocol(Protocol):
 
 class TutorScheduler:
     """
-    Scheduler that polls for tutor triggers and invokes processing.
+    Scheduler that polls for message triggers and invokes processing.
 
     The scheduler:
     1. Polls submission groups for messages with configured request tags
-    2. Polls for new submission artifacts with submit=True
-    3. Invokes a callback when triggers are detected
-    4. Manages cooldowns and concurrent processing limits
+    2. Invokes a callback when message triggers are detected
+    3. Manages cooldowns and concurrent processing limits
 
     Usage:
         trigger_config = TriggerConfig(
@@ -285,7 +272,6 @@ class TutorScheduler:
             config=scheduler_config,
             trigger_config=trigger_config,
             on_message_trigger=handle_message,
-            on_submission_trigger=handle_submission,
         )
 
         # Start polling
@@ -301,7 +287,6 @@ class TutorScheduler:
         config: SchedulerConfig,
         trigger_config: Optional[TriggerConfig] = None,
         on_message_trigger: Optional[Callable] = None,
-        on_submission_trigger: Optional[Callable] = None,
     ) -> None:
         """
         Initialize the scheduler.
@@ -315,17 +300,11 @@ class TutorScheduler:
                     trigger: TriggerCheckResult,
                     course_content: CourseContentStudentGet
                 ) -> None
-            on_submission_trigger: Async callback when submission trigger detected
-                Signature: async def callback(
-                    trigger: TriggerCheckResult,
-                    course_content: CourseContentStudentGet
-                ) -> None
         """
         self.client = client
         self.config = config
         self.trigger_config = trigger_config or TriggerConfig()
         self.on_message_trigger = on_message_trigger
-        self.on_submission_trigger = on_submission_trigger
 
         self._trigger_checker = TriggerChecker(
             messages_client=client.messages,
@@ -341,9 +320,6 @@ class TutorScheduler:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._semaphore: Optional[asyncio.Semaphore] = None
-
-        # Track processed artifacts to avoid duplicates
-        self._processed_artifacts: Set[str] = set()
 
     async def start(self) -> None:
         """Start the scheduler polling loop."""
@@ -395,43 +371,27 @@ class TutorScheduler:
 
         Flow:
         1. GET /tutors/course-members → Get all members with counts
-        2. Filter to members with ungraded_submissions_count > 0 or unread_message_count > 0
-        3. For each, GET /tutors/course-members/{cm_id} → Get unreviewed_course_contents
-        4. For each course content, GET details and process
+        2. Filter to members with unread_message_count > 0
+        3. For each, GET /tutors/course-members/{cm_id} → Get course_contents
+        4. For each course content with unread messages, GET details and process
         """
         tasks = []
 
-        # =====================================================================
-        # Get course members that need attention (single API call per course)
-        # =====================================================================
         try:
             # Get all course members the tutor can see
-            # TutorCourseMemberList has: ungraded_submissions_count, unread_message_count
+            # TutorCourseMemberList has: unread_message_count
             members = await self._get_all_course_members()
 
             if not members:
                 logger.debug("No course members found")
                 return
 
-            # Filter to members needing attention
+            # Filter to members with unread messages
+            # Note: All roles are included - staff members can also request AI help
             members_needing_attention = []
             for member in members:
-                needs_submission_check = (
-                    self.config.check_submissions
-                    and self.on_submission_trigger
-                    and (member.ungraded_submissions_count or 0) > 0
-                )
-                needs_message_check = (
-                    self.config.check_messages
-                    and self.on_message_trigger
-                    and (member.unread_message_count or 0) > 0
-                )
-
-                # Skip staff members (tutors, lecturers)
-                if member.course_role_id in STAFF_ROLES:
-                    continue
-
-                if needs_submission_check or needs_message_check:
+                # Check for unread messages
+                if self.on_message_trigger and (member.unread_message_count or 0) > 0:
                     members_needing_attention.append(member)
 
             logger.debug(
@@ -458,7 +418,7 @@ class TutorScheduler:
         """
         Process a course member that needs attention.
 
-        Gets course contents list and processes those needing attention.
+        Gets course contents list and processes those with unread messages.
         Only fetches detailed content for items that actually need processing.
         """
         async with self._semaphore:
@@ -469,26 +429,9 @@ class TutorScheduler:
                 if not course_contents:
                     return
 
-                # Filter to course contents that need attention
+                # Filter to course contents with unread messages
                 for cc in course_contents:
-                    needs_attention = False
-
-                    # Check for ungraded submissions
-                    # SubmissionGroupStudentList has: count (submissions), grading (latest grade float)
-                    # If count > 0 and status is not "corrected", it may need grading
-                    if self.config.check_submissions and self.on_submission_trigger:
-                        sg = cc.submission_group
-                        if sg and sg.count and sg.count > 0:
-                            # Has submissions - if status is not set or not "corrected", needs attention
-                            if sg.status is None or sg.status not in ("corrected", "improvement_possible"):
-                                needs_attention = True
-
-                    # Check for unread messages
-                    if self.config.check_messages and self.on_message_trigger:
-                        if cc.unread_message_count > 0:
-                            needs_attention = True
-
-                    if not needs_attention:
+                    if cc.unread_message_count <= 0:
                         continue
 
                     # Check cooldown using submission_group_id if available
@@ -514,10 +457,9 @@ class TutorScheduler:
         content: CourseContentStudentGet,
     ) -> None:
         """
-        Process a course content that needs attention.
+        Process a course content that has unread messages.
 
-        Determines if it's a submission trigger or message trigger and calls
-        the appropriate callback.
+        Checks for message triggers and calls the callback.
         """
         sg = content.submission_group
         if not sg:
@@ -533,41 +475,6 @@ class TutorScheduler:
 
         state.processing = True
         try:
-            # Check for submission trigger (ungraded submission)
-            needs_grading, artifact_id = self._needs_grading(content)
-            if needs_grading and self.on_submission_trigger:
-                # Get latest artifact ID if not already known
-                if not artifact_id:
-                    # Use submission count or gradings to infer
-                    artifact_id = f"submission-{submission_group_id}"
-
-                # Check if already processed
-                if artifact_id not in self._processed_artifacts:
-                    result = TriggerCheckResult(
-                        should_respond=True,
-                        reason=f"Ungraded submission for {member.user.given_name} {member.user.family_name}",
-                        submission_trigger=SubmissionTrigger(
-                            artifact_id=artifact_id,
-                            submission_group_id=submission_group_id,
-                            uploaded_by_course_member_id=member.id,
-                            version_identifier=None,
-                            file_size=0,
-                            uploaded_at=None,
-                        ),
-                    )
-
-                    logger.info(
-                        f"Submission trigger for {member.id} on {content.id}: "
-                        f"artifact={artifact_id}"
-                    )
-
-                    # Pass full content data to callback for context
-                    await self.on_submission_trigger(result, content)
-
-                    self._processed_artifacts.add(artifact_id)
-                    state.last_artifact_id = artifact_id
-                    state.last_processed = datetime.now()
-
             # Check for message trigger (unread messages)
             if content.unread_message_count > 0 and self.on_message_trigger:
                 # Use trigger checker to get message details
@@ -583,7 +490,6 @@ class TutorScheduler:
                             f"{result.reason}"
                         )
 
-                        # Create a minimal submission group object for callback
                         await self.on_message_trigger(result, content)
 
                         state.last_message_id = result.message_trigger.message_id
@@ -652,54 +558,6 @@ class TutorScheduler:
             logger.warning(f"Failed to get course content {course_member_id}:{course_content_id}: {e}")
             return None
 
-    def _needs_grading(self, content: Optional[CourseContentStudentGet]) -> tuple[bool, Optional[str]]:
-        """
-        Determine if a course content needs grading based on its state.
-
-        Args:
-            content: CourseContentStudentGet object from computor-types
-
-        Returns:
-            Tuple of (needs_grading: bool, artifact_id: str or None)
-        """
-        if content is None:
-            return False, None
-
-        # Check if there's a submission group with submissions
-        # CourseContentStudentGet.submission_group is Optional[SubmissionGroupStudentGet]
-        sg = content.submission_group
-        if sg is None:
-            return False, None
-
-        # Check submission count - SubmissionGroupStudentGet has 'count' field
-        submission_count = sg.count if sg.count else content.submission_count
-        if submission_count == 0:
-            return False, None
-
-        # Check if there are gradings - SubmissionGroupStudentGet.gradings is list[SubmissionGroupGradingList]
-        gradings = sg.gradings if hasattr(sg, "gradings") and sg.gradings else []
-
-        # If no gradings at all, needs grading
-        if not gradings:
-            return True, None
-
-        # Check if the latest submission is graded
-        # gradings are sorted by created_at, so the last one is the latest
-        latest_grading = gradings[-1] if gradings else None
-
-        # Compare submission count with grading count
-        # If more submissions than gradings, needs grading
-        if len(gradings) < submission_count:
-            return True, None
-
-        # Check grading status - if NOT_REVIEWED (0), needs grading
-        if latest_grading:
-            status = latest_grading.status
-            if status is not None and status == GradingStatus.NOT_REVIEWED:
-                return True, None
-
-        return False, None
-
     def _should_skip(self, identifier: str, check_type: str = "any") -> bool:
         """
         Check if an identifier (course_member_id or submission_group_id) should be skipped due to cooldown.
@@ -729,7 +587,6 @@ class TutorScheduler:
         return {
             "running": self._running,
             "tracked_groups": len(self._states),
-            "processed_artifacts": len(self._processed_artifacts),
             "cache": self._cache.get_stats(),
             "config": self.config.model_dump(),
             "trigger_config": self.trigger_config.model_dump(),
@@ -747,5 +604,4 @@ class TutorScheduler:
                 del self._states[submission_group_id]
         else:
             self._states.clear()
-            self._processed_artifacts.clear()
             self._cache.clear()

@@ -20,14 +20,12 @@ from computor_agent.tutor.context import (
     ConversationContext,
     MessageInfo,
     StudentInfo,
-    SubmissionInfo,
     TriggerType,
 )
 from computor_agent.tutor.services.test_results import TestResultsService
 from computor_agent.tutor.services.artifacts import ArtifactsService
 from computor_agent.tutor.services.reference import ReferenceService
 from computor_agent.tutor.services.history import HistoryService
-from computor_agent.tutor.services.comments import CommentsService
 from computor_agent.tutor.services.progress import ProgressService
 
 if TYPE_CHECKING:
@@ -85,7 +83,6 @@ class ContextBuilder:
         self.artifacts_service = ArtifactsService(client)
         self.reference_service = ReferenceService(client)
         self.history_service = HistoryService(client)
-        self.comments_service = CommentsService(client)
         self.progress_service = ProgressService(client)
 
     async def build_for_message(
@@ -123,52 +120,7 @@ class ContextBuilder:
 
         return await self._build_context(
             submission_group_id=submission_group_id,
-            trigger_type=TriggerType.MESSAGE,
             trigger_message=trigger_message,
-            trigger_submission=None,
-            repository_path=repository_path,
-            reference_path=reference_path,
-            course_content=course_content,
-            course_member_id=course_member_id,
-        )
-
-    async def build_for_submission(
-        self,
-        submission_group_id: str,
-        artifact: dict,
-        repository_path: Optional[Path] = None,
-        reference_path: Optional[Path] = None,
-        course_content: Optional[CourseContentStudentGet] = None,
-        course_member_id: Optional[str] = None,
-    ) -> ConversationContext:
-        """
-        Build context for a submission trigger.
-
-        Args:
-            submission_group_id: The submission group ID
-            artifact: The submission artifact dict that triggered this
-            repository_path: Path to student's cloned repository
-            reference_path: Path to reference solution (if enabled)
-            course_content: Pre-fetched CourseContentStudentGet to avoid redundant API calls
-            course_member_id: Course member ID (for efficient data extraction)
-
-        Returns:
-            ConversationContext ready for processing
-        """
-        # Create trigger submission info
-        trigger_submission = SubmissionInfo(
-            artifact_id=artifact.get("id", ""),
-            submission_group_id=submission_group_id,
-            uploaded_by_course_member_id=artifact.get("uploaded_by_course_member_id"),
-            version_identifier=artifact.get("version_identifier"),
-            file_size=artifact.get("file_size", 0),
-        )
-
-        return await self._build_context(
-            submission_group_id=submission_group_id,
-            trigger_type=TriggerType.SUBMISSION,
-            trigger_message=None,
-            trigger_submission=trigger_submission,
             repository_path=repository_path,
             reference_path=reference_path,
             course_content=course_content,
@@ -178,9 +130,7 @@ class ContextBuilder:
     async def _build_context(
         self,
         submission_group_id: str,
-        trigger_type: TriggerType,
-        trigger_message: Optional[MessageInfo],
-        trigger_submission: Optional[SubmissionInfo],
+        trigger_message: MessageInfo,
         repository_path: Optional[Path],
         reference_path: Optional[Path],
         course_content: Optional[CourseContentStudentGet] = None,
@@ -198,13 +148,6 @@ class ContextBuilder:
             assignment_info = await self._get_assignment_info(submission_group_id)
 
         previous_messages = await self._get_previous_messages(submission_group_id)
-
-        # Get course member comments if enabled
-        course_member_comments: list[str] = []
-        if self.config.include_course_member_comments and student_info.course_member_ids:
-            for cm_id in student_info.course_member_ids:
-                comments = await self._get_course_member_comments(cm_id)
-                course_member_comments.extend(comments)
 
         # Load student notes if enabled
         student_notes: Optional[str] = None
@@ -231,14 +174,13 @@ class ContextBuilder:
 
         # Build the basic context first
         context = ConversationContext(
-            trigger_type=trigger_type,
+            trigger_type=TriggerType.MESSAGE,
             submission_group_id=submission_group_id,
             trigger_message=trigger_message,
-            trigger_submission=trigger_submission,
             student=student_info,
             assignment=assignment_info,
             previous_messages=previous_messages[: self.config.include_previous_messages],
-            course_member_comments=course_member_comments,
+            course_member_comments=[],  # Not implemented - endpoint not available
             student_notes=student_notes,
             student_code=student_code,
             reference_code=reference_code,
@@ -249,7 +191,6 @@ class ContextBuilder:
             context,
             assignment_info,
             student_info,
-            trigger_submission,
             course_content,  # Pass pre-fetched data if available
         )
 
@@ -260,7 +201,6 @@ class ContextBuilder:
         context: ConversationContext,
         assignment_info: Optional[AssignmentInfo],
         student_info: StudentInfo,
-        trigger_submission: Optional[SubmissionInfo],
         course_content_data: Optional[CourseContentStudentGet] = None,
     ) -> None:
         """
@@ -271,7 +211,6 @@ class ContextBuilder:
         - Submission history
         - Reference comparison
         - Student progress
-        - Artifact content
 
         Args:
             course_content_data: Pre-fetched CourseContentStudentGet to avoid redundant API calls.
@@ -363,15 +302,6 @@ class ContextBuilder:
                     )
             except Exception as e:
                 logger.debug(f"Failed to get student progress: {e}")
-
-        # Get artifact content if enabled (for submission triggers)
-        if self.config.include_artifact_content and trigger_submission:
-            try:
-                context.artifact_content = await self.artifacts_service.download_and_extract(
-                    trigger_submission.artifact_id
-                )
-            except Exception as e:
-                logger.debug(f"Failed to get artifact content: {e}")
 
     async def _get_student_info(self, submission_group_id: str) -> StudentInfo:
         """Get student information from submission group."""
@@ -555,22 +485,6 @@ class ContextBuilder:
             course_id=course_content.course_id,
             course_title=None,  # Not available in CourseContentStudentGet
         )
-
-    async def _get_course_member_comments(
-        self,
-        course_member_id: str,
-    ) -> list[str]:
-        """Get comments for a course member."""
-        try:
-            # Use the comments service which handles endpoint availability gracefully
-            comments = await self.comments_service.get_comments(
-                course_member_id=course_member_id,
-                include_ai_notes=True,
-            )
-            return [c.content for c in comments if c.content]
-        except Exception as e:
-            logger.warning(f"Failed to get course member comments: {e}")
-            return []
 
     def _load_student_notes(self, user_ids: list[str]) -> Optional[str]:
         """Load student notes from filesystem."""

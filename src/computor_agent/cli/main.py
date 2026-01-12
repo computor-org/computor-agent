@@ -474,14 +474,14 @@ def tutor(
     """
     Start the Tutor AI agent.
 
-    The tutor agent polls for student messages and submissions,
-    and responds automatically using the configured LLM.
+    The tutor agent polls for student messages and responds
+    automatically using the configured LLM.
 
     Configuration file should contain all settings:
     - backend: API authentication
     - llm: LLM provider settings
     - credentials: Git repository access tokens
-    - tutor: Agent behavior and grading settings
+    - tutor: Agent behavior settings
 
     Examples:
 
@@ -510,7 +510,6 @@ def tutor(
         tutor_config = computor_config.get_tutor_config()
         git_credentials = computor_config.get_credentials_store()
 
-        logger.info(f"Tutor grading: enabled={tutor_config.grading.enabled}, auto_submit={tutor_config.grading.auto_submit_grade}")
         logger.info(f"Git credentials: {len(git_credentials)} mapping(s)")
 
     except FileNotFoundError as e:
@@ -521,7 +520,6 @@ def tutor(
         sys.exit(1)
 
     # Show configuration summary
-    grading_status = "enabled" if tutor_config.grading.enabled and tutor_config.grading.auto_submit_grade else "disabled"
     console.print(
         Panel(
             f"[bold cyan]Tutor AI Agent[/bold cyan]\n\n"
@@ -530,7 +528,6 @@ def tutor(
             f"LLM: [green]{computor_config.llm.provider if computor_config.llm else 'not configured'}[/green] "
             f"([green]{computor_config.llm.model if computor_config.llm else 'n/a'}[/green])\n"
             f"Git credentials: [green]{len(git_credentials)} mapping(s)[/green]\n"
-            f"Auto-grading: [green]{grading_status}[/green]\n"
             f"Dry run: [yellow]{dry_run}[/yellow]\n\n"
             f"Press [yellow]Ctrl+C[/yellow] to stop.",
             title="Starting",
@@ -640,53 +637,11 @@ async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bo
                 course_member_id=course_member_id,
             )
 
-        async def on_submission_trigger(result, course_content):
-            """
-            Handle submission trigger.
-
-            Args:
-                result: TriggerCheckResult with submission_trigger
-                course_content: CourseContentStudentGet from scheduler
-            """
-            logger.info(f"Processing submission trigger")
-            if dry_run:
-                logger.info(f"[DRY RUN] Would process submission: {result.submission_trigger.artifact_id}")
-                return
-
-            # Build artifact dict
-            artifact = {
-                "id": result.submission_trigger.artifact_id,
-            }
-
-            # Extract course_member_id and course_content_id from CourseContentStudentGet
-            # These are needed for the tutors grading endpoint
-            course_content_id = course_content.id
-            course_member_id = result.submission_trigger.uploaded_by_course_member_id
-
-            # Get submission_group_id from the course content
-            sg = course_content.submission_group
-            submission_group_id = sg.id if sg else result.submission_trigger.submission_group_id
-
-            logger.debug(
-                f"Submission details: artifact={result.submission_trigger.artifact_id}, "
-                f"course_content_id={course_content_id}, course_member_id={course_member_id}"
-            )
-
-            await agent.process_submission(
-                submission_group_id=submission_group_id,
-                artifact=artifact,
-                course_member_id=course_member_id,
-                course_content_id=course_content_id,
-                submit_grade=True,  # Enable grade submission
-                course_content=course_content,  # Pass pre-fetched data
-            )
-
         scheduler = TutorScheduler(
             client=client,
             config=scheduler_config,
             trigger_config=tutor_config.triggers,
             on_message_trigger=on_message_trigger,
-            on_submission_trigger=on_submission_trigger,
         )
 
         # Handle shutdown gracefully

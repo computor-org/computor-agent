@@ -210,6 +210,11 @@ class TriggerChecker:
     ) -> TriggerCheckResult:
         """Check for new messages with request tags that start a conversation."""
 
+        logger.debug(
+            f"Checking for new conversation triggers in {submission_group_id} "
+            f"with tags={self.config.request_tag_strings}"
+        )
+
         # Query for messages with request tags
         request_messages = await self.messages.list(
             submission_group_id=submission_group_id,
@@ -218,15 +223,43 @@ class TriggerChecker:
             unread=True,  # Only unread messages
         )
 
+        logger.debug(
+            f"API returned {len(request_messages) if request_messages else 0} messages "
+            f"for tags={self.config.request_tag_strings}"
+        )
+
         if not request_messages:
             return TriggerCheckResult(
                 should_respond=False,
                 reason="No unread messages with request tags found",
             )
 
+        # Log each message received
+        for msg in request_messages:
+            msg_title = getattr(msg, "title", "") or ""
+            msg_id = getattr(msg, "id", "")
+            logger.debug(f"  - Message {msg_id}: title='{msg_title}'")
+
+        # Filter out AI's own messages (have response_tag in title)
+        filtered_messages = [
+            m for m in request_messages
+            if self.config.response_tag_string not in (getattr(m, "title", "") or "")
+        ]
+
+        logger.debug(
+            f"After filtering AI responses (response_tag={self.config.response_tag_string}): "
+            f"{len(filtered_messages)} messages remain"
+        )
+
+        if not filtered_messages:
+            return TriggerCheckResult(
+                should_respond=False,
+                reason="No unread messages with request tags (excluding AI responses)",
+            )
+
         # Sort by created_at (oldest first to process in order)
         messages_sorted = sorted(
-            request_messages,
+            filtered_messages,
             key=lambda m: getattr(m, "created_at", datetime.min) or datetime.min,
         )
 
@@ -254,12 +287,16 @@ class TriggerChecker:
         course_id: str,
     ) -> TriggerCheckResult:
         """
-        Check for unread follow-up messages in conversations where AI participated.
+        Check for unread DIRECT replies to AI messages.
 
-        The AI should respond to any unread reply in a chain where:
-        - The AI previously responded (message has response_tag in title)
-        - The reply is from a student (not staff)
+        The AI should ONLY respond to follow-ups that are:
+        - Direct replies to an AI message (parent has response_tag)
+        - From a student (not staff)
+
+        This is stricter than checking entire conversation chains.
         """
+
+        logger.debug(f"Checking for follow-up triggers in {submission_group_id}")
 
         # Get all unread messages in this submission group
         unread_messages = await self.messages.list(
@@ -267,16 +304,23 @@ class TriggerChecker:
             unread=True,
         )
 
+        logger.debug(f"Found {len(unread_messages) if unread_messages else 0} unread messages")
+
         if not unread_messages:
             return TriggerCheckResult(
                 should_respond=False,
                 reason="No unread messages",
             )
 
-        # Find messages that are replies (have parent_id)
+        # Find messages that are DIRECT replies to AI messages
         for message in unread_messages:
             parent_id = getattr(message, "parent_id", None)
             if not parent_id:
+                continue
+
+            # Skip AI's own messages (have response_tag in title)
+            title = getattr(message, "title", "") or ""
+            if self.config.response_tag_string in title:
                 continue
 
             # Check if author is a student (not staff/agent)
@@ -284,11 +328,18 @@ class TriggerChecker:
             if author_role in STAFF_ROLES:
                 continue
 
-            # Trace up the chain to find if AI participated
-            root_id = await self._find_ai_conversation_root(parent_id)
+            # Check if the PARENT message is from the AI (has response_tag)
+            try:
+                parent_message = await self.messages.get(id=parent_id)
+                parent_title = getattr(parent_message, "title", "") or ""
 
-            if root_id:
-                # Found a conversation where AI participated - respond to this follow-up
+                # Only trigger if this is a DIRECT reply to an AI message
+                if self.config.response_tag_string not in parent_title:
+                    continue
+
+                # Find the root of this conversation
+                root_id = await self._find_conversation_root(parent_id)
+
                 trigger = await self._build_message_trigger(
                     message, submission_group_id, course_id
                 )
@@ -298,39 +349,39 @@ class TriggerChecker:
 
                 return TriggerCheckResult(
                     should_respond=True,
-                    reason=f"Follow-up reply in conversation (root: {root_id})",
+                    reason=f"Direct reply to AI message (parent: {parent_id})",
                     message_trigger=trigger,
                     root_message_id=root_id,
                 )
 
+            except Exception as e:
+                logger.warning(f"Failed to get parent message {parent_id}: {e}")
+                continue
+
         return TriggerCheckResult(
             should_respond=False,
-            reason="No follow-up messages requiring response",
+            reason="No direct replies to AI messages found",
         )
 
-    async def _find_ai_conversation_root(
+    async def _find_conversation_root(
         self,
         message_id: str,
         max_depth: int = 50,
     ) -> Optional[str]:
         """
-        Trace up the parent chain to find the root of a conversation where AI participated.
+        Trace up the parent chain to find the root of a conversation.
 
-        The AI participated if any message in the chain has:
-        - The response_tag in its title (AI's own response)
-        - A request_tag in its title (conversation start)
+        Simply follows parent_id links until reaching a message with no parent.
 
         Args:
-            message_id: The message ID to start from (parent of the new message)
+            message_id: The message ID to start from
             max_depth: Maximum depth to traverse (prevents infinite loops)
 
         Returns:
-            The root message ID if AI participated, None otherwise
+            The root message ID
         """
         current_id = message_id
         visited = set()
-        found_ai_response = False
-        root_id = None
 
         for _ in range(max_depth):
             if current_id in visited:
@@ -339,24 +390,11 @@ class TriggerChecker:
 
             try:
                 message = await self.messages.get(id=current_id)
-                title = getattr(message, "title", "") or ""
                 parent_id = getattr(message, "parent_id", None)
-
-                # Check if this message is an AI response
-                if self.config.response_tag_string in title:
-                    found_ai_response = True
-
-                # Check if this message has a request tag (conversation start)
-                for tag in self.config.request_tag_strings:
-                    if tag in title:
-                        root_id = current_id
-                        break
 
                 if not parent_id:
                     # Reached the root of the chain
-                    if root_id is None:
-                        root_id = current_id
-                    break
+                    return current_id
 
                 current_id = parent_id
 
@@ -364,8 +402,7 @@ class TriggerChecker:
                 logger.warning(f"Failed to get message {current_id}: {e}")
                 break
 
-        # Only return root if AI participated in this conversation
-        return root_id if found_ai_response else None
+        return current_id
 
     async def _build_message_trigger(
         self,

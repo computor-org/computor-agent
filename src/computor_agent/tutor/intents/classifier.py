@@ -3,13 +3,22 @@ Intent Classifier for the Tutor AI Agent.
 
 Uses an LLM to classify student messages into intents,
 which then determine which response strategy to use.
+
+Design decisions:
+- 100% LLM-based classification (no rules, no keywords)
+- Always returns user_intent_description for logging/fallback
+- Returns intent=None when no defined intent matches
 """
 
 import json
 import logging
 from typing import TYPE_CHECKING, Optional, Protocol
 
-from computor_agent.tutor.intents.types import Intent, IntentClassification
+from computor_agent.tutor.intents.types import (
+    Intent,
+    IntentClassification,
+    MESSAGING_INTENTS,
+)
 from computor_agent.tutor.prompts.templates import INTENT_CLASSIFICATION_PROMPT
 
 if TYPE_CHECKING:
@@ -30,38 +39,48 @@ class IntentClassifier:
     """
     Classifies student messages into intents.
 
-    Each intent maps to a specific response strategy:
-    - QUESTION_EXAMPLE -> Strategy for assignment questions
-    - QUESTION_HOWTO -> Strategy for how-to questions
-    - HELP_DEBUG -> Strategy for debugging help
-    - HELP_REVIEW -> Strategy for code review
-    - SUBMISSION_REVIEW -> Strategy for official submission review
-    - CLARIFICATION -> Strategy for follow-up questions
-    - OTHER -> Fallback strategy
+    Each intent maps to a specific response strategy.
+    When no intent matches, returns intent=None with user_intent_description,
+    and the FallbackStrategy handles the response.
 
     Usage:
         classifier = IntentClassifier(llm=llm_client)
         classification = await classifier.classify(context)
-        strategy = registry.get_strategy(classification.intent)
+
+        if classification.intent:
+            strategy = registry.get_strategy(classification.intent)
+        else:
+            strategy = registry.fallback_strategy
     """
 
     def __init__(
         self,
         llm: LLMClient,
-        default_intent: Intent = Intent.OTHER,
         confidence_threshold: float = 0.5,
+        available_intents: Optional[list[Intent]] = None,
     ) -> None:
         """
         Initialize the intent classifier.
 
         Args:
             llm: LLM client for classification
-            default_intent: Intent to use if classification fails
             confidence_threshold: Minimum confidence to accept classification
+            available_intents: List of intents to match against (defaults to MESSAGING_INTENTS)
         """
         self.llm = llm
-        self.default_intent = default_intent
         self.confidence_threshold = confidence_threshold
+        self.available_intents = available_intents or MESSAGING_INTENTS
+
+    def get_available_intents(self) -> list[Intent]:
+        """Return the list of intents this classifier can match."""
+        return self.available_intents
+
+    def _build_intents_description(self) -> str:
+        """Build the intents description for the prompt."""
+        lines = []
+        for intent in self.available_intents:
+            lines.append(f"- {intent.value.upper()}: {intent.description}")
+        return "\n".join(lines)
 
     async def classify(
         self,
@@ -74,21 +93,22 @@ class IntentClassifier:
             context: The conversation context
 
         Returns:
-            IntentClassification with intent and confidence
+            IntentClassification with intent (or None) and user_intent_description
         """
-        # Handle submission trigger separately
+        # Handle submission trigger separately (for grading task)
         if context.trigger_submission is not None and context.trigger_message is None:
-            # This is a submission-triggered context (no message)
             return IntentClassification(
                 intent=Intent.SUBMISSION_REVIEW,
                 confidence=1.0,
+                user_intent_description="Submit code for grading review",
                 reasoning="Triggered by submission artifact with submit=True",
             )
 
         if not context.trigger_message:
             return IntentClassification(
-                intent=self.default_intent,
+                intent=None,
                 confidence=0.0,
+                user_intent_description="No message provided",
                 reasoning="No message to classify",
             )
 
@@ -98,16 +118,18 @@ class IntentClassifier:
         prompt = INTENT_CLASSIFICATION_PROMPT.format(
             student_message=context.trigger_message.content,
             previous_context=previous_context,
+            available_intents=self._build_intents_description(),
         )
 
         try:
-            response = await self.llm.complete(prompt, max_tokens=300)
+            response = await self.llm.complete(prompt, max_tokens=400)
             return self._parse_response(response)
         except Exception as e:
             logger.warning(f"Intent classification failed: {e}")
             return IntentClassification(
-                intent=self.default_intent,
+                intent=None,
                 confidence=0.0,
+                user_intent_description="Unable to determine user intent",
                 reasoning=f"Classification failed: {e}",
             )
 
@@ -131,16 +153,18 @@ class IntentClassifier:
         prompt = INTENT_CLASSIFICATION_PROMPT.format(
             student_message=message,
             previous_context=previous_context or "(No previous messages)",
+            available_intents=self._build_intents_description(),
         )
 
         try:
-            response = await self.llm.complete(prompt, max_tokens=300)
+            response = await self.llm.complete(prompt, max_tokens=400)
             return self._parse_response(response)
         except Exception as e:
             logger.warning(f"Intent classification failed: {e}")
             return IntentClassification(
-                intent=self.default_intent,
+                intent=None,
                 confidence=0.0,
+                user_intent_description="Unable to determine user intent",
                 reasoning=f"Classification failed: {e}",
             )
 
@@ -151,30 +175,42 @@ class IntentClassifier:
             json_str = self._extract_json(response)
             data = json.loads(json_str)
 
-            intent = self._parse_intent(data.get("intent", "OTHER"))
-            confidence = float(data.get("confidence", 0.5))
+            # user_intent_description is REQUIRED
+            user_intent_description = data.get(
+                "user_intent_description",
+                "Unable to determine user intent"
+            )
+
+            # intent may be null/None if no match
+            intent = None
+            confidence = 0.0
+
+            intent_str = data.get("intent")
+            if intent_str and intent_str.lower() != "null":
+                intent = self._parse_intent(intent_str)
+                confidence = float(data.get("confidence", 0.5))
+
+                # Apply confidence threshold
+                if confidence < self.confidence_threshold:
+                    logger.debug(
+                        f"Low confidence ({confidence:.2f}) for {intent.value}, "
+                        f"setting intent to None"
+                    )
+                    intent = None
+                    confidence = 0.0
+
             reasoning = data.get("reasoning")
             secondary_intent = None
 
             if data.get("secondary_intent"):
-                secondary_intent = self._parse_intent(data["secondary_intent"])
-
-            # Apply confidence threshold
-            if confidence < self.confidence_threshold:
-                logger.debug(
-                    f"Low confidence ({confidence:.2f}) for {intent.value}, "
-                    f"using default {self.default_intent.value}"
-                )
-                return IntentClassification(
-                    intent=self.default_intent,
-                    confidence=confidence,
-                    reasoning=f"Low confidence: {reasoning}",
-                    secondary_intent=intent,
-                )
+                secondary_str = data["secondary_intent"]
+                if secondary_str and secondary_str.lower() != "null":
+                    secondary_intent = self._parse_intent(secondary_str)
 
             return IntentClassification(
                 intent=intent,
                 confidence=confidence,
+                user_intent_description=user_intent_description,
                 reasoning=reasoning,
                 secondary_intent=secondary_intent,
             )
@@ -182,8 +218,9 @@ class IntentClassifier:
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             logger.warning(f"Failed to parse classification response: {e}")
             return IntentClassification(
-                intent=self.default_intent,
+                intent=None,
                 confidence=0.0,
+                user_intent_description="Unable to determine user intent",
                 reasoning=f"Parse error: {e}",
             )
 
@@ -197,7 +234,7 @@ class IntentClassifier:
 
         return text[start:end]
 
-    def _parse_intent(self, intent_str: str) -> Intent:
+    def _parse_intent(self, intent_str: str) -> Optional[Intent]:
         """Parse intent string to enum."""
         intent_map = {
             "QUESTION_EXAMPLE": Intent.QUESTION_EXAMPLE,
@@ -206,7 +243,6 @@ class IntentClassifier:
             "HELP_REVIEW": Intent.HELP_REVIEW,
             "SUBMISSION_REVIEW": Intent.SUBMISSION_REVIEW,
             "CLARIFICATION": Intent.CLARIFICATION,
-            "OTHER": Intent.OTHER,
             # Also support lowercase
             "question_example": Intent.QUESTION_EXAMPLE,
             "question_howto": Intent.QUESTION_HOWTO,
@@ -214,6 +250,5 @@ class IntentClassifier:
             "help_review": Intent.HELP_REVIEW,
             "submission_review": Intent.SUBMISSION_REVIEW,
             "clarification": Intent.CLARIFICATION,
-            "other": Intent.OTHER,
         }
-        return intent_map.get(intent_str, Intent.OTHER)
+        return intent_map.get(intent_str)

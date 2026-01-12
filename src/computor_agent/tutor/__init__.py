@@ -3,14 +3,13 @@ Tutor AI Agent for the Computor platform.
 
 This module provides an AI-powered tutor agent that can:
 - Respond to student messages about assignments
-- Review code submissions
-- Provide feedback and optionally grades
+- Provide helpful feedback
 - Detect and block malicious inputs
 
 Architecture:
     ┌─────────────────────────────────────────────────────────┐
     │                      SCHEDULER                           │
-    │  Polls for: new messages, new submissions (submit=true) │
+    │  Polls for: new messages with request tags              │
     └─────────────────────────────────────────────────────────┘
                                │
                                ▼
@@ -19,14 +18,13 @@ Architecture:
     │  Checks for:                                             │
     │  - Messages with request tags (e.g., #ai::request)      │
     │  - Replies in conversation chains where AI responded    │
-    │  - Submission artifacts with submit=True                │
     └─────────────────────────────────────────────────────────┘
                                │
                                ▼
     ┌─────────────────────────────────────────────────────────┐
     │              CONVERSATION CONTEXT                        │
     │  Fresh per interaction, contains:                        │
-    │  - Trigger (message or submission)                       │
+    │  - Trigger message                                       │
     │  - Message chain (via parent_id links)                  │
     │  - AI's previous notes about this context               │
     │  - Assignment description                                │
@@ -46,8 +44,7 @@ Architecture:
     │                 INTENT CLASSIFIER                        │
     │  Determines what student wants:                          │
     │  - QUESTION_EXAMPLE, QUESTION_HOWTO                     │
-    │  - HELP_DEBUG, HELP_REVIEW                              │
-    │  - SUBMISSION_REVIEW (auto for submissions)             │
+    │  - HELP_DEBUG, HELP_REVIEW, CLARIFICATION               │
     └─────────────────────────────────────────────────────────┘
                                │
                                ▼
@@ -64,7 +61,6 @@ Architecture:
     │                 RESPONSE HANDLER                         │
     │  - Post reply to message chain (with parent_id)         │
     │  - Tag response with #ai::response                      │
-    │  - Optionally post grade                                │
     │  - Save AI notes for future context                     │
     └─────────────────────────────────────────────────────────┘
 
@@ -84,7 +80,6 @@ Example:
     # Load unified configuration (includes backend, llm, credentials, tutor)
     config = ComputorConfig.from_file("~/.computor/config.yaml")
     tutor_config = config.get_tutor_config()
-    git_credentials = config.get_credentials_store()
 
     async with ComputorClient(base_url=config.backend.url) as client:
         # Authenticate (API token or basic auth)
@@ -103,13 +98,10 @@ Example:
             llm_provider=llm,
         )
 
-        # Handle a submission (typically called by scheduler)
-        await agent.process_submission(
+        # Handle a message (typically called by scheduler)
+        await agent.process_message(
             submission_group_id="sg-123",
-            artifact_id="art-456",
-            course_member_id="cm-789",
-            course_content_id="cc-101",
-            submit_grade=True,  # Will auto-grade if tutor.grading.enabled
+            message={"id": "msg-456", "content": "How do I...?"},
         )
     ```
 """
@@ -119,7 +111,6 @@ from computor_agent.tutor.config import (
     PersonalityConfig,
     SecurityConfig,
     ContextConfig,
-    GradingConfig,
     StrategyConfig,
     TriggerConfig,
     TriggerTag,
@@ -140,7 +131,6 @@ from computor_agent.tutor.trigger import (
     TriggerChecker,
     TriggerCheckResult,
     MessageTrigger,
-    SubmissionTrigger,
     should_tutor_respond,
     STAFF_ROLES,
 )
@@ -170,9 +160,6 @@ from computor_agent.tutor.services import (
     SubmissionHistory,
     SubmissionAttempt,
     ImprovementAnalysis,
-    # Tutor Comments
-    CommentsService,
-    TutorComment,
     # Progress Tracking
     ProgressService,
     CourseProgress,
@@ -193,7 +180,6 @@ __all__ = [
     "TriggerChecker",
     "TriggerCheckResult",
     "MessageTrigger",
-    "SubmissionTrigger",
     "should_tutor_respond",
     "STAFF_ROLES",
     # Configuration
@@ -201,7 +187,6 @@ __all__ = [
     "PersonalityConfig",
     "SecurityConfig",
     "ContextConfig",
-    "GradingConfig",
     "StrategyConfig",
     "TriggerConfig",
     "TriggerTag",
@@ -246,9 +231,6 @@ __all__ = [
     "SubmissionHistory",
     "SubmissionAttempt",
     "ImprovementAnalysis",
-    # Tutor Comments
-    "CommentsService",
-    "TutorComment",
     # Progress Tracking
     "ProgressService",
     "CourseProgress",

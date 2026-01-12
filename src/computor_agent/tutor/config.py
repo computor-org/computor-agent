@@ -158,45 +158,6 @@ class ContextConfig(BaseModel):
     )
 
 
-class GradingConfig(BaseModel):
-    """
-    Configuration for automated grading.
-
-    Controls whether and how the tutor assigns grades.
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description="Enable automated grading for submissions",
-    )
-    auto_submit_grade: bool = Field(
-        default=False,
-        description="Automatically POST grade to API (requires enabled=True)",
-    )
-    default_status: int = Field(
-        default=0,
-        ge=0,
-        le=3,
-        description="Default grading status (0=NOT_REVIEWED, 1=CORRECTED, 2=CORRECTION_NECESSARY, 3=IMPROVEMENT_POSSIBLE)",
-    )
-    require_human_review: bool = Field(
-        default=True,
-        description="Flag submissions for human review after grading",
-    )
-    min_grade: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description="Minimum grade value",
-    )
-    max_grade: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=1.0,
-        description="Maximum grade value",
-    )
-
-
 class StrategyConfig(BaseModel):
     """
     Configuration for individual response strategies.
@@ -244,17 +205,13 @@ class StrategiesConfig(BaseModel):
         default_factory=StrategyConfig,
         description="Strategy for code review requests",
     )
-    submission_review: StrategyConfig = Field(
-        default_factory=StrategyConfig,
-        description="Strategy for official submission reviews",
-    )
     clarification: StrategyConfig = Field(
         default_factory=StrategyConfig,
         description="Strategy for follow-up clarification questions",
     )
-    other: StrategyConfig = Field(
+    fallback: StrategyConfig = Field(
         default_factory=StrategyConfig,
-        description="Fallback strategy for unclear intents",
+        description="Fallback strategy for unmatched intents",
     )
 
 
@@ -471,10 +428,6 @@ class TutorConfig(BaseModel):
           student_notes_enabled: true
           student_notes_dir: "/var/lib/computor/student-notes"
 
-        grading:
-          enabled: false
-          auto_submit_grade: false
-
         triggers:
           request_tags:
             - scope: "ai"
@@ -494,7 +447,7 @@ class TutorConfig(BaseModel):
           question_example:
             enabled: true
             max_response_tokens: 1000
-          submission_review:
+          help_review:
             enabled: true
             temperature: 0.5
         ```
@@ -511,10 +464,6 @@ class TutorConfig(BaseModel):
     context: ContextConfig = Field(
         default_factory=ContextConfig,
         description="Context building settings",
-    )
-    grading: GradingConfig = Field(
-        default_factory=GradingConfig,
-        description="Automated grading settings",
     )
     triggers: TriggerConfig = Field(
         default_factory=TriggerConfig,

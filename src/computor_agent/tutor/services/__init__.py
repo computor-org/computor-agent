@@ -9,7 +9,6 @@ Services:
     - artifacts: List, download, and extract submission artifacts
     - reference: Fetch reference solutions and generate comparisons/diffs
     - history: Track submission history and student improvements
-    - comments: Read and write tutor comments about students
     - progress: Fetch course and member progress metrics
 
 Each service is designed to be:
@@ -43,10 +42,6 @@ from computor_agent.tutor.services.history import (
     SubmissionAttempt,
     ImprovementAnalysis,
 )
-from computor_agent.tutor.services.comments import (
-    CommentsService,
-    TutorComment,
-)
 from computor_agent.tutor.services.progress import (
     ProgressService,
     CourseProgress,
@@ -75,9 +70,6 @@ __all__ = [
     "SubmissionHistory",
     "SubmissionAttempt",
     "ImprovementAnalysis",
-    # Comments
-    "CommentsService",
-    "TutorComment",
     # Progress
     "ProgressService",
     "CourseProgress",

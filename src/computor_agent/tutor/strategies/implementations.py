@@ -4,9 +4,9 @@ Concrete strategy implementations for the Tutor AI Agent.
 Each strategy handles a specific intent and generates appropriate responses.
 """
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Optional, Protocol
 
-from computor_agent.tutor.intents.types import Intent
+from computor_agent.tutor.intents.types import Intent, IntentClassification
 from computor_agent.tutor.prompts.templates import PERSONALITY_PROMPTS, STRATEGY_PROMPTS
 from computor_agent.tutor.strategies.base import BaseStrategy, StrategyResponse
 
@@ -36,13 +36,13 @@ class BaseStrategyImpl(BaseStrategy):
 
     Subclasses should set:
     - name: Strategy identifier
-    - intent: The Intent this strategy handles
+    - intent: The Intent this strategy handles (None for fallback)
     - prompt_key: Key in STRATEGY_PROMPTS dict
     """
 
     name: str = "base"
-    intent: Intent = Intent.OTHER
-    prompt_key: str = "other"
+    intent: Optional[Intent] = None  # None for fallback strategy
+    prompt_key: str = "fallback"
 
     def __init__(self, personality_config: "PersonalityConfig") -> None:
         """
@@ -103,6 +103,7 @@ class BaseStrategyImpl(BaseStrategy):
     async def execute(
         self,
         context: "ConversationContext",
+        classification: IntentClassification,
         llm: LLMClient,
         config: "StrategyConfig",
     ) -> StrategyResponse:
@@ -238,61 +239,41 @@ class HelpReviewStrategy(BaseStrategyImpl):
     prompt_key = "help_review"
 
 
-class SubmissionReviewStrategy(BaseStrategyImpl):
-    """Strategy for official submission reviews."""
+class ClarificationStrategy(BaseStrategyImpl):
+    """Strategy for follow-up clarification questions."""
 
-    name = "submission_review"
-    intent = Intent.SUBMISSION_REVIEW
-    prompt_key = "submission_review"
+    name = "clarification"
+    intent = Intent.CLARIFICATION
+    prompt_key = "clarification"
 
-    def __init__(
-        self,
-        personality_config: "PersonalityConfig",
-        grading_enabled: bool = False,
-    ) -> None:
-        """
-        Initialize submission review strategy.
 
-        Args:
-            personality_config: Personality configuration
-            grading_enabled: Whether to include grading instructions
-        """
-        super().__init__(personality_config)
-        self.grading_enabled = grading_enabled
+class FallbackStrategy(BaseStrategyImpl):
+    """
+    Fallback strategy for unmatched intents.
+
+    Uses user_intent_description from classification to generate
+    a helpful response even when no predefined intent matches.
+    """
+
+    name = "fallback"
+    intent = None  # Handles unmatched intents (intent=None)
+    prompt_key = "fallback"
 
     def build_system_prompt(
         self,
         context: "ConversationContext",
         config: "StrategyConfig",
+        user_intent_description: Optional[str] = None,
     ) -> str:
-        """Build system prompt with grading instructions if enabled."""
-        template = STRATEGY_PROMPTS["submission_review"]
-
-        grading_instructions = ""
-        if self.grading_enabled:
-            grading_instructions = """
-After your review, provide a grade assessment:
-- grade: float from 0.0 to 1.0 (0 = fail, 1 = perfect)
-- status: 0 (not reviewed), 1 (correct), 2 (needs correction), 3 (could be improved)
-
-Format at the end of your response:
----GRADING---
-grade: <value>
-status: <value>
----END GRADING---"""
+        """Build system prompt with user intent description."""
+        template = STRATEGY_PROMPTS.get(self.prompt_key, STRATEGY_PROMPTS["fallback"])
 
         variables = {
             "personality_prompt": self.get_personality_prompt(),
             "language": self.personality_config.language,
             "assignment_description": self._get_assignment_description(context),
-            "student_code": context.get_formatted_code() if context.has_code else "(No code available)",
-            "reference_solution_section": self._get_reference_section(context),
-            "grading_instructions": grading_instructions,
-            # Enhanced context sections
-            "test_results_section": self._get_test_results_section(context),
-            "submission_history_section": self._get_submission_history_section(context),
-            "reference_comparison_section": self._get_reference_comparison_section(context),
-            "student_progress_section": self._get_student_progress_section(context),
+            "student_message": context.trigger_message.content if context.trigger_message else "(No message)",
+            "user_intent_description": user_intent_description or "Unable to determine user intent",
         }
 
         base_prompt = template.format(**variables)
@@ -305,93 +286,30 @@ status: <value>
 
         return base_prompt
 
-    def build_user_message(self, context: "ConversationContext") -> str:
-        """Build message for submission review."""
-        parts = ["Please review this submission."]
-
-        if context.trigger_message:
-            parts.append(f"\nStudent's note:\n{context.trigger_message.content}")
-
-        if context.student_notes:
-            parts.append(f"\nNotes about this student:\n{context.student_notes}")
-
-        return "\n".join(parts)
-
     async def execute(
         self,
         context: "ConversationContext",
+        classification: IntentClassification,
         llm: LLMClient,
         config: "StrategyConfig",
     ) -> StrategyResponse:
-        """Execute with optional grading extraction."""
-        response = await super().execute(context, llm, config)
+        """Execute fallback strategy using user_intent_description."""
+        # Build prompt with user_intent_description
+        system_prompt = self.build_system_prompt(
+            context,
+            config,
+            user_intent_description=classification.user_intent_description,
+        )
+        user_message = self.build_user_message(context)
 
-        if self.grading_enabled:
-            # Try to extract grading from response
-            grade, status = self._extract_grading(response.message_content)
-            response.grade = grade
-            response.grade_status = status
-
-            # Remove grading block from message content
-            response.message_content = self._remove_grading_block(response.message_content)
-
-        return response
-
-    def _extract_grading(self, content: str) -> tuple[float | None, int | None]:
-        """Extract grading information from response."""
-        import re
-
-        grade = None
-        status = None
-
-        # Look for grading block
-        grading_match = re.search(
-            r"---GRADING---\s*\n"
-            r"grade:\s*([\d.]+)\s*\n"
-            r"status:\s*(\d)\s*\n"
-            r"---END GRADING---",
-            content,
-            re.IGNORECASE,
+        response = await llm.complete(
+            prompt=user_message,
+            system_prompt=system_prompt,
+            max_tokens=config.max_response_tokens,
+            temperature=config.temperature,
         )
 
-        if grading_match:
-            try:
-                grade = float(grading_match.group(1))
-                grade = max(0.0, min(1.0, grade))  # Clamp to 0-1
-            except ValueError:
-                pass
-
-            try:
-                status = int(grading_match.group(2))
-                status = max(0, min(3, status))  # Clamp to 0-3
-            except ValueError:
-                pass
-
-        return grade, status
-
-    def _remove_grading_block(self, content: str) -> str:
-        """Remove grading block from content."""
-        import re
-
-        return re.sub(
-            r"\n*---GRADING---.*?---END GRADING---\n*",
-            "",
-            content,
-            flags=re.DOTALL | re.IGNORECASE,
-        ).strip()
-
-
-class ClarificationStrategy(BaseStrategyImpl):
-    """Strategy for follow-up clarification questions."""
-
-    name = "clarification"
-    intent = Intent.CLARIFICATION
-    prompt_key = "clarification"
-
-
-class OtherStrategy(BaseStrategyImpl):
-    """Fallback strategy for unclear or off-topic messages."""
-
-    name = "other"
-    intent = Intent.OTHER
-    prompt_key = "other"
+        return StrategyResponse(
+            message_content=response,
+            strategy_name=self.name,
+        )
