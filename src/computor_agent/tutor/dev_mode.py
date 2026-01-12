@@ -380,6 +380,24 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
             initialized_count += 1
             logger.debug(f"Created prompt file: {file_path}")
 
+    # Copy documentation files
+    import shutil
+    docs_to_copy = [
+        ("PROMPT_ENGINEERING_GUIDE.md", "README.md"),
+        ("VARIABLE_REFERENCE.md", "VARIABLES.md"),
+    ]
+
+    for source_name, dest_name in docs_to_copy:
+        source = Path(__file__).parent / "prompts" / source_name
+        dest = prompts_dir / dest_name
+
+        if source.exists() and not dest.exists():
+            try:
+                shutil.copy2(source, dest)
+                console.print(f"[green]✓ Copied {dest_name} documentation[/green]")
+            except Exception as e:
+                logger.warning(f"Could not copy {source_name}: {e}")
+
     if initialized_count > 0:
         console.print(f"[green]✓ Initialized {initialized_count} missing prompt files[/green]")
 
