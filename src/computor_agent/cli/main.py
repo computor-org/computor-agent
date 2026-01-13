@@ -477,12 +477,19 @@ def providers():
     default=None,
     help="Directory for prompt markdown files (default: ~/.computor/prompts). Missing files will be auto-created.",
 )
+@click.option(
+    "--assignment",
+    type=click.Path(exists=True),
+    default=None,
+    help="[Dev mode] Path to assignment directory (must contain meta.yaml).",
+)
 def tutor(
     config: str,
     verbose: bool,
     dry_run: bool,
     dev: bool,
     prompts_dir: Optional[str],
+    assignment: Optional[str],
 ):
     """
     Start the Tutor AI agent.
@@ -521,7 +528,13 @@ def tutor(
         # Run development mode
         from computor_agent.tutor.dev_mode import run_development_mode
         prompts_path = Path(prompts_dir) if prompts_dir else None
-        asyncio.run(run_development_mode(config_path, verbose, prompts_path))
+        assignment_path = Path(assignment) if assignment else None
+        asyncio.run(run_development_mode(
+            config_path,
+            verbose,
+            prompts_path,
+            assignment_path=assignment_path,
+        ))
         return
 
     try:

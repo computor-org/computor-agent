@@ -440,9 +440,10 @@ editable: true
 class DevelopmentScheduler:
     """Interactive scheduler for development mode."""
 
-    def __init__(self, agent, simulator: MessageSimulator):
+    def __init__(self, agent, simulator: MessageSimulator, assignment_context=None):
         self.agent = agent
         self.simulator = simulator
+        self.assignment_context = assignment_context
         self.running = False
 
     async def start(self):
@@ -533,8 +534,30 @@ class DevelopmentScheduler:
             loader.load_all()
             console.print("[green]✅ All prompts reloaded[/green]")
 
+        elif cmd == "/assignment":
+            self._show_assignment_details()
+
         else:
             console.print(f"[red]Unknown command: {cmd}[/red]")
+
+    def _show_assignment_details(self):
+        """Display assignment details if loaded."""
+        if not self.assignment_context:
+            console.print("[yellow]No assignment loaded. Use --reference and --assignment flags.[/yellow]")
+            return
+
+        ctx = self.assignment_context
+        console.print(Panel(
+            f"[bold]{ctx.title}[/bold]\n\n"
+            f"Identifier: [cyan]{ctx.identifier}[/cyan]\n"
+            f"Language: {ctx.language}\n"
+            f"Slug: {ctx.slug}\n\n"
+            f"[bold]Files:[/bold]\n" +
+            "\n".join(f"  • {f.path} {'[submission]' if f.is_submission_file else ''}" for f in ctx.files) +
+            f"\n\n[bold]Description:[/bold]\n{ctx.readme_content[:500]}{'...' if len(ctx.readme_content) > 500 else ''}",
+            title="Assignment Details",
+            border_style="cyan"
+        ))
 
     def _show_conversation_history(self):
         """Display the conversation history."""
@@ -565,11 +588,20 @@ class DevelopmentScheduler:
         """Process a message through the agent."""
         console.print("[dim]Processing message...[/dim]")
 
-        # Create mock course content
-        course_content = MockCourseContent(
-            submission_group_id=message.submission_group_id,
-            unread_message_count=1
-        )
+        # Create mock course content with assignment info if available
+        if self.assignment_context:
+            course_content = MockCourseContent(
+                submission_group_id=message.submission_group_id,
+                unread_message_count=1,
+                title=self.assignment_context.title,
+                description=self.assignment_context.readme_content,
+                directory=self.assignment_context.identifier,
+            )
+        else:
+            course_content = MockCourseContent(
+                submission_group_id=message.submission_group_id,
+                unread_message_count=1
+            )
 
         try:
             # Process through the agent
@@ -580,8 +612,9 @@ class DevelopmentScheduler:
                 reference_path=None,
                 send_response=True,
                 reply_to_message_id=message.id,
-                course_content=course_content,  # Pass the object directly, not the dict
-                course_member_id="dev_member_1"
+                course_content=course_content,
+                course_member_id="dev_member_1",
+                assignment_context=self.assignment_context,  # Pass assignment context
             )
 
             # Display processing results
@@ -604,7 +637,12 @@ class DevelopmentScheduler:
             logger.exception("Failed to process message")
 
 
-async def run_development_mode(config_path: Path, verbose: bool = False, prompts_dir: Optional[Path] = None):
+async def run_development_mode(
+    config_path: Path,
+    verbose: bool = False,
+    prompts_dir: Optional[Path] = None,
+    assignment_path: Optional[Path] = None,
+):
     """
     Run the tutor agent in development mode.
 
@@ -615,17 +653,29 @@ async def run_development_mode(config_path: Path, verbose: bool = False, prompts
         config_path: Path to configuration file
         verbose: Enable verbose logging
         prompts_dir: Directory for prompt files (default: ~/.computor/prompts)
+        assignment_path: Path to assignment directory (must contain meta.yaml)
     """
     from computor_agent.settings import ComputorConfig
     from computor_agent.llm.config import LLMConfig, ProviderType
     from computor_agent.llm.factory import get_provider
     from computor_agent.tutor import TutorAgent, TutorLLMAdapter
     from computor_agent.tutor.prompts.loader import get_prompt_loader
+    from computor_agent.tutor.assignment_loader import AssignmentLoader, AssignmentContext
 
     # Load configuration
     logger.info(f"Loading config from {config_path}")
     computor_config = ComputorConfig.from_file(config_path)
     tutor_config = computor_config.get_tutor_config()
+
+    # Load assignment context if provided
+    assignment_context: Optional[AssignmentContext] = None
+    if assignment_path:
+        try:
+            assignment_context = AssignmentLoader.load_from_path(assignment_path)
+            console.print(f"[green]✓ Loaded assignment: {assignment_context.title}[/green]")
+            console.print(f"[dim]  Files: {', '.join(f.path for f in assignment_context.files)}[/dim]")
+        except Exception as e:
+            console.print(f"[red]Failed to load assignment: {e}[/red]")
 
     # Setup prompt hot reload callback
     def on_prompt_reload(filename: str):
@@ -676,21 +726,34 @@ async def run_development_mode(config_path: Path, verbose: bool = False, prompts
         client=mock_client,
     )
 
-    # Create and start development scheduler
-    console.print(Panel(
-        "[bold green]Development Mode with Hot Reload[/bold green]\n\n"
-        f"Prompts directory: [cyan]{prompts_dir}[/cyan]\n"
-        "Hot reload: [green]Enabled[/green] - Edit .md files to see changes instantly\n\n"
-        "Commands:\n"
-        "  [yellow]/new[/yellow] - Start a new conversation\n"
-        "  [yellow]/show[/yellow] - Show conversation history\n"
-        "  [yellow]/reload[/yellow] - Manually reload all prompts\n"
+    # Build info panel
+    info_lines = [
+        "[bold green]Development Mode with Hot Reload[/bold green]\n",
+        f"Prompts directory: [cyan]{prompts_dir}[/cyan]",
+        "Hot reload: [green]Enabled[/green] - Edit .md files to see changes instantly",
+    ]
+
+    if assignment_context:
+        info_lines.append(f"\nAssignment: [cyan]{assignment_context.title}[/cyan]")
+        info_lines.append(f"  Identifier: [dim]{assignment_context.identifier}[/dim]")
+        info_lines.append(f"  Files: [dim]{', '.join(f.path for f in assignment_context.files)}[/dim]")
+
+    info_lines.extend([
+        "\nCommands:",
+        "  [yellow]/new[/yellow] - Start a new conversation",
+        "  [yellow]/show[/yellow] - Show conversation history",
+        "  [yellow]/assignment[/yellow] - Show assignment details",
+        "  [yellow]/reload[/yellow] - Manually reload all prompts",
         "  [yellow]/exit[/yellow] - Exit development mode",
+    ])
+
+    console.print(Panel(
+        "\n".join(info_lines),
         title="Tutor Agent Development Mode",
         border_style="green"
     ))
 
-    scheduler = DevelopmentScheduler(agent, simulator)
+    scheduler = DevelopmentScheduler(agent, simulator, assignment_context)
 
     try:
         await scheduler.start()

@@ -161,6 +161,7 @@ class TutorAgent:
         reply_to_message_id: Optional[str] = None,
         course_content: Optional[CourseContentStudentGet] = None,
         course_member_id: Optional[str] = None,
+        assignment_context: Optional["AssignmentContext"] = None,
     ) -> ProcessingResult:
         """
         Process a student message and generate a response.
@@ -174,6 +175,7 @@ class TutorAgent:
             reply_to_message_id: ID of message to reply to (creates message chain)
             course_content: Pre-fetched CourseContentStudentGet to avoid redundant API calls
             course_member_id: Course member ID (for efficient data extraction)
+            assignment_context: Assignment context from dev mode (for assignment description)
 
         Returns:
             ProcessingResult with all processing information
@@ -196,6 +198,15 @@ class TutorAgent:
                 course_member_id=course_member_id,
             )
             context.context_id = context_id
+
+            # Enhance context with assignment info from dev mode
+            if assignment_context and not context.assignment:
+                from computor_agent.tutor.context_builder import AssignmentInfo
+                context.assignment = AssignmentInfo(
+                    title=assignment_context.title,
+                    description=assignment_context.readme_content,
+                    directory=assignment_context.identifier,
+                )
 
             # Run security check
             security_result = await self.security_gate.check(context)
