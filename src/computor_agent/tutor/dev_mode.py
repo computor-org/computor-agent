@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
+class MockMessageAuthor(BaseModel):
+    """Mock message author matching API structure."""
+    id: str = "dev_user"
+    given_name: str = "Dev"
+    family_name: str = "User"
+
+
+class MockMessageAuthorCourseMember(BaseModel):
+    """Mock author course member matching API structure."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    course_role_id: str = "_student"
+
+
 class MockMessage(BaseModel):
     """Simulated message for development mode - Pydantic model."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -34,12 +47,15 @@ class MockMessage(BaseModel):
     parent_id: Optional[str] = None
     submission_group_id: Optional[str] = None
     author_id: str = "dev_user"
-    author_name: str = "Developer"
+    author: Optional[MockMessageAuthor] = Field(default_factory=MockMessageAuthor)
+    author_course_member: Optional[MockMessageAuthorCourseMember] = Field(
+        default_factory=MockMessageAuthorCourseMember
+    )
     created_at: datetime = Field(default_factory=datetime.now)
     unread: bool = True
 
     def to_dict(self) -> dict:
-        """Convert to dict format expected by agent."""
+        """Convert to dict format for agent.process_message()."""
         return {
             "id": self.id,
             "content": self.content,
@@ -47,7 +63,6 @@ class MockMessage(BaseModel):
             "parent_id": self.parent_id,
             "submission_group_id": self.submission_group_id,
             "author_id": self.author_id,
-            "author_name": self.author_name,
             "created_at": self.created_at.isoformat(),
             "unread": self.unread,
         }
@@ -209,8 +224,8 @@ class MockMessagesEndpoint:
     def __init__(self, simulator: MessageSimulator):
         self.simulator = simulator
 
-    async def list(self, **kwargs) -> List[Dict]:
-        """List messages matching filters."""
+    async def list(self, **kwargs) -> List[MockMessage]:
+        """List messages matching filters. Returns MockMessage objects (not dicts)."""
         messages = []
         for msg in self.simulator.messages.values():
             # Apply filters
@@ -223,14 +238,14 @@ class MockMessagesEndpoint:
                 if not any(tag in (msg.title or "") for tag in tags):
                     continue
 
-            messages.append(msg.to_dict())
+            messages.append(msg)  # Return the object, not dict
 
         return messages
 
-    async def get(self, id: str) -> Dict:
-        """Get a specific message."""
+    async def get(self, id: str) -> MockMessage:
+        """Get a specific message. Returns MockMessage object."""
         if id in self.simulator.messages:
-            return self.simulator.messages[id].to_dict()
+            return self.simulator.messages[id]  # Return the object, not dict
         raise ValueError(f"Message {id} not found")
 
     async def create(self, data: Dict) -> MockMessageResponse:
@@ -535,9 +550,10 @@ class DevelopmentScheduler:
         table.add_column("Parent", style="dim")
 
         for msg in self.simulator.messages.values():
+            author_name = f"{msg.author.given_name} {msg.author.family_name}" if msg.author else "Unknown"
             table.add_row(
                 msg.id[:8] + "...",
-                msg.author_name,
+                author_name,
                 msg.title or "(no title)",
                 msg.content[:100] + "..." if len(msg.content) > 100 else msg.content,
                 msg.parent_id[:8] + "..." if msg.parent_id else "-"
