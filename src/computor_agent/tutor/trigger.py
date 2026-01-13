@@ -2,15 +2,13 @@
 Trigger detection for the Tutor AI Agent.
 
 Determines when the tutor agent should respond based on:
-1. Message triggers: Messages tagged with configured request tags (e.g., #ai::request)
-2. Reply chain triggers: Unread replies to AI responses (in same message chain)
-3. Submission triggers: New submission artifact with submit=True
+1. Message triggers: Messages tagged with configured request tags (e.g., #ai::help)
+2. Submission triggers: New submission artifact with submit=True
 
-Conversation model:
-- A conversation is a chain of messages linked by parent_id
-- Conversation starts when a message has a configured request tag
-- If the AI replies, any student reply to that chain triggers a new response
-- No external state needed - the message chain IS the conversation
+Tag-based response model:
+- The agent responds ONLY to messages that have a request tag in the title
+- User must explicitly add the tag to request help
+- This keeps the agent focused and prevents unwanted responses
 """
 
 import logging
@@ -159,9 +157,8 @@ class TriggerChecker:
         """
         Check if the tutor should respond to messages.
 
-        Checks for:
-        1. New messages with request tags (starts conversation)
-        2. Unread replies in conversations where AI already participated
+        Tag-based model: Only responds to messages with request tags.
+        User must explicitly add the tag to request help.
 
         Args:
             submission_group_id: The submission group to check
@@ -177,15 +174,8 @@ class TriggerChecker:
             )
 
         try:
-            # Step 1: Check for new messages with request tags
+            # Check for messages with request tags
             result = await self._check_new_conversation_trigger(
-                submission_group_id, course_id
-            )
-            if result.should_respond:
-                return result
-
-            # Step 2: Check for follow-up replies to AI responses
-            result = await self._check_follow_up_trigger(
                 submission_group_id, course_id
             )
             if result.should_respond:
@@ -193,7 +183,7 @@ class TriggerChecker:
 
             return TriggerCheckResult(
                 should_respond=False,
-                reason="No new request tags or follow-ups found",
+                reason="No unread messages with request tags found",
             )
 
         except Exception as e:
@@ -281,129 +271,6 @@ class TriggerChecker:
             root_message_id=message_id,
         )
 
-    async def _check_follow_up_trigger(
-        self,
-        submission_group_id: str,
-        course_id: str,
-    ) -> TriggerCheckResult:
-        """
-        Check for unread DIRECT replies to AI messages.
-
-        The AI should ONLY respond to follow-ups that are:
-        - Direct replies to an AI message (parent has response_tag)
-        - From a student (not staff)
-
-        This is stricter than checking entire conversation chains.
-        """
-
-        logger.debug(f"Checking for follow-up triggers in {submission_group_id}")
-
-        # Get all unread messages in this submission group
-        unread_messages = await self.messages.list(
-            submission_group_id=submission_group_id,
-            unread=True,
-        )
-
-        logger.debug(f"Found {len(unread_messages) if unread_messages else 0} unread messages")
-
-        if not unread_messages:
-            return TriggerCheckResult(
-                should_respond=False,
-                reason="No unread messages",
-            )
-
-        # Find messages that are DIRECT replies to AI messages
-        for message in unread_messages:
-            parent_id = getattr(message, "parent_id", None)
-            if not parent_id:
-                continue
-
-            # Skip AI's own messages (have response_tag in title)
-            title = getattr(message, "title", "") or ""
-            if self.config.response_tag_string in title:
-                continue
-
-            # Check if author is a student (not staff/agent)
-            author_role = await self._get_author_role_from_message(message, course_id)
-            if author_role in STAFF_ROLES:
-                continue
-
-            # Check if the PARENT message is from the AI (has response_tag)
-            try:
-                parent_message = await self.messages.get(id=parent_id)
-                parent_title = getattr(parent_message, "title", "") or ""
-
-                # Only trigger if this is a DIRECT reply to an AI message
-                if self.config.response_tag_string not in parent_title:
-                    continue
-
-                # Find the root of this conversation
-                root_id = await self._find_conversation_root(parent_id)
-
-                trigger = await self._build_message_trigger(
-                    message, submission_group_id, course_id
-                )
-                trigger.root_message_id = root_id
-                trigger.parent_id = parent_id
-                trigger.is_follow_up = True
-
-                return TriggerCheckResult(
-                    should_respond=True,
-                    reason=f"Direct reply to AI message (parent: {parent_id})",
-                    message_trigger=trigger,
-                    root_message_id=root_id,
-                )
-
-            except Exception as e:
-                logger.warning(f"Failed to get parent message {parent_id}: {e}")
-                continue
-
-        return TriggerCheckResult(
-            should_respond=False,
-            reason="No direct replies to AI messages found",
-        )
-
-    async def _find_conversation_root(
-        self,
-        message_id: str,
-        max_depth: int = 50,
-    ) -> Optional[str]:
-        """
-        Trace up the parent chain to find the root of a conversation.
-
-        Simply follows parent_id links until reaching a message with no parent.
-
-        Args:
-            message_id: The message ID to start from
-            max_depth: Maximum depth to traverse (prevents infinite loops)
-
-        Returns:
-            The root message ID
-        """
-        current_id = message_id
-        visited = set()
-
-        for _ in range(max_depth):
-            if current_id in visited:
-                break
-            visited.add(current_id)
-
-            try:
-                message = await self.messages.get(id=current_id)
-                parent_id = getattr(message, "parent_id", None)
-
-                if not parent_id:
-                    # Reached the root of the chain
-                    return current_id
-
-                current_id = parent_id
-
-            except Exception as e:
-                logger.warning(f"Failed to get message {current_id}: {e}")
-                break
-
-        return current_id
-
     async def _build_message_trigger(
         self,
         message: Union[MessageList, MessageGet],
@@ -438,22 +305,6 @@ class TriggerChecker:
             created_at=message.created_at if hasattr(message, "created_at") else None,
             parent_id=message.parent_id,
         )
-
-    async def _get_author_role_from_message(
-        self, message: Union[MessageList, MessageGet], course_id: str
-    ) -> str:
-        """Get the author's role from a message."""
-        author_cm = message.author_course_member
-        if author_cm:
-            return author_cm.course_role_id or ""
-
-        author_id = message.author_id
-        if author_id:
-            course_member = await self._get_course_member_by_user_id(author_id, course_id)
-            if course_member:
-                return course_member.course_role_id or ""
-
-        return ""
 
     async def check_submission_trigger(
         self,
