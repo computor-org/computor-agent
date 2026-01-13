@@ -218,7 +218,8 @@ class ReferenceService:
     Service for fetching and comparing reference solutions.
 
     Provides methods to:
-    - Download reference solutions
+    - Download reference solutions (from /tutor/course-contents/{id}/reference)
+    - Get assignment description (from /tutor/course-contents/{id}/description)
     - Compare student code with reference
     - Generate detailed diffs
     - Format comparisons for LLM context
@@ -228,6 +229,9 @@ class ReferenceService:
 
         # Download reference for course content
         ref_path = await service.download_reference(course_content_id, destination)
+
+        # Get assignment description
+        description = await service.get_description(course_content_id)
 
         # Compare student code with reference
         comparison = service.compare_code(student_files, reference_files)
@@ -245,14 +249,262 @@ class ReferenceService:
         ".json", ".xml", ".md", ".txt",
     }
 
-    def __init__(self, client: Any) -> None:
+    # Default cache directory
+    DEFAULT_CACHE_DIR = Path.home() / ".computor-agent" / "course-contents"
+
+    def __init__(
+        self,
+        client: Any,
+        cache_dir: Optional[Path] = None,
+    ) -> None:
         """
         Initialize the service.
 
         Args:
             client: ComputorClient instance
+            cache_dir: Directory for caching downloaded content (default: ~/.cache/computor-agent/course-contents)
         """
         self.client = client
+        self.cache_dir = Path(cache_dir) if cache_dir else self.DEFAULT_CACHE_DIR
+
+    def _get_cache_path(self, course_content_id: str, suffix: str) -> Path:
+        """Get cache file path for a course content."""
+        return self.cache_dir / course_content_id / suffix
+
+    def _read_cached_description(
+        self,
+        course_content_id: str,
+        language: str,
+    ) -> Optional[str]:
+        """Read cached description if available."""
+        cache_path = self._get_cache_path(course_content_id, f"description_{language}.md")
+        if cache_path.exists():
+            try:
+                return cache_path.read_text(encoding="utf-8")
+            except Exception as e:
+                logger.debug(f"Failed to read cached description: {e}")
+        return None
+
+    def _write_cached_description(
+        self,
+        course_content_id: str,
+        language: str,
+        content: str,
+    ) -> None:
+        """Write description to cache."""
+        cache_path = self._get_cache_path(course_content_id, f"description_{language}.md")
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(content, encoding="utf-8")
+            logger.debug(f"Cached description for {course_content_id} ({language})")
+        except Exception as e:
+            logger.debug(f"Failed to cache description: {e}")
+
+    def _read_cached_reference(self, course_content_id: str) -> Optional[bytes]:
+        """Read cached reference ZIP if available."""
+        cache_path = self._get_cache_path(course_content_id, "reference.zip")
+        if cache_path.exists():
+            try:
+                return cache_path.read_bytes()
+            except Exception as e:
+                logger.debug(f"Failed to read cached reference: {e}")
+        return None
+
+    def _write_cached_reference(
+        self,
+        course_content_id: str,
+        data: bytes,
+    ) -> None:
+        """Write reference ZIP to cache."""
+        cache_path = self._get_cache_path(course_content_id, "reference.zip")
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(data)
+            logger.debug(f"Cached reference for {course_content_id}")
+        except Exception as e:
+            logger.debug(f"Failed to cache reference: {e}")
+
+    def clear_cache(self, course_content_id: Optional[str] = None) -> None:
+        """
+        Clear cached content.
+
+        Args:
+            course_content_id: Clear cache for specific course content, or all if None
+        """
+        import shutil
+
+        if course_content_id:
+            cache_path = self.cache_dir / course_content_id
+            if cache_path.exists():
+                shutil.rmtree(cache_path)
+                logger.info(f"Cleared cache for {course_content_id}")
+        else:
+            if self.cache_dir.exists():
+                shutil.rmtree(self.cache_dir)
+                logger.info("Cleared all reference cache")
+
+    async def get_description(
+        self,
+        course_content_id: str,
+        language: str = "en",
+        *,
+        use_cache: bool = True,
+    ) -> Optional[str]:
+        """
+        Get assignment description/README from the tutor API.
+
+        Uses: GET /tutors/course-contents/{id}/description
+
+        The API returns a ZIP file containing:
+        - index_<language>.md (e.g., index_en.md, index_de.md)
+        - index.md (fallback)
+        - mediaFiles/ (images, optional)
+
+        Results are cached to filesystem to avoid repeated downloads.
+
+        Args:
+            course_content_id: Course content ID
+            language: Preferred language code (e.g., "en", "de")
+            use_cache: Whether to use filesystem cache (default: True)
+
+        Returns:
+            Assignment description (markdown), or None if not available
+        """
+        # Check cache first
+        if use_cache:
+            cached = self._read_cached_description(course_content_id, language)
+            if cached is not None:
+                logger.debug(f"Using cached description for {course_content_id} ({language})")
+                return cached
+
+        try:
+            if hasattr(self.client, 'tutors') and hasattr(self.client.tutors, 'course_contents_description'):
+                response = await self.client.tutors.course_contents_description(
+                    id=course_content_id
+                )
+                if response:
+                    content = None
+                    # Response is a ZIP file as bytes
+                    if isinstance(response, bytes):
+                        content = self._extract_description_from_zip(response, language)
+                    # Fallback: handle other response formats
+                    elif isinstance(response, str):
+                        content = response
+                    elif hasattr(response, 'content'):
+                        content = response.content
+                    elif isinstance(response, dict):
+                        content = response.get('content') or response.get('description')
+
+                    # Cache the result
+                    if content and use_cache:
+                        self._write_cached_description(course_content_id, language, content)
+
+                    return content
+                return None
+            else:
+                logger.debug("tutors.course_contents_description not available")
+                return None
+        except Exception as e:
+            logger.debug(f"Failed to get description for {course_content_id}: {e}")
+            return None
+
+    def _extract_description_from_zip(
+        self,
+        zip_data: bytes,
+        language: str = "en",
+    ) -> Optional[str]:
+        """
+        Extract markdown description from a ZIP file.
+
+        Looks for files in order:
+        1. index_<language>.md (e.g., index_en.md)
+        2. index.md
+        3. Any .md file at root level
+
+        Args:
+            zip_data: ZIP file as bytes
+            language: Preferred language code
+
+        Returns:
+            Markdown content, or None if not found
+        """
+        try:
+            with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+                # Preferred paths in order (at root level)
+                preferred_paths = [
+                    f"index_{language}.md",
+                    "index.md",
+                ]
+
+                # Try preferred paths first
+                for path in preferred_paths:
+                    if path in zf.namelist():
+                        try:
+                            content = zf.read(path).decode("utf-8", errors="replace")
+                            return content
+                        except Exception:
+                            continue
+
+                # Fallback: find any .md file at root level
+                for name in zf.namelist():
+                    if name.endswith(".md") and "/" not in name:
+                        try:
+                            content = zf.read(name).decode("utf-8", errors="replace")
+                            return content
+                        except Exception:
+                            continue
+
+                return None
+
+        except zipfile.BadZipFile:
+            logger.debug("Invalid ZIP file for description")
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to extract description from ZIP: {e}")
+            return None
+
+    async def get_reference_from_tutor_api(
+        self,
+        course_content_id: str,
+        *,
+        use_cache: bool = True,
+    ) -> Optional[bytes]:
+        """
+        Get reference solution ZIP from the tutor API.
+
+        Uses: GET /tutors/course-contents/{id}/reference
+
+        Results are cached to filesystem to avoid repeated downloads.
+
+        Args:
+            course_content_id: Course content ID
+            use_cache: Whether to use filesystem cache (default: True)
+
+        Returns:
+            Reference ZIP as bytes, or None if not available
+        """
+        # Check cache first
+        if use_cache:
+            cached = self._read_cached_reference(course_content_id)
+            if cached is not None:
+                logger.debug(f"Using cached reference for {course_content_id}")
+                return cached
+
+        try:
+            if hasattr(self.client, 'tutors') and hasattr(self.client.tutors, 'course_contents_reference'):
+                buffer = await self.client.tutors.course_contents_reference(
+                    id=course_content_id
+                )
+                # Cache the result
+                if buffer and use_cache:
+                    self._write_cached_reference(course_content_id, buffer)
+                return buffer
+            else:
+                logger.debug("tutors.course_contents_reference not available")
+                return None
+        except Exception as e:
+            logger.debug(f"Failed to get reference from tutor API for {course_content_id}: {e}")
+            return None
 
     async def download_reference(
         self,
@@ -286,27 +538,17 @@ class ReferenceService:
             # Download the reference ZIP - try multiple endpoints
             buffer = None
 
-            # Try course_contents endpoint first
-            if hasattr(self.client, 'course_contents'):
+            # Try tutor API endpoint first (new endpoint)
+            buffer = await self.get_reference_from_tutor_api(course_content_id)
+
+            # Fallback to course_contents endpoint
+            if not buffer and hasattr(self.client, 'course_contents'):
                 try:
                     buffer = await self.client.course_contents.download_reference(
                         id=course_content_id,
                     )
                 except Exception as e:
                     logger.debug(f"course_contents.download_reference failed: {e}")
-
-            # Try tutor endpoint as fallback
-            if not buffer and hasattr(self.client, 'tutors'):
-                try:
-                    # Get course content details which may include reference
-                    cc_details = await self.client.tutors.course_contents(course_content_id)
-                    if cc_details:
-                        ref_url = getattr(cc_details, 'reference_url', None)
-                        if ref_url:
-                            # Reference URL might need separate download
-                            logger.debug(f"Reference URL available: {ref_url}")
-                except Exception as e:
-                    logger.debug(f"tutors.course_contents for reference failed: {e}")
 
             if not buffer:
                 logger.warning(f"No reference available for {course_content_id}")

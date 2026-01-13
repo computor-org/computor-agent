@@ -78,6 +78,76 @@ class SecurityGate:
         self.config = config
         self.llm = llm
         self.threat_log_path = threat_log_path or config.threat_log_path
+        self.max_retries = 2  # Default retry count for LLM JSON calls
+
+    async def _llm_json_call(
+        self,
+        prompt: str,
+        max_tokens: int = 1000,
+        default_on_failure: Optional[dict] = None,
+    ) -> Optional[dict]:
+        """
+        Make an LLM call expecting JSON response, with retry logic.
+
+        Args:
+            prompt: The prompt to send to the LLM
+            max_tokens: Maximum tokens for the response
+            default_on_failure: Default value to return if all retries fail (None = raise)
+
+        Returns:
+            Parsed JSON dict, or default_on_failure if parsing fails after retries
+
+        Raises:
+            Exception: If parsing fails and no default_on_failure provided
+        """
+        last_error = None
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = await self.llm.complete(prompt, max_tokens=max_tokens)
+
+                if not response:
+                    if attempt < self.max_retries:
+                        logger.debug(f"LLM returned empty response, retrying ({attempt + 1}/{self.max_retries})")
+                        continue
+                    last_error = ValueError("LLM returned empty response")
+                    break
+
+                # Try to extract and parse JSON
+                json_str = self._extract_json(response)
+                data = json.loads(json_str)
+                return data
+
+            except json.JSONDecodeError as e:
+                last_error = e
+                if attempt < self.max_retries:
+                    logger.debug(
+                        f"LLM returned invalid JSON, retrying ({attempt + 1}/{self.max_retries}): {e}"
+                    )
+                    continue
+
+            except ValueError as e:
+                last_error = e
+                if attempt < self.max_retries:
+                    logger.debug(
+                        f"Failed to extract JSON from LLM response, retrying ({attempt + 1}/{self.max_retries}): {e}"
+                    )
+                    continue
+
+            except Exception as e:
+                last_error = e
+                if attempt < self.max_retries:
+                    logger.debug(f"LLM call failed, retrying ({attempt + 1}/{self.max_retries}): {e}")
+                    continue
+                break
+
+        # All retries exhausted
+        if default_on_failure is not None:
+            logger.debug(f"LLM JSON call failed after {self.max_retries + 1} attempts, using default: {last_error}")
+            return default_on_failure
+
+        logger.warning(f"LLM JSON call failed after {self.max_retries + 1} attempts: {last_error}")
+        raise last_error if last_error else ValueError("LLM JSON call failed")
 
     async def check(self, context: "ConversationContext") -> SecurityCheckResult:
         """
@@ -325,13 +395,14 @@ class SecurityGate:
         """
         prompt = SECURITY_DETECTION_PROMPT.format(content=content)
 
-        try:
-            response = await self.llm.complete(prompt, max_tokens=1000)
-            return self._parse_detection_response(response, source, file_path)
-        except Exception as e:
-            logger.warning(f"Security detection failed: {e}")
-            # Fail open - if detection fails, don't block
-            return []
+        # Use _llm_json_call with default empty response (fail open)
+        data = await self._llm_json_call(
+            prompt,
+            max_tokens=1000,
+            default_on_failure={"is_suspicious": False},
+        )
+
+        return self._parse_detection_data(data, source, file_path)
 
     async def _confirm_threats(
         self,
@@ -353,32 +424,29 @@ class SecurityGate:
             initial_detection=initial_detection,
         )
 
-        try:
-            response = await self.llm.complete(prompt, max_tokens=500)
-            return self._parse_confirmation_response(response)
-        except Exception as e:
-            logger.warning(f"Security confirmation failed: {e}")
-            # Fail safe - if confirmation fails, treat as confirmed
-            return True
+        # Fail safe - if confirmation fails, treat as confirmed (block suspicious content)
+        data = await self._llm_json_call(
+            prompt,
+            max_tokens=500,
+            default_on_failure={"confirmed": True},
+        )
 
-    def _parse_detection_response(
+        return data.get("confirmed", False)
+
+    def _parse_detection_data(
         self,
-        response: str,
+        data: dict,
         source: str,
         file_path: Optional[str],
     ) -> list[ThreatDetection]:
-        """Parse the detection LLM response into ThreatDetection objects."""
+        """Parse the detection data dict into ThreatDetection objects."""
         threats = []
 
-        try:
-            # Extract JSON from response (may have text around it)
-            json_str = self._extract_json(response)
-            data = json.loads(json_str)
+        if not data.get("is_suspicious", False):
+            return []
 
-            if not data.get("is_suspicious", False):
-                return []
-
-            for threat_data in data.get("threats", []):
+        for threat_data in data.get("threats", []):
+            try:
                 threat_type = self._parse_threat_type(threat_data.get("type", "other"))
                 level = self._parse_threat_level(threat_data.get("level", "low"))
 
@@ -392,24 +460,16 @@ class SecurityGate:
                         file_path=file_path,
                     )
                 )
-
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.warning(f"Failed to parse detection response: {e}")
+            except (KeyError, TypeError, AttributeError) as e:
+                logger.debug(f"Failed to parse threat entry: {e}")
+                continue
 
         return threats
 
-    def _parse_confirmation_response(self, response: str) -> bool:
-        """Parse the confirmation LLM response."""
-        try:
-            json_str = self._extract_json(response)
-            data = json.loads(json_str)
-            return data.get("confirmed", False)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            logger.warning("Failed to parse confirmation response, defaulting to confirmed")
-            return True
-
     def _extract_json(self, text: str) -> str:
         """Extract JSON object from text that may contain other content."""
+        import re
+
         # Find the first { and last } to extract JSON
         start = text.find("{")
         end = text.rfind("}") + 1
@@ -417,7 +477,31 @@ class SecurityGate:
         if start == -1 or end == 0:
             raise ValueError("No JSON object found in response")
 
-        return text[start:end]
+        json_str = text[start:end]
+
+        # Sanitize control characters that small LLMs sometimes produce
+        # Replace literal newlines/tabs inside strings with escaped versions
+        # This handles cases where LLM outputs unescaped control chars in JSON strings
+        json_str = re.sub(r'[\x00-\x1f\x7f]', lambda m: f'\\u{ord(m.group()):04x}', json_str)
+
+        # Fix common LLM JSON issues:
+        # 1. Replace single quotes with double quotes (but not inside strings)
+        # 2. Quote unquoted keys
+        # This is a best-effort fix for small LLMs that output JS-style objects
+        try:
+            # First try parsing as-is
+            json.loads(json_str)
+            return json_str
+        except json.JSONDecodeError:
+            # Try fixing single quotes -> double quotes
+            # Simple approach: replace ' with " when it looks like a JSON delimiter
+            fixed = re.sub(r"'([^']*)'(\s*[:\],}])", r'"\1"\2', json_str)
+            fixed = re.sub(r"(\{|\[|,)\s*'([^']*)'", r'\1"\2"', fixed)
+
+            # Try to fix unquoted keys: {key: -> {"key":
+            fixed = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', fixed)
+
+            return fixed
 
     def _parse_threat_type(self, type_str: str) -> ThreatType:
         """Parse threat type string to enum."""

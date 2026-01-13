@@ -141,7 +141,7 @@ class ContextBuilder:
         # This avoids redundant API calls to /submission-groups, /submission-group-members, /course-contents
         if course_content is not None:
             student_info = self._extract_student_info(course_content, course_member_id)
-            assignment_info = self._extract_assignment_info(course_content)
+            assignment_info = await self._extract_assignment_info(course_content)
         else:
             # Fallback: Gather data via API calls (for backward compatibility)
             student_info = await self._get_student_info(submission_group_id)
@@ -404,10 +404,20 @@ class ContextBuilder:
             # Use ComputorClient.course_contents.get() directly
             content = await self.client.course_contents.get(id=course_content_id)
 
+            # Try to get the full README/description from tutor API
+            description = content.description  # fallback to short description
+            try:
+                full_description = await self.reference_service.get_description(course_content_id)
+                if full_description:
+                    description = full_description
+                    logger.debug(f"Got full description for {course_content_id}")
+            except Exception as e:
+                logger.debug(f"Could not get full description: {e}")
+
             return AssignmentInfo(
                 course_content_id=course_content_id,
                 title=content.title,
-                description=content.description,
+                description=description,
                 course_id=content.course_id,
                 course_title=getattr(content, "course_title", None),
             )
@@ -463,14 +473,14 @@ class ContextBuilder:
             course_member_ids=course_member_ids,
         )
 
-    def _extract_assignment_info(
+    async def _extract_assignment_info(
         self,
         course_content: CourseContentStudentGet,
     ) -> Optional[AssignmentInfo]:
         """
         Extract assignment information from pre-fetched CourseContentStudentGet.
 
-        This avoids redundant API calls to /submission-groups and /course-contents.
+        Also fetches the full README/description from the tutor API.
 
         Args:
             course_content: Pre-fetched CourseContentStudentGet
@@ -478,10 +488,20 @@ class ContextBuilder:
         Returns:
             AssignmentInfo extracted from course content
         """
+        # Try to get the full README/description from tutor API
+        description = course_content.description  # fallback to short description
+        try:
+            full_description = await self.reference_service.get_description(course_content.id)
+            if full_description:
+                description = full_description
+                logger.debug(f"Got full description for {course_content.id}")
+        except Exception as e:
+            logger.debug(f"Could not get full description: {e}")
+
         return AssignmentInfo(
             course_content_id=course_content.id,
             title=course_content.title,
-            description=course_content.description,
+            description=description,
             course_id=course_content.course_id,
             course_title=None,  # Not available in CourseContentStudentGet
         )
