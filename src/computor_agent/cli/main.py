@@ -449,13 +449,27 @@ def providers():
         console.print(f"  • [green]{p}[/green] - {default_url}")
 
 
-@cli.command()
+@cli.group()
+def tutor():
+    """
+    Tutor AI agent commands.
+
+    The tutor agent can respond to student messages and grade submissions.
+
+    Subcommands:
+        messaging  - Interactive messaging mode (respond to student questions)
+        grading    - Grade student submissions
+    """
+    pass
+
+
+@tutor.command()
 @click.option(
     "--config",
     "-c",
     type=click.Path(exists=True),
     default="config.yaml",
-    help="Path to config file (default: config.yaml). Contains backend, llm, credentials, and tutor settings.",
+    help="Path to config file (default: config.yaml).",
 )
 @click.option(
     "--verbose",
@@ -477,7 +491,7 @@ def providers():
     "--prompts-dir",
     type=click.Path(),
     default=None,
-    help="Directory for prompt markdown files (default: ~/.computor/prompts). Missing files will be auto-created.",
+    help="Directory for prompt markdown files (default: ~/.computor/prompts).",
 )
 @click.option(
     "--assignment",
@@ -485,7 +499,7 @@ def providers():
     default=None,
     help="[Dev mode] Path to assignment directory (must contain meta.yaml).",
 )
-def tutor(
+def messaging(
     config: str,
     verbose: bool,
     dry_run: bool,
@@ -494,40 +508,28 @@ def tutor(
     assignment: Optional[str],
 ):
     """
-    Start the Tutor AI agent.
+    Start the messaging tutor agent.
 
-    The tutor agent polls for student messages and responds
-    automatically using the configured LLM.
-
-    Configuration file should contain all settings:
-    - backend: API authentication
-    - llm: LLM provider settings
-    - credentials: Git repository access tokens
-    - tutor: Agent behavior settings
+    Polls for student messages with trigger tags and responds automatically.
 
     Examples:
 
-        # Start with config file in current directory
-        computor-agent tutor
-
-        # Use specific config file
-        computor-agent tutor -c ~/.computor/config.yaml
-
-        # Verbose mode with dry run
-        computor-agent tutor -v --dry-run
+        # Start messaging agent
+        computor-agent tutor messaging
 
         # Development mode (interactive, no API calls)
-        computor-agent tutor --dev
+        computor-agent tutor messaging --dev
+
+        # Dev mode with assignment context
+        computor-agent tutor messaging --dev --assignment ./my-assignment
     """
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
 
-    # Load configuration
     config_path = Path(config)
 
     # Check if running in development mode
     if dev:
-        # Run development mode
         from computor_agent.tutor.dev_mode import run_development_mode
         prompts_path = Path(prompts_dir) if prompts_dir else None
         assignment_path = Path(assignment) if assignment else None
@@ -545,7 +547,6 @@ def tutor(
         logger.info(f"Loading config from {config_path}")
         computor_config = ComputorConfig.from_file(config_path)
 
-        # Get tutor config and credentials from unified config
         tutor_config = computor_config.get_tutor_config()
         git_credentials = computor_config.get_credentials_store()
 
@@ -558,10 +559,9 @@ def tutor(
         console.print(f"[bold red]Configuration error:[/bold red] {e}")
         sys.exit(1)
 
-    # Show configuration summary
     console.print(
         Panel(
-            f"[bold cyan]Tutor AI Agent[/bold cyan]\n\n"
+            f"[bold cyan]Tutor AI Agent - Messaging[/bold cyan]\n\n"
             f"Backend: [green]{computor_config.backend.url}[/green]\n"
             f"Auth: [green]{computor_config.backend.auth_method}[/green]\n"
             f"LLM: [green]{computor_config.llm.provider if computor_config.llm else 'not configured'}[/green] "
@@ -574,11 +574,109 @@ def tutor(
     )
 
     prompts_path = Path(prompts_dir) if prompts_dir else None
-    asyncio.run(_run_tutor(computor_config, tutor_config, git_credentials, dry_run, prompts_path))
+    asyncio.run(_run_tutor_messaging(computor_config, tutor_config, git_credentials, dry_run, prompts_path))
 
 
-async def _run_tutor(computor_config, tutor_config, git_credentials, dry_run: bool, prompts_dir: Optional[Path] = None):
-    """Run the tutor agent."""
+@tutor.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True),
+    default="config.yaml",
+    help="Path to config file (default: config.yaml).",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Enable verbose logging",
+)
+@click.option(
+    "--dev",
+    is_flag=True,
+    help="Run in development mode (local files, no API calls)",
+)
+@click.option(
+    "--prompts-dir",
+    type=click.Path(),
+    default=None,
+    help="Directory for prompt markdown files (default: ~/.computor/prompts).",
+)
+@click.option(
+    "--reference",
+    type=click.Path(exists=True),
+    required=False,
+    help="[Dev mode] Path to reference solution directory (must contain meta.yaml).",
+)
+@click.option(
+    "--student",
+    type=click.Path(exists=True),
+    required=False,
+    help="[Dev mode] Path to student submission directory.",
+)
+@click.option(
+    "--language",
+    "-l",
+    default=None,
+    help="Language for assignment description (e.g., 'en', 'de').",
+)
+def grading(
+    config: str,
+    verbose: bool,
+    dev: bool,
+    prompts_dir: Optional[str],
+    reference: Optional[str],
+    student: Optional[str],
+    language: Optional[str],
+):
+    """
+    Grade student submissions.
+
+    In dev mode: Grade a local submission against a reference solution.
+    In production mode: Poll for submissions that need grading.
+
+    Examples:
+
+        # Dev mode - grade local files
+        computor-agent tutor grading --dev --reference ./assignment --student ./submission
+
+        # Production mode (not yet implemented)
+        computor-agent tutor grading
+    """
+    setup_logging(verbose)
+
+    config_path = Path(config)
+
+    if dev:
+        if not reference or not student:
+            console.print("[bold red]Error:[/bold red] --reference and --student are required in dev mode")
+            console.print("\nUsage: computor-agent tutor grading --dev --reference ./assignment --student ./submission")
+            sys.exit(1)
+
+        from computor_agent.tutor.grading.dev_mode import run_grading_dev_mode
+
+        reference_path = Path(reference)
+        student_path = Path(student)
+        prompts_path = Path(prompts_dir) if prompts_dir else None
+
+        asyncio.run(run_grading_dev_mode(
+            config_path,
+            reference_path,
+            student_path,
+            verbose=verbose,
+            language=language,
+            prompts_dir=prompts_path,
+        ))
+        return
+
+    # Production mode - not yet fully implemented
+    console.print("[yellow]Production grading mode is not yet implemented.[/yellow]")
+    console.print("Use --dev mode for local testing:")
+    console.print("  computor-agent tutor grading --dev --reference ./assignment --student ./submission")
+
+
+async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, dry_run: bool, prompts_dir: Optional[Path] = None):
+    """Run the tutor messaging agent."""
     from computor_client import ComputorClient
 
     from computor_agent.llm.config import LLMConfig, ProviderType
