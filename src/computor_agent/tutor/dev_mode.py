@@ -450,20 +450,6 @@ class DevelopmentScheduler:
         """Start the interactive development loop."""
         self.running = True
 
-        console.print(Panel(
-            "[bold green]Development Mode Started[/bold green]\n\n"
-            "Type your messages to test the AI tutor.\n"
-            "Commands:\n"
-            "  [yellow]/new[/yellow] - Start a new conversation (with #ai::request tag)\n"
-            "  [yellow]/reply <id>[/yellow] - Reply to a message\n"
-            "  [yellow]/show[/yellow] - Show conversation history\n"
-            "  [yellow]/clear[/yellow] - Clear all messages\n"
-            "  [yellow]/exit[/yellow] - Exit development mode\n\n"
-            "Just type a message to start a new AI conversation!",
-            title="Tutor Agent Development Mode",
-            border_style="green"
-        ))
-
         last_message_id = None
 
         while self.running:
@@ -729,6 +715,7 @@ async def run_development_mode(
     # Build info panel
     info_lines = [
         "[bold green]Development Mode with Hot Reload[/bold green]\n",
+        f"LLM: [green]{computor_config.llm.provider}[/green] ([green]{computor_config.llm.model}[/green])",
         f"Prompts directory: [cyan]{prompts_dir}[/cyan]",
         "Hot reload: [green]Enabled[/green] - Edit .md files to see changes instantly",
     ]

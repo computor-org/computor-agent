@@ -41,9 +41,11 @@ def setup_logging(verbose: bool = False) -> None:
         datefmt="[%X]",
         handlers=[RichHandler(console=console, rich_tracebacks=True)],
     )
-    # Reduce noise from httpx
+    # Reduce noise from third-party libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("watchdog").setLevel(logging.WARNING)
+    logging.getLogger("watchdog.observers.inotify_buffer").setLevel(logging.WARNING)
 
 
 def get_default_base_url(provider: str) -> str:
