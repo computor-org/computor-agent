@@ -257,6 +257,7 @@ class TutorAgent:
 
                 # Reply to the triggering message to create a chain
                 parent_id = reply_to_message_id or message.get("id")
+                logger.debug(f"reply_to_message_id={reply_to_message_id}, message.get('id')={message.get('id')}, parent_id={parent_id}")
 
                 # Use ComputorClient.messages.create() directly
                 # When replying (parent_id set), don't set target - it's inherited from parent
@@ -267,10 +268,13 @@ class TutorAgent:
                 }
                 if parent_id:
                     message_data["parent_id"] = parent_id
+                    logger.debug(f"Using parent_id for reply: {parent_id}")
                 else:
                     # New message thread - must specify target
                     message_data["submission_group_id"] = submission_group_id
+                    logger.debug(f"New thread, using submission_group_id: {submission_group_id}")
 
+                logger.info(f"Creating message with data: {message_data}")
                 created_message = await self.client.messages.create(data=message_data)
                 message_sent = True
                 response_message_id = created_message.id
