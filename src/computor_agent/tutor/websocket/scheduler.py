@@ -383,6 +383,10 @@ class WebSocketScheduler:
                 # Reset reconnect count on successful connection
                 self._reconnect_count = 0
                 logger.info("WebSocket reconnected successfully")
+
+                # Process any unread messages that arrived while disconnected
+                await self._process_unread_messages()
+
                 return True
 
             except Exception as e:
