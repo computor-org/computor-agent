@@ -71,6 +71,8 @@ class WebSocketScheduler:
         on_message_trigger: Optional[Callable] = None,
         cooldown_seconds: int = 60,
         max_concurrent_processing: int = 5,
+        reconnect_delay_seconds: float = 30.0,
+        max_reconnect_attempts: int = 0,  # 0 = unlimited
     ) -> None:
         """
         Initialize the WebSocket scheduler.
@@ -83,12 +85,16 @@ class WebSocketScheduler:
                 Signature: async def callback(trigger_result, course_content, channel) -> None
             cooldown_seconds: Minimum seconds between processing same submission group
             max_concurrent_processing: Maximum concurrent message processing
+            reconnect_delay_seconds: Delay between reconnection attempts
+            max_reconnect_attempts: Maximum reconnection attempts (0 = unlimited)
         """
         self.client = client
         self._ws = ws
         self.trigger_config = trigger_config or TriggerConfig()
         self.on_message_trigger = on_message_trigger
         self._cooldown_seconds = cooldown_seconds
+        self._reconnect_delay = reconnect_delay_seconds
+        self._max_reconnect_attempts = max_reconnect_attempts
 
         self._typing_manager = TypingManager(ws)
         self._semaphore = asyncio.Semaphore(max_concurrent_processing)
@@ -98,6 +104,7 @@ class WebSocketScheduler:
         self._course_ids: list[str] = []
         self._subscribed_channels: set[str] = set()  # Track subscribed channels
         self._running = False
+        self._reconnect_count = 0
         self._event_task: Optional[asyncio.Task] = None
 
     @property
@@ -153,8 +160,22 @@ class WebSocketScheduler:
         except asyncio.CancelledError:
             logger.info("WebSocket scheduler cancelled")
         except WebSocketError as e:
-            logger.error(f"WebSocket error: {e}")
-            raise
+            # Initial connection failed - attempt reconnection
+            logger.warning(f"Initial WebSocket connection failed: {e}")
+            if self._running:
+                reconnected = await self._reconnect()
+                if reconnected:
+                    # Start the event loop after successful reconnection
+                    self._event_task = asyncio.create_task(self._event_loop())
+                    logger.info("WebSocket scheduler started after reconnection")
+                    try:
+                        await self._event_task
+                    except asyncio.CancelledError:
+                        logger.info("WebSocket scheduler cancelled")
+                else:
+                    logger.error("Failed to establish WebSocket connection")
+        except Exception as e:
+            logger.error(f"Unexpected error in WebSocket scheduler: {e}")
         finally:
             self._running = False
 
@@ -287,21 +308,88 @@ class WebSocketScheduler:
             logger.warning(f"Error during unread message catch-up: {e}")
 
     async def _event_loop(self) -> None:
-        """Main event processing loop."""
-        try:
-            async for event in self._ws.receive():
+        """Main event processing loop with automatic reconnection."""
+        while self._running:
+            try:
+                async for event in self._ws.receive():
+                    if not self._running:
+                        break
+
+                    try:
+                        await self._handle_event(event)
+                    except Exception as e:
+                        logger.exception(f"Error handling event: {e}")
+
+                # If we exit the loop normally (not running), break out
                 if not self._running:
                     break
 
-                try:
-                    await self._handle_event(event)
-                except Exception as e:
-                    logger.exception(f"Error handling event: {e}")
+            except WebSocketError as e:
+                logger.warning(f"WebSocket connection lost: {e}")
 
-        except WebSocketError as e:
-            logger.error(f"WebSocket error in event loop: {e}")
-            # Could implement reconnection logic here
-            raise
+                if not self._running:
+                    break
+
+                # Attempt to reconnect
+                reconnected = await self._reconnect()
+                if not reconnected:
+                    logger.error("Failed to reconnect after maximum attempts")
+                    break
+
+    async def _reconnect(self) -> bool:
+        """
+        Attempt to reconnect to the WebSocket server.
+
+        Keeps trying until successful, stopped, or max attempts reached.
+
+        Returns:
+            True if reconnection successful, False if max attempts reached or stopped
+        """
+        while self._running:
+            self._reconnect_count += 1
+
+            # Check max attempts (0 = unlimited)
+            if self._max_reconnect_attempts > 0 and self._reconnect_count > self._max_reconnect_attempts:
+                return False
+
+            logger.info(
+                f"Attempting to reconnect in {self._reconnect_delay}s "
+                f"(attempt {self._reconnect_count}"
+                f"{f'/{self._max_reconnect_attempts}' if self._max_reconnect_attempts > 0 else ''})..."
+            )
+
+            # Wait before reconnecting
+            await asyncio.sleep(self._reconnect_delay)
+
+            if not self._running:
+                return False
+
+            try:
+                # Disconnect cleanly first (if still connected)
+                try:
+                    await self._ws.disconnect()
+                except Exception:
+                    pass
+
+                # Reconnect
+                await self._ws.connect()
+
+                # Re-subscribe to all channels
+                if self._subscribed_channels:
+                    channels = list(self._subscribed_channels)
+                    await self._ws.subscribe(channels)
+                    logger.info(f"Re-subscribed to {len(channels)} channel(s)")
+
+                # Reset reconnect count on successful connection
+                self._reconnect_count = 0
+                logger.info("WebSocket reconnected successfully")
+                return True
+
+            except Exception as e:
+                logger.warning(f"Reconnection attempt failed: {e}")
+                # Continue loop to retry
+
+        return False
 
     async def _handle_event(self, event: dict) -> None:
         """Route event to appropriate handler."""

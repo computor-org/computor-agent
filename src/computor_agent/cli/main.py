@@ -912,13 +912,20 @@ async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket:
     logger = logging.getLogger(__name__)
 
     if use_websocket:
-        # For WebSocket, start() blocks until stopped or error
+        # For WebSocket, start() blocks until stopped or reconnection fails
+        # The scheduler handles reconnection internally, so we only need to
+        # signal shutdown if it exits (either stopped or max reconnects reached)
         try:
             await scheduler.start()
+            # Scheduler exited normally (either stopped or max reconnects reached)
+            logger.info("WebSocket scheduler exited")
         except Exception as e:
             logger.error(f"WebSocket scheduler error: {e}")
-            # Signal shutdown on WebSocket failure
-            shutdown_event.set()
+        finally:
+            # Only signal shutdown if we're not already shutting down
+            if not shutdown_event.is_set():
+                logger.info("Signaling shutdown after scheduler exit")
+                shutdown_event.set()
     else:
         # For HTTP polling, start() returns immediately, scheduler runs in background
         await scheduler.start()
