@@ -96,6 +96,7 @@ class WebSocketScheduler:
         # State tracking
         self._states: dict[str, ProcessingState] = {}
         self._course_ids: list[str] = []
+        self._subscribed_channels: set[str] = set()  # Track subscribed channels
         self._running = False
         self._event_task: Optional[asyncio.Task] = None
 
@@ -111,7 +112,8 @@ class WebSocketScheduler:
         1. Discovers courses from API
         2. Connects to WebSocket
         3. Subscribes to course channels
-        4. Starts event processing loop
+        4. Processes any unread messages (catch-up for offline period)
+        5. Starts event processing loop
         """
         if self._running:
             logger.warning("WebSocket scheduler already running")
@@ -134,9 +136,14 @@ class WebSocketScheduler:
             if self._course_ids:
                 channels = [f"course:{cid}" for cid in self._course_ids]
                 await self._ws.subscribe(channels)
+                self._subscribed_channels.update(channels)
                 logger.info(f"Subscribed to {len(channels)} course channel(s)")
 
-            # 4. Start event loop
+            # 4. Process unread messages (catch-up for messages received while offline)
+            # This runs after WebSocket is connected so typing indicators work
+            await self._process_unread_messages()
+
+            # 5. Start event loop
             self._event_task = asyncio.create_task(self._event_loop())
             logger.info("WebSocket scheduler started")
 
@@ -186,6 +193,98 @@ class WebSocketScheduler:
         except Exception as e:
             logger.warning(f"Failed to discover courses: {e}")
             self._course_ids = []
+
+    async def _process_unread_messages(self) -> None:
+        """
+        Process any unread messages with trigger tags.
+
+        This is called at startup to catch up on messages that were
+        sent while the agent was offline.
+        """
+        from computor_agent.tutor.trigger import TriggerChecker
+
+        logger.info("Checking for unread messages (catch-up)...")
+
+        try:
+            # Get all course members with unread messages
+            members = await self.client.tutors.get_course_members()
+
+            members_with_unread = [m for m in members if (m.unread_message_count or 0) > 0]
+            if not members_with_unread:
+                logger.info("No unread messages found")
+                return
+
+            logger.info(f"Found {len(members_with_unread)} member(s) with unread messages")
+
+            # Create trigger checker
+            trigger_checker = TriggerChecker(
+                messages_client=self.client.messages,
+                course_members_client=self.client.course_members,
+                config=self.trigger_config,
+            )
+
+            processed_count = 0
+
+            for member in members_with_unread:
+                try:
+                    # Get course contents for this member
+                    course_contents = await self.client.tutors.get_urse_member_id_course_contents(
+                        member.id
+                    )
+
+                    for cc in course_contents:
+                        if cc.unread_message_count <= 0:
+                            continue
+
+                        sg = cc.submission_group
+                        if not sg or not sg.id:
+                            continue
+
+                        submission_group_id = sg.id
+
+                        # Check for trigger
+                        result = await trigger_checker.check_message_trigger(
+                            submission_group_id, member.course_id
+                        )
+
+                        if result.should_respond and result.message_trigger:
+                            logger.info(
+                                f"Found unread trigger message: {result.message_trigger.message_id}"
+                            )
+
+                            # Build message data for processing
+                            message_data = {
+                                "id": result.message_trigger.message_id,
+                                "content": result.message_trigger.content,
+                                "title": result.message_trigger.title,
+                                "author_id": result.message_trigger.author_id,
+                                "submission_group_id": submission_group_id,
+                            }
+
+                            typing_channel = f"submission_group:{submission_group_id}"
+
+                            # Subscribe to the submission_group channel for typing
+                            if typing_channel not in self._subscribed_channels:
+                                await self._ws.subscribe([typing_channel])
+                                self._subscribed_channels.add(typing_channel)
+
+                            # Process with typing indicator
+                            async with self._typing_manager.typing(typing_channel):
+                                await self._process_message(submission_group_id, message_data, typing_channel)
+
+                            # Track as processed
+                            state = self._get_or_create_state(submission_group_id)
+                            state.last_message_id = result.message_trigger.message_id
+                            processed_count += 1
+
+                except Exception as e:
+                    logger.warning(f"Error processing unread messages for member {member.id}: {e}")
+                    continue
+
+            logger.info(f"Catch-up complete: processed {processed_count} unread message(s)")
+
+        except Exception as e:
+            logger.warning(f"Error during unread message catch-up: {e}")
 
     async def _event_loop(self) -> None:
         """Main event processing loop."""
@@ -260,6 +359,13 @@ class WebSocketScheduler:
 
         # Build channel for typing indicator (use submission_group format)
         typing_channel = f"submission_group:{submission_group_id}"
+
+        # Subscribe to the submission_group channel if not already subscribed
+        # This is required before sending typing events
+        if typing_channel not in self._subscribed_channels:
+            await self._ws.subscribe([typing_channel])
+            self._subscribed_channels.add(typing_channel)
+            logger.debug(f"Subscribed to {typing_channel} for typing events")
 
         # Check cooldown
         if self._should_skip(submission_group_id):
