@@ -159,8 +159,8 @@ class WebSocketScheduler:
 
         except asyncio.CancelledError:
             logger.info("WebSocket scheduler cancelled")
-        except WebSocketError as e:
-            # Initial connection failed - attempt reconnection
+        except (WebSocketError, asyncio.TimeoutError) as e:
+            # Initial connection failed (including timeout) - attempt reconnection
             logger.warning(f"Initial WebSocket connection failed: {e}")
             if self._running:
                 reconnected = await self._reconnect()
@@ -291,6 +291,9 @@ class WebSocketScheduler:
                         async with self._typing_manager.typing(typing_channel):
                             await self._process_message(submission_group_id, message_data, typing_channel)
 
+                        # Mark the message as read after successful processing
+                        await self._ws.mark_read(typing_channel, message_id)
+
                         # Track as processed
                         state.last_message_id = message_id
                         processed_count += 1
@@ -321,7 +324,7 @@ class WebSocketScheduler:
                 if not self._running:
                     break
 
-            except WebSocketError as e:
+            except (WebSocketError, asyncio.TimeoutError) as e:
                 logger.warning(f"WebSocket connection lost: {e}")
 
                 if not self._running:
@@ -502,6 +505,9 @@ class WebSocketScheduler:
                 # Use typing_channel (submission_group:...) for typing indicator
                 async with self._typing_manager.typing(typing_channel):
                     await self._process_message(submission_group_id, data, typing_channel)
+
+                # Mark the message as read after successful processing
+                await self._ws.mark_read(typing_channel, message_id)
 
                 state.last_message_id = message_id
                 state.last_processed = datetime.now()
