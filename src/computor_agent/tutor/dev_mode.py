@@ -291,7 +291,7 @@ class MockTutorsEndpoint:
             "unread_message_count": 1,
         }]
 
-    async def get_urse_member_id_course_contents(self, member_id: str) -> List[Dict]:
+    async def get_course_member_id_course_contents(self, member_id: str) -> List[Dict]:
         """Get course contents for a member."""
         return [{
             "id": "dev_content_1",

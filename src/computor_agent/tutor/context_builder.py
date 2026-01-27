@@ -81,7 +81,7 @@ class ContextBuilder:
         # Initialize services for enhanced context
         self.test_results_service = TestResultsService(client)
         self.artifacts_service = ArtifactsService(client)
-        self.reference_service = ReferenceService(client)
+        self.reference_service = ReferenceService(client, cache_dir=config.cache_dir)
         self.history_service = HistoryService(client)
         self.progress_service = ProgressService(client)
 
@@ -404,15 +404,12 @@ class ContextBuilder:
             # Use ComputorClient.course_contents.get() directly
             content = await self.client.course_contents.get(id=course_content_id)
 
-            # Try to get the full README/description from tutor API
-            description = content.description  # fallback to short description
-            try:
-                full_description = await self.reference_service.get_description(course_content_id)
-                if full_description:
-                    description = full_description
-                    logger.debug(f"Got full description for {course_content_id}")
-            except Exception as e:
-                logger.debug(f"Could not get full description: {e}")
+            # Get the full README/description from tutor API
+            description = await self.reference_service.get_description(course_content_id)
+            if description:
+                logger.info(f"Fetched assignment description for {course_content_id}")
+            else:
+                logger.warning(f"No assignment description available for {course_content_id}")
 
             return AssignmentInfo(
                 course_content_id=course_content_id,
@@ -488,15 +485,12 @@ class ContextBuilder:
         Returns:
             AssignmentInfo extracted from course content
         """
-        # Try to get the full README/description from tutor API
-        description = course_content.description  # fallback to short description
-        try:
-            full_description = await self.reference_service.get_description(course_content.id)
-            if full_description:
-                description = full_description
-                logger.debug(f"Got full description for {course_content.id}")
-        except Exception as e:
-            logger.debug(f"Could not get full description: {e}")
+        # Get the full README/description from tutor API
+        description = await self.reference_service.get_description(course_content.id)
+        if description:
+            logger.info(f"Fetched assignment description for {course_content.id}")
+        else:
+            logger.warning(f"No assignment description available for {course_content.id}")
 
         return AssignmentInfo(
             course_content_id=course_content.id,

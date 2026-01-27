@@ -219,87 +219,84 @@ class WebSocketScheduler:
         """
         Process any unread messages with trigger tags.
 
-        This is called at startup to catch up on messages that were
-        sent while the agent was offline.
+        This is called at startup and after reconnection to catch up on messages
+        that were sent while the agent was offline.
         """
-        from computor_agent.tutor.trigger import TriggerChecker
-
         logger.info("Checking for unread messages (catch-up)...")
 
+        if not self._course_ids:
+            logger.debug("No courses to check for unread messages")
+            return
+
         try:
-            # Get all course members with unread messages
-            members = await self.client.tutors.get_course_members()
-
-            members_with_unread = [m for m in members if (m.unread_message_count or 0) > 0]
-            if not members_with_unread:
-                logger.info("No unread messages found")
-                return
-
-            logger.info(f"Found {len(members_with_unread)} member(s) with unread messages")
-
-            # Create trigger checker
-            trigger_checker = TriggerChecker(
-                messages_client=self.client.messages,
-                course_members_client=self.client.course_members,
-                config=self.trigger_config,
-            )
-
             processed_count = 0
+            response_tag = self.trigger_config.response_tag_string
 
-            for member in members_with_unread:
+            # Query messages API directly for each course
+            for course_id in self._course_ids:
                 try:
-                    # Get course contents for this member
-                    course_contents = await self.client.tutors.get_urse_member_id_course_contents(
-                        member.id
+                    # Get unread messages with trigger tags for this course
+                    messages = await self.client.messages.list(
+                        course_id=course_id,
+                        tags=self.trigger_config.request_tag_strings,
+                        tags_match_all=self.trigger_config.require_all_tags,
+                        unread=True,
                     )
 
-                    for cc in course_contents:
-                        if cc.unread_message_count <= 0:
+                    if not messages:
+                        continue
+
+                    # Filter out AI responses (those with response_tag in title)
+                    trigger_messages = [
+                        m for m in messages
+                        if response_tag not in (getattr(m, "title", "") or "")
+                    ]
+
+                    if not trigger_messages:
+                        continue
+
+                    logger.info(f"Found {len(trigger_messages)} unread trigger message(s) in course {course_id}")
+
+                    for msg in trigger_messages:
+                        submission_group_id = getattr(msg, "submission_group_id", None)
+                        if not submission_group_id:
                             continue
 
-                        sg = cc.submission_group
-                        if not sg or not sg.id:
+                        message_id = getattr(msg, "id", "")
+
+                        # Check if already processed
+                        state = self._get_or_create_state(submission_group_id)
+                        if state.last_message_id == message_id:
                             continue
 
-                        submission_group_id = sg.id
+                        logger.info(f"Processing unread trigger message: {message_id}")
 
-                        # Check for trigger
-                        result = await trigger_checker.check_message_trigger(
-                            submission_group_id, member.course_id
-                        )
+                        # Build message data for processing
+                        message_data = {
+                            "id": message_id,
+                            "content": getattr(msg, "content", "") or "",
+                            "title": getattr(msg, "title", "") or "",
+                            "author_id": getattr(msg, "author_id", "") or "",
+                            "submission_group_id": submission_group_id,
+                        }
 
-                        if result.should_respond and result.message_trigger:
-                            logger.info(
-                                f"Found unread trigger message: {result.message_trigger.message_id}"
-                            )
+                        typing_channel = f"submission_group:{submission_group_id}"
 
-                            # Build message data for processing
-                            message_data = {
-                                "id": result.message_trigger.message_id,
-                                "content": result.message_trigger.content,
-                                "title": result.message_trigger.title,
-                                "author_id": result.message_trigger.author_id,
-                                "submission_group_id": submission_group_id,
-                            }
+                        # Subscribe to the submission_group channel for typing
+                        if typing_channel not in self._subscribed_channels:
+                            await self._ws.subscribe([typing_channel])
+                            self._subscribed_channels.add(typing_channel)
 
-                            typing_channel = f"submission_group:{submission_group_id}"
+                        # Process with typing indicator
+                        async with self._typing_manager.typing(typing_channel):
+                            await self._process_message(submission_group_id, message_data, typing_channel)
 
-                            # Subscribe to the submission_group channel for typing
-                            if typing_channel not in self._subscribed_channels:
-                                await self._ws.subscribe([typing_channel])
-                                self._subscribed_channels.add(typing_channel)
-
-                            # Process with typing indicator
-                            async with self._typing_manager.typing(typing_channel):
-                                await self._process_message(submission_group_id, message_data, typing_channel)
-
-                            # Track as processed
-                            state = self._get_or_create_state(submission_group_id)
-                            state.last_message_id = result.message_trigger.message_id
-                            processed_count += 1
+                        # Track as processed
+                        state.last_message_id = message_id
+                        processed_count += 1
 
                 except Exception as e:
-                    logger.warning(f"Error processing unread messages for member {member.id}: {e}")
+                    logger.warning(f"Error checking unread messages for course {course_id}: {e}")
                     continue
 
             logger.info(f"Catch-up complete: processed {processed_count} unread message(s)")
@@ -399,9 +396,9 @@ class WebSocketScheduler:
         """Route event to appropriate handler."""
         event_type = event.get("type", "")
 
-        # Log all non-ping events for debugging
+        # Log routine events at DEBUG level to reduce noise
         if event_type not in ("system:ping", "system:pong"):
-            logger.info(f"WebSocket event received: type={event_type}")
+            logger.debug(f"WebSocket event received: type={event_type}")
 
         if event_type == "message:new":
             await self._handle_message_new(event)

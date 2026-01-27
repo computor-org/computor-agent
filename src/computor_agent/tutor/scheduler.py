@@ -521,8 +521,8 @@ class TutorScheduler:
         Returns: List of CourseContentStudentList with basic info
         """
         try:
-            # Note: method has typo in name (get_urse_member_id_course_contents)
-            return await self.client.tutors.get_urse_member_id_course_contents(course_member_id)
+            # Note: method has typo in name (get_course_member_id_course_contents)
+            return await self.client.tutors.get_course_member_id_course_contents(course_member_id)
         except Exception as e:
             logger.warning(f"Failed to get course contents list for {course_member_id}: {e}")
             return []
