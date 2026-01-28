@@ -157,6 +157,12 @@ class ContextConfig(BaseModel):
         description="Maximum number of historical submissions to analyze",
     )
 
+    # Cache directory for downloaded content (descriptions, references)
+    cache_dir: Optional[Path] = Field(
+        default=None,
+        description="Directory for caching downloaded content (default: /tmp/computor-agent)",
+    )
+
 
 class StrategyConfig(BaseModel):
     """

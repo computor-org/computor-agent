@@ -249,8 +249,8 @@ class ReferenceService:
         ".json", ".xml", ".md", ".txt",
     }
 
-    # Default cache directory
-    DEFAULT_CACHE_DIR = Path.home() / ".computor-agent" / "course-contents"
+    # Default cache directory (use /tmp to avoid polluting home directory)
+    DEFAULT_CACHE_DIR = Path("/tmp") / "computor-agent" / "course-contents"
 
     def __init__(
         self,
@@ -262,7 +262,7 @@ class ReferenceService:
 
         Args:
             client: ComputorClient instance
-            cache_dir: Directory for caching downloaded content (default: ~/.cache/computor-agent/course-contents)
+            cache_dir: Directory for caching downloaded content (default: /tmp/computor-agent/course-contents)
         """
         self.client = client
         self.cache_dir = Path(cache_dir) if cache_dir else self.DEFAULT_CACHE_DIR
@@ -374,38 +374,50 @@ class ReferenceService:
         if use_cache:
             cached = self._read_cached_description(course_content_id, language)
             if cached is not None:
-                logger.debug(f"Using cached description for {course_content_id} ({language})")
+                logger.info(f"Using cached description for {course_content_id}")
                 return cached
 
+        logger.info(f"Fetching description for course content {course_content_id}")
+
+        if not hasattr(self.client, 'tutors') or not hasattr(self.client.tutors, 'course_contents_description'):
+            logger.error("tutors.course_contents_description method not available in client")
+            return None
+
         try:
-            if hasattr(self.client, 'tutors') and hasattr(self.client.tutors, 'course_contents_description'):
-                response = await self.client.tutors.course_contents_description(
-                    id=course_content_id
-                )
-                if response:
-                    content = None
-                    # Response is a ZIP file as bytes
-                    if isinstance(response, bytes):
-                        content = self._extract_description_from_zip(response, language)
-                    # Fallback: handle other response formats
-                    elif isinstance(response, str):
-                        content = response
-                    elif hasattr(response, 'content'):
-                        content = response.content
-                    elif isinstance(response, dict):
-                        content = response.get('content') or response.get('description')
+            response = await self.client.tutors.course_contents_description(
+                course_content_id=course_content_id
+            )
 
-                    # Cache the result
-                    if content and use_cache:
-                        self._write_cached_description(course_content_id, language, content)
+            if not response:
+                logger.warning(f"Empty response for description {course_content_id}")
+                return None
 
-                    return content
+            content = None
+            # Response is a ZIP file as bytes
+            if isinstance(response, bytes):
+                logger.debug(f"Extracting description from ZIP ({len(response)} bytes)")
+                content = self._extract_description_from_zip(response, language)
+            # Handle other response formats
+            elif isinstance(response, str):
+                content = response
+            elif hasattr(response, 'content'):
+                content = response.content
+            elif isinstance(response, dict):
+                content = response.get('content') or response.get('description')
+
+            if not content:
+                logger.warning(f"Could not extract description content for {course_content_id}")
                 return None
-            else:
-                logger.debug("tutors.course_contents_description not available")
-                return None
+
+            # Cache the result
+            if use_cache:
+                self._write_cached_description(course_content_id, language, content)
+
+            logger.info(f"Successfully fetched description for {course_content_id} ({len(content)} chars)")
+            return content
+
         except Exception as e:
-            logger.debug(f"Failed to get description for {course_content_id}: {e}")
+            logger.error(f"Failed to get description for {course_content_id}: {e}")
             return None
 
     def _extract_description_from_zip(
@@ -493,7 +505,7 @@ class ReferenceService:
         try:
             if hasattr(self.client, 'tutors') and hasattr(self.client.tutors, 'course_contents_reference'):
                 buffer = await self.client.tutors.course_contents_reference(
-                    id=course_content_id
+                    course_content_id=course_content_id
                 )
                 # Cache the result
                 if buffer and use_cache:

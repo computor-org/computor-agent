@@ -27,8 +27,7 @@ from computor_agent.tutor.services.test_results import (
 )
 from computor_agent.tutor.services.artifacts import (
     ArtifactsService,
-    Artifact,
-    ArtifactContent,
+    ExtractedSubmissionContent,
 )
 from computor_agent.tutor.services.reference import (
     ReferenceService,
@@ -58,8 +57,7 @@ __all__ = [
     "TestStatus",
     # Artifacts
     "ArtifactsService",
-    "Artifact",
-    "ArtifactContent",
+    "ExtractedSubmissionContent",
     # Reference
     "ReferenceService",
     "ReferenceComparison",

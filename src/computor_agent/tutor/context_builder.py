@@ -81,7 +81,7 @@ class ContextBuilder:
         # Initialize services for enhanced context
         self.test_results_service = TestResultsService(client)
         self.artifacts_service = ArtifactsService(client)
-        self.reference_service = ReferenceService(client)
+        self.reference_service = ReferenceService(client, cache_dir=config.cache_dir)
         self.history_service = HistoryService(client)
         self.progress_service = ProgressService(client)
 
@@ -196,6 +196,48 @@ class ContextBuilder:
 
         return context
 
+    async def download_submission_code(
+        self,
+        submission_group_id: Optional[str] = None,
+        course_content_id: Optional[str] = None,
+        course_member_id: Optional[str] = None,
+        submit_only: bool = False,
+    ) -> Optional[CodeContext]:
+        """
+        Download the latest submission as code context.
+
+        Args:
+            submission_group_id: Submission group ID (use this OR course_content_id+course_member_id)
+            course_content_id: Course content ID (use with course_member_id)
+            course_member_id: Course member ID (use with course_content_id)
+            submit_only: If True, only get official submissions. If False, include test uploads
+
+        Returns:
+            CodeContext with submission files, or None if no submission found
+        """
+        artifact_content = await self.artifacts_service.download_latest_submission(
+            submission_group_id=submission_group_id,
+            course_content_id=course_content_id,
+            course_member_id=course_member_id,
+            submit_only=submit_only,
+            max_files=self.config.max_code_files,
+            max_total_size=10 * 1024 * 1024,  # 10MB max
+        )
+
+        if not artifact_content:
+            return None
+
+        # Convert ArtifactContent to CodeContext
+        total_lines = sum(content.count('\n') + 1 for content in artifact_content.files.values())
+
+        return CodeContext(
+            files=artifact_content.files,
+            total_lines=total_lines,
+            repository_path=None,  # No local path for downloaded submissions
+            truncated=artifact_content.truncated,
+            is_submission=True,  # Mark this as a submission download
+        )
+
     async def _add_enhanced_context(
         self,
         context: ConversationContext,
@@ -211,6 +253,7 @@ class ContextBuilder:
         - Submission history
         - Reference comparison
         - Student progress
+        - Downloaded submission code (if not already loaded)
 
         Args:
             course_content_data: Pre-fetched CourseContentStudentGet to avoid redundant API calls.
@@ -404,15 +447,12 @@ class ContextBuilder:
             # Use ComputorClient.course_contents.get() directly
             content = await self.client.course_contents.get(id=course_content_id)
 
-            # Try to get the full README/description from tutor API
-            description = content.description  # fallback to short description
-            try:
-                full_description = await self.reference_service.get_description(course_content_id)
-                if full_description:
-                    description = full_description
-                    logger.debug(f"Got full description for {course_content_id}")
-            except Exception as e:
-                logger.debug(f"Could not get full description: {e}")
+            # Get the full README/description from tutor API
+            description = await self.reference_service.get_description(course_content_id)
+            if description:
+                logger.info(f"Fetched assignment description for {course_content_id}")
+            else:
+                logger.warning(f"No assignment description available for {course_content_id}")
 
             return AssignmentInfo(
                 course_content_id=course_content_id,
@@ -488,15 +528,12 @@ class ContextBuilder:
         Returns:
             AssignmentInfo extracted from course content
         """
-        # Try to get the full README/description from tutor API
-        description = course_content.description  # fallback to short description
-        try:
-            full_description = await self.reference_service.get_description(course_content.id)
-            if full_description:
-                description = full_description
-                logger.debug(f"Got full description for {course_content.id}")
-        except Exception as e:
-            logger.debug(f"Could not get full description: {e}")
+        # Get the full README/description from tutor API
+        description = await self.reference_service.get_description(course_content.id)
+        if description:
+            logger.info(f"Fetched assignment description for {course_content.id}")
+        else:
+            logger.warning(f"No assignment description available for {course_content.id}")
 
         return AssignmentInfo(
             course_content_id=course_content.id,

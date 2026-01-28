@@ -138,6 +138,15 @@ from computor_agent.tutor.scheduler import TutorScheduler, SchedulerConfig
 from computor_agent.tutor.client_adapter import TutorLLMAdapter
 from computor_agent.tutor.summary_store import SummaryStore, AgentNote
 
+# WebSocket support
+from computor_agent.tutor.websocket import (
+    ComputorWebSocket,
+    WebSocketScheduler,
+    TypingManager,
+    WebSocketError,
+    WebSocketConnectionError,
+)
+
 # Services for enhanced context
 from computor_agent.tutor.services import (
     # Test Results
@@ -148,8 +157,7 @@ from computor_agent.tutor.services import (
     TestStatus,
     # Artifacts
     ArtifactsService,
-    Artifact,
-    ArtifactContent,
+    ExtractedSubmissionContent,
     # Reference Comparison
     ReferenceService,
     ReferenceComparison,
@@ -171,9 +179,15 @@ __all__ = [
     # Main agent
     "TutorAgent",
     "ProcessingResult",
-    # Scheduler
+    # Scheduler (HTTP polling)
     "TutorScheduler",
     "SchedulerConfig",
+    # WebSocket (real-time)
+    "ComputorWebSocket",
+    "WebSocketScheduler",
+    "TypingManager",
+    "WebSocketError",
+    "WebSocketConnectionError",
     # Adapters (TutorClientAdapter removed - use ComputorClient directly)
     "TutorLLMAdapter",
     # Trigger detection
@@ -219,8 +233,7 @@ __all__ = [
     "TestStatus",
     # Artifacts
     "ArtifactsService",
-    "Artifact",
-    "ArtifactContent",
+    "ExtractedSubmissionContent",
     # Reference Comparison
     "ReferenceService",
     "ReferenceComparison",

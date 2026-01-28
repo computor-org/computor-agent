@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from computor_agent.tutor.services.history import SubmissionHistory
     from computor_agent.tutor.services.reference import ReferenceComparison
     from computor_agent.tutor.services.progress import MemberProgress
-    from computor_agent.tutor.services.artifacts import ArtifactContent
+    from computor_agent.tutor.services.artifacts import ExtractedSubmissionContent
 
 
 class TriggerType(str, Enum):
@@ -84,7 +84,7 @@ class AssignmentInfo:
 
 @dataclass
 class CodeContext:
-    """Code from the student's repository."""
+    """Code from the student's repository or submission."""
 
     files: dict[str, str] = field(default_factory=dict)
     """Mapping of file path -> file content."""
@@ -93,10 +93,13 @@ class CodeContext:
     """Total lines of code across all files."""
 
     repository_path: Optional[Path] = None
-    """Local path to the cloned repository."""
+    """Local path to the cloned repository (if loaded from disk)."""
 
     truncated: bool = False
     """Whether code was truncated due to limits."""
+
+    is_submission: bool = False
+    """Whether this code was downloaded from a submission artifact."""
 
 
 @dataclass
@@ -172,8 +175,12 @@ class ConversationContext:
     student_progress: Optional["MemberProgress"] = None
     """Student's overall progress in the course."""
 
-    artifact_content: Optional["ArtifactContent"] = None
+    artifact_content: Optional["ExtractedSubmissionContent"] = None
     """Extracted content from submission artifact."""
+
+    # Submission availability
+    no_submission_available: bool = False
+    """Whether we tried to download submission but none was found."""
 
     # Metadata
     created_at: datetime = field(default_factory=datetime.now)

@@ -504,12 +504,23 @@ class TutorScheduler:
 
         Uses: GET /tutors/course-members
         Returns: List of TutorCourseMemberList with counts
+
+        Raises:
+            Exception: If unauthorized (401) to stop the scheduler
         """
         try:
             return await self.client.tutors.get_course_members()
         except Exception as e:
-            logger.error(f"Failed to get course members: {e}")
-            return []
+            error_str = str(e)
+            # Check if it's an authorization error - stop immediately
+            if "401" in error_str or "Unauthorized" in error_str:
+                logger.error(f"Authentication failed: {e}")
+                logger.error("The worker cannot continue without valid credentials. Please check your login.")
+                # Re-raise to stop the scheduler
+                raise
+            else:
+                logger.error(f"Failed to get course members: {e}")
+                return []
 
     async def _get_course_member_contents_list(
         self, course_member_id: str
@@ -521,8 +532,8 @@ class TutorScheduler:
         Returns: List of CourseContentStudentList with basic info
         """
         try:
-            # Note: method has typo in name (get_urse_member_id_course_contents)
-            return await self.client.tutors.get_urse_member_id_course_contents(course_member_id)
+            # Note: method has typo in name (get_course_member_id_course_contents)
+            return await self.client.tutors.get_course_member_id_course_contents(course_member_id)
         except Exception as e:
             logger.warning(f"Failed to get course contents list for {course_member_id}: {e}")
             return []

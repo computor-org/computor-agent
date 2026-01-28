@@ -757,9 +757,10 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
             scheduler_config = SchedulerConfig()
             logger.info("Using default scheduler config")
 
-        async def on_message_trigger(result, course_content):
+        # Message trigger callback for HTTP polling scheduler
+        async def on_message_trigger_polling(result, course_content):
             """
-            Handle message trigger.
+            Handle message trigger from HTTP polling scheduler.
 
             Args:
                 result: TriggerCheckResult with message_trigger
@@ -794,12 +795,81 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
                 course_member_id=course_member_id,
             )
 
-        scheduler = TutorScheduler(
-            client=client,
-            config=scheduler_config,
-            trigger_config=tutor_config.triggers,
-            on_message_trigger=on_message_trigger,
-        )
+        # Message trigger callback for WebSocket scheduler
+        async def on_message_trigger_websocket(result, course_content, channel):
+            """
+            Handle message trigger from WebSocket scheduler.
+
+            Args:
+                result: TriggerCheckResult with message_trigger
+                course_content: CourseContentStudentGet (may be None for WebSocket)
+                channel: WebSocket channel (e.g., "submission_group:123")
+            """
+            logger.info(f"Processing message trigger (WebSocket): {result.reason}")
+            if dry_run:
+                logger.info(f"[DRY RUN] Would process message: {result.message_trigger.message_id}")
+                return
+
+            # Get the message data
+            message = {
+                "id": result.message_trigger.message_id,
+                "content": result.message_trigger.content,
+                "title": result.message_trigger.title,
+                "author_id": result.message_trigger.author_id,
+            }
+
+            submission_group_id = result.message_trigger.submission_group_id
+
+            # For WebSocket, we may need to fetch course_content if needed
+            # For now, pass None - the agent can work without it
+            await agent.process_message(
+                submission_group_id=submission_group_id,
+                message=message,
+                course_content=course_content,
+                course_member_id=None,
+            )
+
+        # Try WebSocket first, fall back to HTTP polling
+        scheduler = None
+        use_websocket = False
+
+        try:
+            from computor_agent.tutor.websocket import ComputorWebSocket, WebSocketScheduler
+
+            # Get token for WebSocket auth
+            token = computor_config.backend.get_api_token()
+            if token:
+                ws = ComputorWebSocket(
+                    base_url=computor_config.backend.url,
+                    token=token,
+                )
+                scheduler = WebSocketScheduler(
+                    client=client,
+                    ws=ws,
+                    trigger_config=tutor_config.triggers,
+                    on_message_trigger=on_message_trigger_websocket,
+                    cooldown_seconds=scheduler_config.cooldown_seconds,
+                    max_concurrent_processing=scheduler_config.max_concurrent_processing,
+                )
+                use_websocket = True
+                logger.info("Using WebSocket for real-time events")
+            else:
+                logger.info("No API token available, WebSocket requires token authentication")
+
+        except ImportError as e:
+            logger.warning(f"WebSocket support not available ({e}), using HTTP polling")
+        except Exception as e:
+            logger.warning(f"WebSocket initialization failed ({e}), falling back to HTTP polling")
+
+        # Fall back to HTTP polling if WebSocket not available
+        if not use_websocket:
+            scheduler = TutorScheduler(
+                client=client,
+                config=scheduler_config,
+                trigger_config=tutor_config.triggers,
+                on_message_trigger=on_message_trigger_polling,
+            )
+            logger.info("Using HTTP polling for message detection")
 
         # Handle shutdown gracefully
         shutdown_event = asyncio.Event()
@@ -812,12 +882,22 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, signal_handler)
 
-        # Start scheduler
-        await scheduler.start()
-        logger.info("Tutor scheduler started")
+        # Start scheduler in background task
+        scheduler_task = asyncio.create_task(_run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket))
 
-        # Wait for shutdown
-        await shutdown_event.wait()
+        # Wait for shutdown signal or scheduler completion
+        done, pending = await asyncio.wait(
+            [scheduler_task, asyncio.create_task(shutdown_event.wait())],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        # Cancel pending tasks
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
         # Stop scheduler
         await scheduler.stop()
@@ -825,6 +905,47 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
 
     await tutor_llm.close()
     console.print("[green]Tutor agent stopped.[/green]")
+
+
+async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket: bool):
+    """Run scheduler and handle WebSocket reconnection on failure."""
+    logger = logging.getLogger(__name__)
+
+    if use_websocket:
+        # For WebSocket, start() blocks until stopped or reconnection fails
+        # The scheduler handles reconnection internally, so we only need to
+        # signal shutdown if it exits (either stopped or max reconnects reached)
+        try:
+            await scheduler.start()
+            # Scheduler exited normally (either stopped or max reconnects reached)
+            logger.info("WebSocket scheduler exited")
+        except Exception as e:
+            error_str = str(e)
+            if "401" in error_str or "Unauthorized" in error_str:
+                logger.error("Authentication failed. Please check your credentials and try again.")
+                logger.error("Run 'computor-agent login' to re-authenticate.")
+            else:
+                logger.error(f"WebSocket scheduler error: {e}")
+        finally:
+            # Only signal shutdown if we're not already shutting down
+            if not shutdown_event.is_set():
+                logger.info("Signaling shutdown after scheduler exit")
+                shutdown_event.set()
+    else:
+        # For HTTP polling, start() returns immediately, scheduler runs in background
+        try:
+            await scheduler.start()
+            # Wait indefinitely (shutdown will come from signal)
+            await asyncio.Event().wait()
+        except Exception as e:
+            error_str = str(e)
+            if "401" in error_str or "Unauthorized" in error_str:
+                logger.error("Authentication failed. Please check your credentials and try again.")
+                logger.error("Run 'computor-agent login' to re-authenticate.")
+            else:
+                logger.error(f"HTTP scheduler error: {e}")
+            # Exit the program
+            shutdown_event.set()
 
 
 if __name__ == "__main__":

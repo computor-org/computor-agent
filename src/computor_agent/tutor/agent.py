@@ -225,6 +225,9 @@ class TutorAgent:
             # Classify intent
             classification = await self.intent_classifier.classify(context)
 
+            # Check if we need to download submission code for code-related intents
+            await self._ensure_code_context(context, classification)
+
             # Get strategy for classification (handles None intent with fallback)
             strategy = self.strategy_registry.get_strategy(classification)
 
@@ -257,6 +260,7 @@ class TutorAgent:
 
                 # Reply to the triggering message to create a chain
                 parent_id = reply_to_message_id or message.get("id")
+                logger.debug(f"reply_to_message_id={reply_to_message_id}, message.get('id')={message.get('id')}, parent_id={parent_id}")
 
                 # Use ComputorClient.messages.create() directly
                 # When replying (parent_id set), don't set target - it's inherited from parent
@@ -267,10 +271,13 @@ class TutorAgent:
                 }
                 if parent_id:
                     message_data["parent_id"] = parent_id
+                    logger.debug(f"Using parent_id for reply: {parent_id}")
                 else:
                     # New message thread - must specify target
                     message_data["submission_group_id"] = submission_group_id
+                    logger.debug(f"New thread, using submission_group_id: {submission_group_id}")
 
+                logger.info(f"Creating message with data: {message_data}")
                 created_message = await self.client.messages.create(data=message_data)
                 message_sent = True
                 response_message_id = created_message.id
@@ -347,6 +354,108 @@ class TutorAgent:
             Intent.CLARIFICATION: self.config.strategies.clarification,
         }
         return config_map.get(intent, self.config.strategies.fallback)
+
+    async def _ensure_code_context(
+        self,
+        context: ConversationContext,
+        classification: IntentClassification,
+    ) -> None:
+        """
+        Ensure code context is available for code-related intents.
+
+        Downloads submission artifact if:
+        1. The intent requires code (HELP_DEBUG, HELP_REVIEW)
+        2. No code is currently loaded in the context
+        3. Or checks if the user's description mentions needing to look at code
+
+        Args:
+            context: The conversation context
+            classification: The intent classification
+        """
+        from computor_agent.tutor.intents import Intent
+
+        # Check if this intent typically needs code
+        code_related_intents = {Intent.HELP_DEBUG, Intent.HELP_REVIEW}
+        needs_code = (
+            classification.intent in code_related_intents
+            or self._user_intent_needs_code(classification.user_intent_description)
+        )
+
+        logger.debug(f"Intent: {classification.intent}, needs_code: {needs_code}, has_code: {context.has_code}")
+
+        # If we already have code or don't need it, return
+        if not needs_code:
+            logger.debug("Intent does not require code, skipping download")
+            return
+
+        if context.has_code:
+            logger.debug("Code already loaded, skipping download")
+            return
+
+        # Try to download the latest submission
+        logger.info("Intent requires code but none loaded - attempting to download submission")
+
+        # Get identifiers from context
+        course_member_id = (
+            context.student.course_member_ids[0]
+            if context.student.course_member_ids
+            else None
+        )
+        course_content_id = (
+            context.assignment.course_content_id
+            if context.assignment
+            else None
+        )
+
+        # Try to download submission
+        # Use submission_group_id if available, otherwise use course_content_id + course_member_id
+        if context.submission_group_id:
+            logger.debug(f"Using submission_group_id for download: {context.submission_group_id}")
+            submission_code = await self.context_builder.download_submission_code(
+                submission_group_id=context.submission_group_id,
+                submit_only=False,  # Include test uploads too
+            )
+        elif course_content_id and course_member_id:
+            logger.debug(f"Using course_content_id + course_member_id for download: {course_content_id} + {course_member_id}")
+            submission_code = await self.context_builder.download_submission_code(
+                course_content_id=course_content_id,
+                course_member_id=course_member_id,
+                submit_only=False,  # Include test uploads too
+            )
+        else:
+            logger.warning("No valid parameters for submission download (need submission_group_id OR course_content_id+course_member_id)")
+            submission_code = None
+
+        if submission_code:
+            context.student_code = submission_code
+            logger.info(f"Successfully downloaded submission with {len(submission_code.files)} files")
+            for filename in list(submission_code.files.keys())[:5]:
+                logger.debug(f"  - {filename}")
+        else:
+            # Mark that we tried but found no submission
+            context.no_submission_available = True
+            logger.info("No submission found for student - will inform them to submit code")
+
+    def _user_intent_needs_code(self, user_intent_description: str) -> bool:
+        """
+        Check if the user's intent description suggests they need code analysis.
+
+        Args:
+            user_intent_description: The LLM's description of what the user wants
+
+        Returns:
+            True if the description suggests code analysis is needed
+        """
+        # Keywords that suggest code analysis is needed
+        code_keywords = [
+            "debug", "error", "bug", "fix", "review", "code",
+            "implementation", "solution", "function", "method",
+            "line", "syntax", "compile", "runtime", "exception",
+            "traceback", "stack", "segfault", "crash", "fails"
+        ]
+
+        description_lower = user_intent_description.lower()
+        return any(keyword in description_lower for keyword in code_keywords)
 
     async def check_security_only(
         self,
