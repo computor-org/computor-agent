@@ -196,6 +196,48 @@ class ContextBuilder:
 
         return context
 
+    async def download_submission_code(
+        self,
+        submission_group_id: Optional[str] = None,
+        course_content_id: Optional[str] = None,
+        course_member_id: Optional[str] = None,
+        submit_only: bool = False,
+    ) -> Optional[CodeContext]:
+        """
+        Download the latest submission as code context.
+
+        Args:
+            submission_group_id: Submission group ID (use this OR course_content_id+course_member_id)
+            course_content_id: Course content ID (use with course_member_id)
+            course_member_id: Course member ID (use with course_content_id)
+            submit_only: If True, only get official submissions. If False, include test uploads
+
+        Returns:
+            CodeContext with submission files, or None if no submission found
+        """
+        artifact_content = await self.artifacts_service.download_latest_submission(
+            submission_group_id=submission_group_id,
+            course_content_id=course_content_id,
+            course_member_id=course_member_id,
+            submit_only=submit_only,
+            max_files=self.config.max_code_files,
+            max_total_size=10 * 1024 * 1024,  # 10MB max
+        )
+
+        if not artifact_content:
+            return None
+
+        # Convert ArtifactContent to CodeContext
+        total_lines = sum(content.count('\n') + 1 for content in artifact_content.files.values())
+
+        return CodeContext(
+            files=artifact_content.files,
+            total_lines=total_lines,
+            repository_path=None,  # No local path for downloaded submissions
+            truncated=artifact_content.truncated,
+            is_submission=True,  # Mark this as a submission download
+        )
+
     async def _add_enhanced_context(
         self,
         context: ConversationContext,
@@ -211,6 +253,7 @@ class ContextBuilder:
         - Submission history
         - Reference comparison
         - Student progress
+        - Downloaded submission code (if not already loaded)
 
         Args:
             course_content_data: Pre-fetched CourseContentStudentGet to avoid redundant API calls.

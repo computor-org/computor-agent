@@ -520,6 +520,88 @@ class ArtifactsService:
             truncated=truncated,
         )
 
+    async def download_latest_submission(
+        self,
+        *,
+        submission_group_id: Optional[str] = None,
+        course_content_id: Optional[str] = None,
+        course_member_id: Optional[str] = None,
+        version_identifier: Optional[str] = None,
+        submit_only: bool = False,
+        max_files: int = 50,
+        max_total_size: int = 10 * 1024 * 1024,
+    ) -> Optional[ArtifactContent]:
+        """
+        Download the latest submission using the /submissions/artifacts/download endpoint.
+
+        Args:
+            submission_group_id: Submission group ID (use this OR course_content_id+course_member_id)
+            course_content_id: Course content ID (use with course_member_id)
+            course_member_id: Course member ID (use with course_content_id)
+            version_identifier: Optional version identifier
+            submit_only: If True, only download official submissions. If False, include test uploads
+            max_files: Maximum number of files to extract
+            max_total_size: Maximum total size to extract
+
+        Returns:
+            ArtifactContent with extracted files, or None if no submission found
+        """
+        try:
+            # Validate parameters
+            if submission_group_id:
+                # Use submission_group_id
+                params = {
+                    "submission_group_id": submission_group_id,
+                    "submit_only": submit_only,
+                }
+            elif course_content_id and course_member_id:
+                # Use course_content_id + course_member_id
+                params = {
+                    "course_content_id": course_content_id,
+                    "course_member_id": course_member_id,
+                    "submit_only": submit_only,
+                }
+            else:
+                logger.error("Must provide either submission_group_id OR (course_content_id + course_member_id)")
+                return None
+
+            if version_identifier:
+                params["version_identifier"] = version_identifier
+
+            # Try to download via the submissions endpoint
+            buffer = None
+            if hasattr(self.client, 'submissions'):
+                try:
+                    # Call /submissions/artifacts/download endpoint
+                    response = await self.client.submissions.artifacts.download(**params)
+                    if response:
+                        buffer = response
+                        logger.info(f"Downloaded submission artifact with params: {params}")
+                except Exception as e:
+                    logger.debug(f"submissions.artifacts.download failed: {e}")
+
+            if not buffer:
+                logger.info("No submission artifact found for the given parameters")
+                return None
+
+            # Create minimal metadata since we don't have artifact ID
+            artifact_meta = Artifact(
+                id=f"latest-{submission_group_id or f'{course_content_id}-{course_member_id}'}",
+                submission_group_id=submission_group_id or "unknown",
+            )
+
+            # Extract contents
+            return self._extract_zip(
+                buffer,
+                artifact_meta,
+                max_files=max_files,
+                max_total_size=max_total_size,
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to download latest submission: {e}")
+            return None
+
     async def compare_artifacts(
         self,
         artifact_id_1: str,

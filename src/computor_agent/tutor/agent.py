@@ -225,6 +225,9 @@ class TutorAgent:
             # Classify intent
             classification = await self.intent_classifier.classify(context)
 
+            # Check if we need to download submission code for code-related intents
+            await self._ensure_code_context(context, classification)
+
             # Get strategy for classification (handles None intent with fallback)
             strategy = self.strategy_registry.get_strategy(classification)
 
@@ -351,6 +354,88 @@ class TutorAgent:
             Intent.CLARIFICATION: self.config.strategies.clarification,
         }
         return config_map.get(intent, self.config.strategies.fallback)
+
+    async def _ensure_code_context(
+        self,
+        context: ConversationContext,
+        classification: IntentClassification,
+    ) -> None:
+        """
+        Ensure code context is available for code-related intents.
+
+        Downloads submission artifact if:
+        1. The intent requires code (HELP_DEBUG, HELP_REVIEW)
+        2. No code is currently loaded in the context
+        3. Or checks if the user's description mentions needing to look at code
+
+        Args:
+            context: The conversation context
+            classification: The intent classification
+        """
+        from computor_agent.tutor.intents import Intent
+
+        # Check if this intent typically needs code
+        code_related_intents = {Intent.HELP_DEBUG, Intent.HELP_REVIEW}
+        needs_code = (
+            classification.intent in code_related_intents
+            or self._user_intent_needs_code(classification.user_intent_description)
+        )
+
+        # If we already have code or don't need it, return
+        if not needs_code or context.has_code:
+            return
+
+        # Try to download the latest submission
+        logger.info("Intent requires code but none loaded - downloading submission")
+
+        # Get identifiers from context
+        course_member_id = (
+            context.student.course_member_ids[0]
+            if context.student.course_member_ids
+            else None
+        )
+        course_content_id = (
+            context.assignment.course_content_id
+            if context.assignment
+            else None
+        )
+
+        # Try to download submission
+        submission_code = await self.context_builder.download_submission_code(
+            submission_group_id=context.submission_group_id,
+            course_content_id=course_content_id,
+            course_member_id=course_member_id,
+            submit_only=False,  # Include test uploads too
+        )
+
+        if submission_code:
+            context.student_code = submission_code
+            logger.info(f"Downloaded submission with {len(submission_code.files)} files")
+        else:
+            # Mark that we tried but found no submission
+            context.no_submission_available = True
+            logger.info("No submission found for student")
+
+    def _user_intent_needs_code(self, user_intent_description: str) -> bool:
+        """
+        Check if the user's intent description suggests they need code analysis.
+
+        Args:
+            user_intent_description: The LLM's description of what the user wants
+
+        Returns:
+            True if the description suggests code analysis is needed
+        """
+        # Keywords that suggest code analysis is needed
+        code_keywords = [
+            "debug", "error", "bug", "fix", "review", "code",
+            "implementation", "solution", "function", "method",
+            "line", "syntax", "compile", "runtime", "exception",
+            "traceback", "stack", "segfault", "crash", "fails"
+        ]
+
+        description_lower = user_intent_description.lower()
+        return any(keyword in description_lower for keyword in code_keywords)
 
     async def check_security_only(
         self,

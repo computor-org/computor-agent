@@ -82,11 +82,12 @@ class BaseStrategyImpl(BaseStrategy):
             template = STRATEGY_PROMPTS.get(self.prompt_key, STRATEGY_PROMPTS["other"])
 
         # Gather template variables
+        student_code_section = self._get_student_code_section(context)
         variables = {
             "personality_prompt": self.get_personality_prompt(),
             "language": self.personality_config.language,
             "assignment_description": self._get_assignment_description(context),
-            "student_code": context.get_formatted_code() if context.has_code else "(No code available)",
+            "student_code": student_code_section,
             "previous_messages": context.get_formatted_previous_messages(),
             "reference_solution_section": self._get_reference_section(context),
             "grading_instructions": "",  # Set by submission strategy
@@ -136,6 +137,26 @@ class BaseStrategyImpl(BaseStrategy):
             message_content=response,
             strategy_name=self.name,
         )
+
+    def _get_student_code_section(self, context: "ConversationContext") -> str:
+        """Get student code section with proper messaging."""
+        if context.has_code:
+            # Code is available (either from repo or submission)
+            if context.student_code.is_submission:
+                prefix = "(Downloaded from latest submission)\n"
+            else:
+                prefix = ""
+            return prefix + context.get_formatted_code()
+        elif context.no_submission_available:
+            # We tried to download but no submission exists
+            return (
+                "(No code available - student has not submitted any code yet)\n"
+                "IMPORTANT: Inform the student they need to submit or upload their code "
+                "before you can help with debugging or code review."
+            )
+        else:
+            # No code loaded and we didn't try to download
+            return "(No code available)"
 
     def _get_assignment_description(self, context: "ConversationContext") -> str:
         """Get assignment description from context."""
