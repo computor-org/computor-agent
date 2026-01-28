@@ -157,8 +157,7 @@ from computor_agent.tutor.services import (
     TestStatus,
     # Artifacts
     ArtifactsService,
-    Artifact,
-    ArtifactContent,
+    ExtractedSubmissionContent,
     # Reference Comparison
     ReferenceService,
     ReferenceComparison,
@@ -234,8 +233,7 @@ __all__ = [
     "TestStatus",
     # Artifacts
     "ArtifactsService",
-    "Artifact",
-    "ArtifactContent",
+    "ExtractedSubmissionContent",
     # Reference Comparison
     "ReferenceService",
     "ReferenceComparison",

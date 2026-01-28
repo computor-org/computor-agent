@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from computor_agent.tutor.services.history import SubmissionHistory
     from computor_agent.tutor.services.reference import ReferenceComparison
     from computor_agent.tutor.services.progress import MemberProgress
-    from computor_agent.tutor.services.artifacts import ArtifactContent
+    from computor_agent.tutor.services.artifacts import ExtractedSubmissionContent
 
 
 class TriggerType(str, Enum):
@@ -175,7 +175,7 @@ class ConversationContext:
     student_progress: Optional["MemberProgress"] = None
     """Student's overall progress in the course."""
 
-    artifact_content: Optional["ArtifactContent"] = None
+    artifact_content: Optional["ExtractedSubmissionContent"] = None
     """Extracted content from submission artifact."""
 
     # Submission availability
