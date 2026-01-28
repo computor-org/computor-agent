@@ -920,7 +920,12 @@ async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket:
             # Scheduler exited normally (either stopped or max reconnects reached)
             logger.info("WebSocket scheduler exited")
         except Exception as e:
-            logger.error(f"WebSocket scheduler error: {e}")
+            error_str = str(e)
+            if "401" in error_str or "Unauthorized" in error_str:
+                logger.error("Authentication failed. Please check your credentials and try again.")
+                logger.error("Run 'computor-agent login' to re-authenticate.")
+            else:
+                logger.error(f"WebSocket scheduler error: {e}")
         finally:
             # Only signal shutdown if we're not already shutting down
             if not shutdown_event.is_set():
@@ -928,9 +933,19 @@ async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket:
                 shutdown_event.set()
     else:
         # For HTTP polling, start() returns immediately, scheduler runs in background
-        await scheduler.start()
-        # Wait indefinitely (shutdown will come from signal)
-        await asyncio.Event().wait()
+        try:
+            await scheduler.start()
+            # Wait indefinitely (shutdown will come from signal)
+            await asyncio.Event().wait()
+        except Exception as e:
+            error_str = str(e)
+            if "401" in error_str or "Unauthorized" in error_str:
+                logger.error("Authentication failed. Please check your credentials and try again.")
+                logger.error("Run 'computor-agent login' to re-authenticate.")
+            else:
+                logger.error(f"HTTP scheduler error: {e}")
+            # Exit the program
+            shutdown_event.set()
 
 
 if __name__ == "__main__":

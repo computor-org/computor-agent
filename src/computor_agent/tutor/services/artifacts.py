@@ -4,6 +4,7 @@ Submission Artifacts Service for the Tutor AI Agent.
 Handles listing, downloading, and extracting submission artifacts (ZIPs).
 """
 
+import asyncio
 import io
 import logging
 import zipfile
@@ -448,6 +449,7 @@ class ArtifactsService:
                     "submission_group_id": submission_group_id,
                     "submit_only": submit_only,
                 }
+                logger.debug(f"Using submission_group_id for download: {submission_group_id}")
             elif course_content_id and course_member_id:
                 # Use course_content_id + course_member_id
                 params = {
@@ -455,6 +457,7 @@ class ArtifactsService:
                     "course_member_id": course_member_id,
                     "submit_only": submit_only,
                 }
+                logger.debug(f"Using course_content_id + course_member_id: {course_content_id}, {course_member_id}")
             else:
                 logger.error("Must provide either submission_group_id OR (course_content_id + course_member_id)")
                 return None
@@ -466,13 +469,30 @@ class ArtifactsService:
             buffer = None
             if hasattr(self.client, 'submissions'):
                 try:
-                    # Use the correct method: artifacts_download (NOT artifacts.download)
+                    logger.info(f"Attempting to download submission with params: {params}")
+                    # Use the correct method: artifacts_download
                     response = await self.client.submissions.artifacts_download(**params)
+
+                    # Check response type - it might be bytes or a response object
                     if response:
-                        buffer = response
-                        logger.info(f"Downloaded submission artifact with params: {params}")
+                        if isinstance(response, bytes):
+                            buffer = response
+                            logger.info(f"Downloaded submission as bytes, size: {len(response)} bytes")
+                        elif hasattr(response, 'read'):
+                            # It might be a file-like object
+                            buffer = await response.read() if asyncio.iscoroutinefunction(response.read) else response.read()
+                            logger.info(f"Downloaded submission from file-like object, size: {len(buffer)} bytes")
+                        elif hasattr(response, 'content'):
+                            # It might have a content attribute
+                            buffer = response.content
+                            logger.info(f"Downloaded submission from response.content, size: {len(buffer)} bytes")
+                        else:
+                            logger.warning(f"Unknown response type: {type(response)}")
+                            buffer = response
+                    else:
+                        logger.warning("artifacts_download returned None/empty response")
                 except Exception as e:
-                    logger.debug(f"submissions.artifacts_download failed: {e}")
+                    logger.error(f"submissions.artifacts_download failed: {e}", exc_info=True)
 
             if not buffer:
                 logger.info("No submission artifact found for the given parameters")

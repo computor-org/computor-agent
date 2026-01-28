@@ -204,7 +204,11 @@ class WebSocketScheduler:
         logger.info("WebSocket scheduler stopped")
 
     async def _discover_courses(self) -> None:
-        """Discover courses the tutor is a member of."""
+        """Discover courses the tutor is a member of.
+
+        Raises:
+            Exception: If unauthorized (401) to stop the scheduler
+        """
         try:
             # Use the tutors API to get courses
             # This should return courses where the authenticated user is a tutor
@@ -212,8 +216,16 @@ class WebSocketScheduler:
             self._course_ids = [c.id for c in courses if c.id]
             logger.info(f"Discovered {len(self._course_ids)} course(s)")
         except Exception as e:
-            logger.warning(f"Failed to discover courses: {e}")
-            self._course_ids = []
+            error_str = str(e)
+            # Check if it's an authorization error - stop immediately
+            if "401" in error_str or "Unauthorized" in error_str:
+                logger.error(f"Authentication failed: {e}")
+                logger.error("The worker cannot continue without valid credentials. Please check your login.")
+                # Re-raise to stop the scheduler
+                raise
+            else:
+                logger.warning(f"Failed to discover courses: {e}")
+                self._course_ids = []
 
     async def _process_unread_messages(self) -> None:
         """

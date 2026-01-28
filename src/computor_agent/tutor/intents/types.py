@@ -36,6 +36,10 @@ class Intent(str, Enum):
     HELP_REVIEW = "help_review"
     """Student wants general code review/feedback."""
 
+    # Submission
+    SUBMISSION_REVIEW = "submission_review"
+    """Student submitted code for review/grading."""
+
     # Follow-up
     CLARIFICATION = "clarification"
     """Follow-up question to a previous response."""
@@ -50,6 +54,7 @@ class Intent(str, Enum):
             Intent.QUESTION_HOWTO: "General programming how-to questions (syntax, library usage, concepts)",
             Intent.HELP_DEBUG: "Student has an error or bug and needs debugging assistance",
             Intent.HELP_REVIEW: "Student wants code review, feedback, or validation of their solution",
+            Intent.SUBMISSION_REVIEW: "Student submitted code for review or grading",
             Intent.CLARIFICATION: "Follow-up question to clarify a previous AI response",
         }
         return descriptions.get(self, "Unknown intent")
@@ -61,6 +66,7 @@ MESSAGING_INTENTS = [
     Intent.QUESTION_HOWTO,
     Intent.HELP_DEBUG,
     Intent.HELP_REVIEW,
+    Intent.SUBMISSION_REVIEW,
     Intent.CLARIFICATION,
 ]
 

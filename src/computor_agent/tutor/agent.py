@@ -381,12 +381,19 @@ class TutorAgent:
             or self._user_intent_needs_code(classification.user_intent_description)
         )
 
+        logger.debug(f"Intent: {classification.intent}, needs_code: {needs_code}, has_code: {context.has_code}")
+
         # If we already have code or don't need it, return
-        if not needs_code or context.has_code:
+        if not needs_code:
+            logger.debug("Intent does not require code, skipping download")
+            return
+
+        if context.has_code:
+            logger.debug("Code already loaded, skipping download")
             return
 
         # Try to download the latest submission
-        logger.info("Intent requires code but none loaded - downloading submission")
+        logger.info("Intent requires code but none loaded - attempting to download submission")
 
         # Get identifiers from context
         course_member_id = (
@@ -401,20 +408,33 @@ class TutorAgent:
         )
 
         # Try to download submission
-        submission_code = await self.context_builder.download_submission_code(
-            submission_group_id=context.submission_group_id,
-            course_content_id=course_content_id,
-            course_member_id=course_member_id,
-            submit_only=False,  # Include test uploads too
-        )
+        # Use submission_group_id if available, otherwise use course_content_id + course_member_id
+        if context.submission_group_id:
+            logger.debug(f"Using submission_group_id for download: {context.submission_group_id}")
+            submission_code = await self.context_builder.download_submission_code(
+                submission_group_id=context.submission_group_id,
+                submit_only=False,  # Include test uploads too
+            )
+        elif course_content_id and course_member_id:
+            logger.debug(f"Using course_content_id + course_member_id for download: {course_content_id} + {course_member_id}")
+            submission_code = await self.context_builder.download_submission_code(
+                course_content_id=course_content_id,
+                course_member_id=course_member_id,
+                submit_only=False,  # Include test uploads too
+            )
+        else:
+            logger.warning("No valid parameters for submission download (need submission_group_id OR course_content_id+course_member_id)")
+            submission_code = None
 
         if submission_code:
             context.student_code = submission_code
-            logger.info(f"Downloaded submission with {len(submission_code.files)} files")
+            logger.info(f"Successfully downloaded submission with {len(submission_code.files)} files")
+            for filename in list(submission_code.files.keys())[:5]:
+                logger.debug(f"  - {filename}")
         else:
             # Mark that we tried but found no submission
             context.no_submission_available = True
-            logger.info("No submission found for student")
+            logger.info("No submission found for student - will inform them to submit code")
 
     def _user_intent_needs_code(self, user_intent_description: str) -> bool:
         """
