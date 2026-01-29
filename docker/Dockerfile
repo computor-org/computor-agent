@@ -25,7 +25,11 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
+# Install dependencies from computor-backend repo (not on PyPI)
 RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+        "computor-client @ git+https://github.com/computor-org/computor-backend.git#subdirectory=clients/python/computor-client" \
+        "computor-types @ git+https://github.com/computor-org/computor-backend.git#subdirectory=clients/python/computor-types" \
     && pip install --no-cache-dir -e .
 
 # Create workspace directory
