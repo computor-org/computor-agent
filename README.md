@@ -215,27 +215,56 @@ Start with a smaller model to test, then upgrade if you need better quality resp
 
 ## Tutor AI Agent
 
-The Tutor AI Agent is an autonomous agent that monitors student submissions and messages, responding automatically using an LLM. It's designed for educational platforms where students can request AI assistance.
+The Tutor AI Agent is an autonomous agent that monitors student messages and submissions, responding automatically using an LLM. It has two modes: **messaging** (help conversations) and **grading** (submission review).
 
-### Quick Start
+### Commands
 
 ```bash
-# Start the tutor agent with config file in current directory
-computor-agent tutor
+# Messaging agent - responds to student questions
+computor-agent tutor messaging
+computor-agent tutor messaging -c config.yaml -v
+computor-agent tutor messaging --dry-run
 
-# Use specific config file
-computor-agent tutor -c ~/.computor/config.yaml
+# Grading agent - grades student submissions
+computor-agent tutor grading --dev --reference ./assignment --student ./submission
 
-# Verbose mode for debugging
-computor-agent tutor -v
-
-# Dry run (logs what would happen without sending responses)
-computor-agent tutor --dry-run
+# Development mode - interactive testing without API calls
+computor-agent tutor messaging --dev
+computor-agent tutor messaging --dev --assignment ./my-assignment
 ```
+
+### CLI Reference
+
+#### `computor-agent tutor messaging`
+
+Responds to student messages tagged with `#ai::request`.
+
+| Option | Description |
+|--------|-------------|
+| `-c, --config PATH` | Config file (default: `config.yaml`) |
+| `-v, --verbose` | Enable verbose logging |
+| `--dry-run` | Log actions without sending responses |
+| `--dev` | Development mode (interactive shell, no API calls) |
+| `--prompts-dir PATH` | Custom prompts directory |
+| `--assignment PATH` | [Dev mode] Assignment directory with `meta.yaml` |
+
+#### `computor-agent tutor grading`
+
+Reviews and grades student submissions.
+
+| Option | Description |
+|--------|-------------|
+| `-c, --config PATH` | Config file (default: `config.yaml`) |
+| `-v, --verbose` | Enable verbose logging |
+| `--dev` | Development mode (local files only) |
+| `--prompts-dir PATH` | Custom prompts directory |
+| `--reference PATH` | [Dev mode] Reference solution directory |
+| `--student PATH` | [Dev mode] Student submission directory |
+| `-l, --language` | Language for assignment (e.g., `en`, `de`) |
 
 ### Configuration
 
-All settings are in a single `config.yaml` file. See `examples/config.example.yaml` for a complete template.
+All settings are in a single `config.yaml` file:
 
 ```yaml
 # Backend API connection
@@ -249,7 +278,7 @@ llm:
   model: qwen2.5-coder:7b
   base_url: http://localhost:11434/v1
 
-# Git credentials for accessing student repositories
+# Git credentials for accessing repositories
 credentials:
   - pattern: https://gitlab.example.com
     token: glpat-your-token
@@ -260,60 +289,26 @@ tutor:
     name: "Tutor AI"
     tone: "friendly_professional"
 
-  # IMPORTANT: Enable for automatic grading
-  grading:
-    enabled: true
-    auto_submit_grade: true
-
-  # Message triggers
   triggers:
     request_tags:
       - scope: "ai"
         value: "request"
-    check_submissions: true
 ```
 
 ### How It Works
 
-**Two Approaches:**
+**Messaging Mode:**
+1. Student creates message with `#ai::request` tag
+2. Agent detects tag and classifies intent (question, debug, review, etc.)
+3. Agent generates response using LLM
+4. Student can reply without tag for follow-ups
 
-1. **Message-Based Help**: Students add `#ai::request` to message titles to request help. The agent responds in the message thread.
+**Grading Mode (Dev):**
+1. Point to reference solution and student submission directories
+2. Agent compares code against requirements in `meta.yaml`
+3. Agent generates grade and feedback
 
-2. **Submission Review**: When students submit work (`submit=True`), the agent automatically reviews and grades it via the tutors API endpoint.
-
-**Processing Flow:**
-
-1. **Polling**: Agent polls for ungraded submissions and tagged messages
-2. **Security Gate**: Checks for prompt injection attempts
-3. **Intent Classification**: Determines student needs (question, debug, review)
-4. **Response Generation**: Uses LLM to generate appropriate response
-5. **Grade Submission**: For submissions, posts grade via `PATCH /tutors/course-members/{id}/course-contents/{id}`
-
-### CLI Options
-
-```
-Usage: computor-agent tutor [OPTIONS]
-
-Options:
-  -c, --config PATH  Path to config file (default: config.yaml)
-  -v, --verbose      Enable verbose logging
-  --dry-run          Don't send responses, just log what would happen
-  --help             Show this message and exit
-```
-
-### Example Workflow
-
-**Message Help:**
-1. **Student** creates message: `Help with my code #ai::request`
-2. **Agent** detects tag and responds in thread
-3. **Student** replies (no tag needed for follow-ups)
-4. **Agent** continues conversation automatically
-
-**Submission Grading:**
-1. **Student** submits work with `submit=True`
-2. **Agent** detects via `/tutors/submission-groups?has_ungraded_submissions=true`
-3. **Agent** reviews code, runs analysis
-4. **Agent** submits grade via tutors endpoint
+See [docs/tutor-agent.md](docs/tutor-agent.md) for detailed documentation.
 
 ## Configuration
 
