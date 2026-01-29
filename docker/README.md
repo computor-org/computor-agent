@@ -1,274 +1,138 @@
-# Docker Setup for Computor Agent
+# Docker Setup
 
-The Docker container runs the Computor Agent (Tutor AI, etc.) and connects to:
-- An LLM server running on your **host machine** (Ollama, LM Studio, etc.)
-- The Computor backend API
+Run the Computor Agent in a Docker container.
 
 ## Quick Start
 
-### 1. Configure Environment
+### 1. Configure
 
 ```bash
-# Copy the example environment file
-cp docker/.env.example docker/.env
-
-# Edit with your settings
-nano docker/.env
+cp config.example.yaml config.yaml
+# Edit config.yaml with your settings
 ```
 
-**Required settings:**
-- `COMPUTOR_BACKEND_URL` - Backend API URL
-- Authentication (choose one):
-  - `COMPUTOR_BACKEND_API_TOKEN` - API token (recommended, format: `ctp_<32chars>`)
-  - OR `COMPUTOR_BACKEND_USERNAME` + `COMPUTOR_BACKEND_PASSWORD` - Basic auth
-- Git credentials file (see below)
+**Required settings in config.yaml:**
+- `backend.url` - Backend API URL
+- `backend.api_token` or `backend.username`/`password` - Authentication
+- `llm.provider`, `llm.model`, `llm.base_url` - LLM settings
 
 ### 2. Start LLM Server
 
-The agent needs an LLM server. If using Ollama:
+The agent needs an LLM server running on your host machine:
 
 ```bash
-# Install Ollama (Linux)
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull a model
+# Ollama
 ollama pull devstral-small
-
-# Start the server
 ollama serve
+
+# Or LM Studio - start server on port 1234
 ```
 
-### 3. Start the Agent
+### 3. Run
 
 ```bash
-# Using Docker Compose (recommended)
-docker-compose -f docker/docker-compose.yml up -d
-
-# Attach to container
-docker-compose -f docker/docker-compose.yml exec computor-agent bash
+# Start
+docker compose up -d
 
 # View logs
-docker-compose -f docker/docker-compose.yml logs -f
+docker compose logs -f
 
 # Stop
-docker-compose -f docker/docker-compose.yml down
+docker compose down
 ```
 
-## Configuration Reference
+## Configuration
 
-### Git Configuration
+All configuration is in `config.yaml` at the project root. See [config.example.yaml](../config.example.yaml) for all options.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GIT_USER_NAME` | `Computor Agent` | Git commit author name |
-| `GIT_USER_EMAIL` | `agent@computor.local` | Git commit author email |
+### LLM Connection
 
-### LLM Configuration
+The container uses `host.docker.internal` to reach services on your host machine:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_PROVIDER` | `ollama` | Provider: ollama, lmstudio, openai, anthropic, dummy |
-| `LLM_BASE_URL` | `http://host.docker.internal:11434/v1` | LLM API base URL |
-| `LLM_MODEL` | `devstral-small` | Model name |
-| `LLM_TEMPERATURE` | `0.7` | Sampling temperature (0.0-2.0) |
-| `LLM_API_KEY` | - | API key (for OpenAI, Anthropic, etc.) |
+```yaml
+llm:
+  provider: ollama
+  model: devstral-small
+  base_url: http://host.docker.internal:11434/v1  # Ollama on host
+```
 
-### Backend Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `COMPUTOR_BACKEND_URL` | **required** | Backend API URL |
-| `COMPUTOR_BACKEND_API_TOKEN` | - | API token (recommended, format: `ctp_<32chars>`) |
-| `COMPUTOR_BACKEND_USERNAME` | - | API username (for basic auth) |
-| `COMPUTOR_BACKEND_PASSWORD` | - | API password (for basic auth) |
-| `COMPUTOR_BACKEND_TIMEOUT` | `30` | Request timeout (seconds) |
-
-**Authentication:** Use either `COMPUTOR_BACKEND_API_TOKEN` or both `COMPUTOR_BACKEND_USERNAME` + `COMPUTOR_BACKEND_PASSWORD`. API token is recommended for service accounts.
-
-### Agent Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `COMPUTOR_AGENT_NAME` | `Tutor AI` | Agent display name |
-| `COMPUTOR_AGENT_DESCRIPTION` | - | Agent description |
-
-### Tutor Configuration
-
-#### Personality
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TUTOR_PERSONALITY_TONE` | `friendly_professional` | Tone: friendly_professional, strict, casual, encouraging |
-| `TUTOR_LANGUAGE` | `en` | Language (ISO 639-1 code) |
-
-#### Security Gate
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TUTOR_SECURITY_ENABLED` | `true` | Enable security checks |
-| `TUTOR_SECURITY_REQUIRE_CONFIRMATION` | `true` | 2-phase threat detection |
-| `TUTOR_SECURITY_BLOCK_ON_THREAT` | `true` | Block on confirmed threat |
-| `TUTOR_SECURITY_CHECK_MESSAGES` | `true` | Check messages for prompt injection |
-| `TUTOR_SECURITY_CHECK_CODE` | `true` | Check code for malicious content |
-
-#### Context
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TUTOR_CONTEXT_PREVIOUS_MESSAGES` | `3` | Previous messages to include (0-20) |
-| `TUTOR_CONTEXT_INCLUDE_COMMENTS` | `true` | Include tutor/lecturer comments |
-| `TUTOR_CONTEXT_INCLUDE_REFERENCE` | `false` | Include reference solution |
-| `TUTOR_CONTEXT_MAX_CODE_LINES` | `1000` | Max code lines in context |
-| `TUTOR_CONTEXT_STUDENT_NOTES_ENABLED` | `false` | Enable student notes storage |
-
-#### Grading
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TUTOR_GRADING_ENABLED` | `false` | Enable automated grading |
-| `TUTOR_GRADING_AUTO_SUBMIT` | `false` | Auto-submit grades to API |
-
-#### Scheduler
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TUTOR_SCHEDULER_ENABLED` | `true` | Enable scheduler |
-| `TUTOR_SCHEDULER_POLL_INTERVAL` | `30` | Poll interval (seconds) |
-| `TUTOR_SCHEDULER_MAX_CONCURRENT` | `5` | Max concurrent processing |
-| `TUTOR_SCHEDULER_COOLDOWN` | `60` | Cooldown per submission group (seconds) |
+| Provider | Host URL |
+|----------|----------|
+| Ollama | `http://host.docker.internal:11434/v1` |
+| LM Studio | `http://host.docker.internal:1234/v1` |
 
 ### Git Credentials
 
-Git credentials are stored in a **YAML file** (not environment variables) for security.
-
-Create the credentials file at `/data/config/credentials.yaml`:
+Add credentials for repository access:
 
 ```yaml
 credentials:
-  # Host-level (matches all repos on host)
   - pattern: https://gitlab.example.com
     token: glpat-xxxxxxxxxxxx
-
-  # Group-level (matches repos in group)
-  - pattern: https://gitlab.example.com/courses
-    token: glpat-yyyyyyyyyyyy
-
-  # Project-level (exact match)
-  - pattern: https://github.com/org/repo
-    token: ghp_zzzzzzzzzzzz
-    provider: github  # optional: gitlab, github, generic
-
-  # With optional fields
-  - pattern: https://git.internal.com
-    token: token123
-    provider: gitlab
-    username: deploy-bot
-    description: Internal server
 ```
 
-More specific patterns take precedence (project > group > host).
-
-**Important:** The credentials file is stored in the `/data/config` volume which persists across container restarts.
-
-## Volumes
-
-The container uses these persistent volumes:
-
-| Path | Volume Name | Description |
-|------|-------------|-------------|
-| `/data/workspace` | `computor-agent-workspace` | Repository clones |
-| `/data/config` | `computor-agent-config` | Configuration files |
-| `/data/notes` | `computor-agent-notes` | Student notes |
-| `/data/logs` | `computor-agent-logs` | Log files |
-
-## Building Manually
+## Commands
 
 ```bash
-# Build
+# Messaging agent (default)
+docker compose up -d
+
+# Interactive shell
+docker compose run --rm computor-agent bash
+
+# Single command
+docker compose run --rm computor-agent \
+    computor-agent ask "Hello" -p ollama -m devstral-small
+```
+
+### Override Command
+
+Edit `docker-compose.yml` to change the default command:
+
+```yaml
+command: ["computor-agent", "tutor", "messaging", "-c", "/app/config.yaml", "-v"]
+```
+
+## Building
+
+```bash
+# Build image
 docker build -t computor-agent -f docker/Dockerfile .
 
-# Run (Linux)
+# Run manually
 docker run -it --rm \
-  --add-host=host.docker.internal:host-gateway \
-  --env-file docker/.env \
-  computor-agent
-
-# Run (macOS/Windows - host.docker.internal works automatically)
-docker run -it --rm \
-  --env-file docker/.env \
-  computor-agent
-```
-
-## Usage Inside Container
-
-```bash
-# Interactive chat with LLM
-computor-agent chat
-
-# Single question
-computor-agent ask "What is Python?"
-
-# List providers
-computor-agent providers
-
-# Start tutor agent (when backend is configured)
-python -m computor_agent.tutor
+    -v ./config.yaml:/app/config.yaml:ro \
+    --add-host=host.docker.internal:host-gateway \
+    computor-agent
 ```
 
 ## Troubleshooting
 
-### "Cannot reach LLM server"
+### Cannot reach LLM server
 
-1. Make sure your LLM server is running on the host:
+1. Check LLM is running on host:
    ```bash
-   # For Ollama
-   curl http://localhost:11434/api/tags
-
-   # For LM Studio
-   curl http://localhost:1234/v1/models
+   curl http://localhost:11434/v1/models
    ```
 
-2. On Linux, the container uses `host.docker.internal:host-gateway` (configured in docker-compose)
-
-3. Alternative: Use the Docker bridge IP directly:
-   ```bash
-   docker network inspect bridge | grep Gateway
-   # Usually 172.17.0.1
+2. Verify `base_url` uses `host.docker.internal`:
+   ```yaml
+   llm:
+     base_url: http://host.docker.internal:11434/v1
    ```
 
-### "Backend not configured"
+### Config file not found
 
-Make sure `.env` file exists and contains:
-```
-COMPUTOR_BACKEND_URL=https://...
-COMPUTOR_BACKEND_USERNAME=...
-COMPUTOR_BACKEND_PASSWORD=...
+Ensure `config.yaml` exists in the project root:
+```bash
+cp config.example.yaml config.yaml
 ```
 
-### "No credentials configured"
+### Authentication failed
 
-Create the credentials file at `/data/config/credentials.yaml`:
+Check your `backend` settings in config.yaml:
 ```yaml
-credentials:
-  - pattern: https://gitlab.example.com
-    token: glpat-xxxxxxxxxxxx
-```
-
-Or copy an existing file into the container:
-```bash
-docker cp /path/to/credentials.yaml computor-agent:/data/config/credentials.yaml
-```
-
-### Git commit fails
-
-Check Git configuration:
-```bash
-git config --global user.name
-git config --global user.email
-```
-
-Set via environment:
-```
-GIT_USER_NAME=My Agent
-GIT_USER_EMAIL=agent@example.com
+backend:
+  url: https://api.computor.example.com
+  api_token: ctp_your_token_here
 ```

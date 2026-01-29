@@ -1,0 +1,32 @@
+# Computor Agent - Docker Compose
+#
+# Usage:
+#   1. Copy docker/config.example.yaml to config.yaml and edit it
+#   2. Start: docker compose up -d
+#   3. Logs:  docker compose logs -f
+#   4. Stop:  docker compose down
+
+services:
+  computor-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: computor-agent
+
+    # Mount config file (required)
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - computor-workspace:/data/workspace
+
+    # Allow container to reach LLM on host machine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Default command: run messaging agent
+    command: ["computor-agent", "tutor", "messaging", "-c", "/app/config.yaml"]
+
+    restart: unless-stopped
+
+volumes:
+  computor-workspace:
+    name: computor-agent-workspace
