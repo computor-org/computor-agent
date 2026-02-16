@@ -238,10 +238,14 @@ class ArtifactsService:
             # Get artifact metadata
             artifact_meta = await self._get_artifact_metadata(artifact_id)
             if not artifact_meta:
-                # Create minimal metadata
-                artifact_meta = Artifact(
+                # Create minimal metadata with required fields
+                artifact_meta = SubmissionArtifactGet(
                     id=artifact_id,
                     submission_group_id="unknown",
+                    file_size=len(buffer) if buffer else 0,
+                    bucket_name="unknown",
+                    object_key="unknown",
+                    uploaded_at=datetime.now(),
                 )
 
             # Extract contents
@@ -311,10 +315,10 @@ class ArtifactsService:
             # Use the correct submissions endpoint
             if hasattr(self.client, 'submissions'):
                 try:
-                    # Use artifacts_download method
-                    buffer = await self.client.submissions.artifacts_download(artifact_id=artifact_id)
+                    # Use get_artifacts_download method for downloading by artifact ID
+                    buffer = await self.client.submissions.get_artifacts_download(artifact_id)
                 except Exception as e:
-                    logger.debug(f"submissions.artifacts_download failed: {e}")
+                    logger.debug(f"submissions.get_artifacts_download failed: {e}")
 
             if not buffer:
                 logger.warning(f"Failed to download artifact {artifact_id}")
@@ -327,15 +331,14 @@ class ArtifactsService:
     async def _get_artifact_metadata(self, artifact_id: str) -> Optional[SubmissionArtifactGet]:
         """Get artifact metadata."""
         try:
-            # Use the correct endpoint
+            # Use the correct endpoint for fetching single artifact by ID
             if hasattr(self.client, 'submissions'):
                 try:
-                    # This might need to be adjusted based on actual API
-                    artifacts = await self.client.submissions.get_artifacts(artifact_id=artifact_id)
-                    if artifacts and len(artifacts) > 0:
-                        return artifacts[0]
+                    # Use get_missions_artifacts_artifact_id to fetch single artifact metadata
+                    artifact = await self.client.submissions.get_missions_artifacts_artifact_id(artifact_id)
+                    return artifact
                 except Exception as e:
-                    logger.debug(f"submissions.get_artifacts failed: {e}")
+                    logger.debug(f"submissions.get_missions_artifacts_artifact_id failed: {e}")
 
             return None
         except Exception as e:
