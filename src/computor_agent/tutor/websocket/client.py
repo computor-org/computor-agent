@@ -150,9 +150,10 @@ class ComputorWebSocket:
                 delay = min(delay, 60.0)
 
                 logger.warning(
-                    f"WebSocket connection timed out, "
-                    f"attempt {self._reconnect_count}/{self._max_reconnect_attempts}, "
-                    f"retrying in {delay:.1f}s"
+                    f"WebSocket connection timed out after {self._connect_timeout}s\n"
+                    f"  Target URL: {self._mask_url(self.ws_url)}\n"
+                    f"  Attempt: {self._reconnect_count}/{self._max_reconnect_attempts}\n"
+                    f"  Next retry in: {delay:.1f}s"
                 )
 
                 if self._reconnect_count >= self._max_reconnect_attempts:
@@ -167,10 +168,15 @@ class ComputorWebSocket:
                 delay = self._reconnect_delay * (2 ** (self._reconnect_count - 1))
                 delay = min(delay, 60.0)  # Cap at 60 seconds
 
+                # Extract more detailed error information
+                error_details = self._extract_error_details(e)
+
                 logger.warning(
-                    f"WebSocket connection failed ({e}), "
-                    f"attempt {self._reconnect_count}/{self._max_reconnect_attempts}, "
-                    f"retrying in {delay:.1f}s"
+                    f"WebSocket connection failed: {error_details['message']}\n"
+                    f"  Error type: {error_details['error_type']}\n"
+                    f"  Target URL: {error_details['url']}\n"
+                    f"  Attempt: {self._reconnect_count}/{self._max_reconnect_attempts}\n"
+                    f"  Next retry in: {delay:.1f}s"
                 )
 
                 if self._reconnect_count >= self._max_reconnect_attempts:
@@ -381,3 +387,67 @@ class ComputorWebSocket:
             parts = url.split("token=")
             return f"{parts[0]}token=***"
         return url
+
+    def _extract_error_details(self, e: Exception) -> dict:
+        """
+        Extract detailed error information from various exception types.
+
+        Args:
+            e: The exception to extract details from
+
+        Returns:
+            dict: Containing error_type, message, errno, host, port, url
+        """
+        details = {
+            "error_type": type(e).__name__,
+            "message": str(e),
+            "errno": None,
+            "host": None,
+            "port": None,
+            "url": self._mask_url(self.ws_url)
+        }
+
+        # Extract OSError details (includes connection errors)
+        if isinstance(e, OSError):
+            details["errno"] = getattr(e, "errno", None)
+
+            # Parse connection details from error message
+            error_str = str(e)
+
+            # Extract errno description (e.g., "[Errno 113] Connect call failed")
+            if "[Errno" in error_str and "]" in error_str:
+                errno_desc = error_str[error_str.index("["):error_str.index("]")+1]
+                details["message"] = error_str
+
+            # Extract host and port from error message
+            # Format: "Connect call failed ('129.27.161.109', 443)"
+            if "(" in error_str and ")" in error_str:
+                try:
+                    # Find the tuple in the error message
+                    start_idx = error_str.rfind("(")
+                    end_idx = error_str.rfind(")")
+                    tuple_str = error_str[start_idx+1:end_idx]
+
+                    # Parse host and port
+                    parts = tuple_str.split(",")
+                    if len(parts) >= 2:
+                        details["host"] = parts[0].strip().strip("'\"")
+                        details["port"] = parts[1].strip().strip("'\"")
+                except:
+                    pass
+
+        # Extract WebSocketException details
+        elif isinstance(e, WebSocketException):
+            # WebSocket specific error details
+            if hasattr(e, "status_code"):
+                details["status_code"] = e.status_code
+            if hasattr(e, "headers"):
+                details["headers"] = dict(e.headers) if e.headers else None
+
+        # Build detailed message
+        if details["errno"]:
+            details["message"] = f"[Errno {details['errno']}] {details['message']}"
+        if details["host"] and details["port"]:
+            details["message"] = f"{details['message']} - Target: {details['host']}:{details['port']}"
+
+        return details
