@@ -314,6 +314,14 @@ class MockTutorsEndpoint:
             "unread_message_count": 1,
         }
 
+    async def course_contents_description(self, **kwargs) -> None:
+        """Mock description endpoint - no data in dev mode."""
+        return None
+
+    async def course_contents_reference(self, **kwargs) -> None:
+        """Mock reference endpoint - no data in dev mode."""
+        return None
+
 
 class MockCourseMembersEndpoint:
     """Mock course members endpoint."""
@@ -336,8 +344,19 @@ class MockSubmissionGroupsEndpoint:
 
 
 class MockSubmissionsEndpoint:
-    """Mock submissions endpoint."""
-    pass
+    """Mock submissions endpoint - no real downloads in dev mode."""
+
+    async def artifacts_download(self, **kwargs) -> None:
+        """Mock artifact download - no data in dev mode."""
+        return None
+
+    async def get_artifacts(self, **kwargs) -> list:
+        """Mock artifact listing - no data in dev mode."""
+        return []
+
+    async def get_artifacts_download(self, *args, **kwargs) -> None:
+        """Mock artifact download by ID - no data in dev mode."""
+        return None
 
 
 def _ensure_prompt_files(prompts_dir: Path) -> None:
