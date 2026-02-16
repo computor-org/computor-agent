@@ -348,6 +348,14 @@ class ComputorWebSocket:
             logger.warning(f"WebSocket connection closed: {e}")
             self._connected = False
             raise WebSocketError(f"Connection closed: {e}") from e
+        except (AttributeError, OSError) as e:
+            # AttributeError: websockets transport invalidated (e.g. 'NoneType'
+            # has no attribute 'resume_reading') — happens when the underlying
+            # connection is lost while iterating.
+            # OSError: low-level socket errors during receive.
+            logger.warning(f"WebSocket connection lost: {e}")
+            self._connected = False
+            raise WebSocketError(f"Connection lost: {e}") from e
 
     async def _ping_loop(self) -> None:
         """
