@@ -234,6 +234,28 @@ class LLMProvider(ABC):
 
         return params
 
+    async def check_health(self) -> LLMResponse:
+        """
+        Verify that the LLM is reachable and the model can generate a response.
+
+        Returns:
+            LLMResponse from the test prompt
+
+        Raises:
+            LLMError (or subclass): If the provider is unreachable, the model
+                is unavailable, or the response is empty/invalid.
+        """
+        from computor_agent.llm.exceptions import LLMResponseError
+
+        response = await self.complete("Respond with OK.")
+        if not response.content or not response.content.strip():
+            raise LLMResponseError(
+                "LLM returned an empty response",
+                provider=self.provider_name,
+                model=self.model_name,
+            )
+        return response
+
     async def close(self) -> None:
         """
         Close any resources held by the provider.

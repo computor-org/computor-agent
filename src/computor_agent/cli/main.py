@@ -717,6 +717,17 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
         temperature=computor_config.llm.temperature,
     )
     llm_provider = get_provider(llm_config)
+
+    # Verify the LLM model is reachable and working before accepting student messages
+    console.print(f"[dim]Checking LLM connectivity ({llm_config.provider.value}/{llm_config.model})...[/dim]")
+    try:
+        await llm_provider.check_health()
+        console.print("[green]LLM is ready.[/green]")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] LLM health check failed: {e}")
+        console.print("[dim]Make sure your LLM server is running and the model is available.[/dim]")
+        sys.exit(1)
+
     tutor_llm = TutorLLMAdapter(llm_provider)
 
     # Create Computor client with appropriate authentication
