@@ -694,10 +694,20 @@ class ContextBuilder:
             return False
 
         try:
-            notes_dir = Path(self.config.student_notes_dir)
+            notes_dir = Path(self.config.student_notes_dir).resolve()
             notes_dir.mkdir(parents=True, exist_ok=True)
 
-            notes_path = notes_dir / f"{user_id}.txt"
+            # Sanitize user_id to prevent path traversal
+            safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_")
+            if not safe_user_id:
+                logger.warning(f"Invalid user_id for notes: {user_id!r}")
+                return False
+
+            notes_path = (notes_dir / f"{safe_user_id}.txt").resolve()
+            if not str(notes_path).startswith(str(notes_dir)):
+                logger.warning(f"Path traversal attempt in student notes: {user_id!r}")
+                return False
+
             notes_path.write_text(notes)
             return True
         except Exception as e:
