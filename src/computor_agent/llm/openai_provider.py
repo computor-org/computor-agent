@@ -11,6 +11,7 @@ This provider works with any OpenAI-compatible API, including:
 - Any other OpenAI-compatible server
 """
 
+import asyncio
 import json
 import logging
 from typing import Any, AsyncIterator, Optional
@@ -105,7 +106,7 @@ class OpenAIProvider(LLMProvider):
             else:
                 detail = error.get("message", str(error_data))
                 error_type = error.get("type")
-        except Exception:
+        except (json.JSONDecodeError, KeyError, AttributeError, TypeError):
             detail = response.text or f"HTTP {status_code}"
             error_type = None
 
@@ -177,7 +178,6 @@ class OpenAIProvider(LLMProvider):
             LLMModelNotFoundError: If model doesn't exist
             LLMContextLengthError: If input too long
         """
-        client = await self._get_client()
         messages = self._prepare_messages(prompt, system_prompt)
         params = self._merge_generation_params(**kwargs)
 
@@ -190,49 +190,86 @@ class OpenAIProvider(LLMProvider):
         logger.debug(f"Sending completion request to {self.config.base_url}/chat/completions")
         logger.debug(f"LLM Request messages:\n{json.dumps(messages, indent=2)}")
 
-        try:
-            response = await client.post(
-                "/chat/completions",
-                json=request_body,
-            )
+        last_error: Exception | None = None
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                client = await self._get_client()
+                response = await client.post(
+                    "/chat/completions",
+                    json=request_body,
+                )
 
-            if not response.is_success:
-                self._handle_error_response(response)
+                if not response.is_success:
+                    self._handle_error_response(response)
 
-            data = response.json()
-            choice = data["choices"][0]
-            content = choice["message"]["content"]
+                data = response.json()
+                choices = data.get("choices", [])
+                if not choices:
+                    raise LLMResponseError(
+                        "LLM returned empty choices array",
+                        provider=self.provider_name,
+                        model=self.model_name,
+                    )
+                choice = choices[0]
+                content = choice.get("message", {}).get("content", "")
 
-            logger.debug(f"LLM Response:\n{content}")
+                logger.debug(f"LLM Response:\n{content}")
 
-            return LLMResponse(
-                content=content,
-                model=data.get("model", self.config.model),
-                finish_reason=choice.get("finish_reason"),
-                usage=data.get("usage"),
-                raw_response=data,
-            )
+                return LLMResponse(
+                    content=content,
+                    model=data.get("model", self.config.model),
+                    finish_reason=choice.get("finish_reason"),
+                    usage=data.get("usage"),
+                    raw_response=data,
+                )
 
-        except httpx.TimeoutException as e:
-            raise LLMTimeoutError(
-                f"Request timed out after {self.config.timeout}s: {e}",
-                provider=self.provider_name,
-                model=self.model_name,
-            )
-        except httpx.ConnectError as e:
-            raise LLMConnectionError(
-                f"Failed to connect to {self.config.base_url}: {e}",
-                provider=self.provider_name,
-                model=self.model_name,
-            )
-        except (LLMAuthenticationError, LLMRateLimitError, LLMTimeoutError, LLMResponseError):
-            raise
-        except Exception as e:
-            raise LLMConnectionError(
-                f"Request failed: {e}",
-                provider=self.provider_name,
-                model=self.model_name,
-            )
+            except (LLMAuthenticationError, LLMContextLengthError, LLMModelNotFoundError):
+                raise  # Non-retryable errors
+            except LLMRateLimitError as e:
+                last_error = e
+                if attempt < self.config.max_retries:
+                    delay = e.retry_after if e.retry_after else 2 ** attempt
+                    logger.warning(f"Rate limited, retrying in {delay:.1f}s (attempt {attempt + 1}/{self.config.max_retries})")
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+            except httpx.TimeoutException as e:
+                last_error = e
+                if attempt < self.config.max_retries:
+                    logger.warning(f"Request timed out, retrying (attempt {attempt + 1}/{self.config.max_retries})")
+                    continue
+                raise LLMTimeoutError(
+                    f"Request timed out after {self.config.timeout}s: {e}",
+                    provider=self.provider_name,
+                    model=self.model_name,
+                )
+            except httpx.ConnectError as e:
+                last_error = e
+                if attempt < self.config.max_retries:
+                    logger.warning(f"Connection failed, retrying (attempt {attempt + 1}/{self.config.max_retries})")
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise LLMConnectionError(
+                    f"Failed to connect to {self.config.base_url}: {e}",
+                    provider=self.provider_name,
+                    model=self.model_name,
+                )
+            except (LLMResponseError, LLMTimeoutError):
+                raise
+            except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError) as e:
+                last_error = e
+                raise LLMConnectionError(
+                    f"Request failed: {e}",
+                    provider=self.provider_name,
+                    model=self.model_name,
+                )
+
+        # Should not reach here, but just in case
+        raise LLMConnectionError(
+            f"Request failed after {self.config.max_retries} retries: {last_error}",
+            provider=self.provider_name,
+            model=self.model_name,
+        )
 
     async def stream(
         self,
@@ -283,6 +320,7 @@ class OpenAIProvider(LLMProvider):
                     await response.aread()
                     self._handle_error_response(response)
 
+                received_done = False
                 async for line in response.aiter_lines():
                     if not line:
                         continue
@@ -292,6 +330,7 @@ class OpenAIProvider(LLMProvider):
                         line = line[6:]  # Remove "data: " prefix
 
                     if line == "[DONE]":
+                        received_done = True
                         break
 
                     try:
@@ -317,6 +356,9 @@ class OpenAIProvider(LLMProvider):
                             is_final=finish_reason is not None,
                         )
 
+                if not received_done:
+                    logger.warning("Stream ended without [DONE] sentinel — response may be incomplete")
+
         except httpx.TimeoutException as e:
             raise LLMTimeoutError(
                 f"Stream timed out after {self.config.timeout}s: {e}",
@@ -329,9 +371,9 @@ class OpenAIProvider(LLMProvider):
                 provider=self.provider_name,
                 model=self.model_name,
             )
-        except (LLMAuthenticationError, LLMRateLimitError, LLMTimeoutError, LLMResponseError):
+        except (LLMAuthenticationError, LLMRateLimitError, LLMTimeoutError, LLMResponseError, LLMContextLengthError):
             raise
-        except Exception as e:
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError) as e:
             raise LLMConnectionError(
                 f"Stream failed: {e}",
                 provider=self.provider_name,

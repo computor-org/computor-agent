@@ -93,6 +93,7 @@ class ContextBuilder:
         reference_path: Optional[Path] = None,
         course_content: Optional[CourseContentStudentGet] = None,
         course_member_id: Optional[str] = None,
+        assignment_context: Optional["AssignmentContext"] = None,
     ) -> ConversationContext:
         """
         Build context for a message trigger.
@@ -104,6 +105,7 @@ class ContextBuilder:
             reference_path: Path to reference solution (if enabled)
             course_content: Pre-fetched CourseContentStudentGet to avoid redundant API calls
             course_member_id: Course member ID (for efficient data extraction)
+            assignment_context: Assignment context from dev mode (skips API calls for description)
 
         Returns:
             ConversationContext ready for processing
@@ -125,6 +127,7 @@ class ContextBuilder:
             reference_path=reference_path,
             course_content=course_content,
             course_member_id=course_member_id,
+            assignment_context=assignment_context,
         )
 
     async def _build_context(
@@ -135,13 +138,24 @@ class ContextBuilder:
         reference_path: Optional[Path],
         course_content: Optional[CourseContentStudentGet] = None,
         course_member_id: Optional[str] = None,
+        assignment_context: Optional["AssignmentContext"] = None,
     ) -> ConversationContext:
         """Build the full context with all gathered data."""
         # If course_content is provided, extract student and assignment info directly
         # This avoids redundant API calls to /submission-groups, /submission-group-members, /course-contents
         if course_content is not None:
             student_info = self._extract_student_info(course_content, course_member_id)
-            assignment_info = await self._extract_assignment_info(course_content)
+            # Use assignment_context description if available (dev mode), skip API call
+            if assignment_context:
+                assignment_info = AssignmentInfo(
+                    course_content_id=course_content.id,
+                    title=assignment_context.title,
+                    description=assignment_context.readme_content,
+                    course_id=course_content.course_id,
+                    course_title=None,
+                )
+            else:
+                assignment_info = await self._extract_assignment_info(course_content)
         else:
             # Fallback: Gather data via API calls (for backward compatibility)
             student_info = await self._get_student_info(submission_group_id)
@@ -648,7 +662,7 @@ class ContextBuilder:
                 # Only include code files
                 if file_path.is_file() and file_path.suffix.lower() in code_extensions:
                     try:
-                        content = file_path.read_text(errors="replace")
+                        content = file_path.read_text(encoding="utf-8", errors="replace")
                         lines = content.count("\n") + 1
 
                         # Check if adding this file would exceed limit
@@ -694,10 +708,20 @@ class ContextBuilder:
             return False
 
         try:
-            notes_dir = Path(self.config.student_notes_dir)
+            notes_dir = Path(self.config.student_notes_dir).resolve()
             notes_dir.mkdir(parents=True, exist_ok=True)
 
-            notes_path = notes_dir / f"{user_id}.txt"
+            # Sanitize user_id to prevent path traversal
+            safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "-_")
+            if not safe_user_id:
+                logger.warning(f"Invalid user_id for notes: {user_id!r}")
+                return False
+
+            notes_path = (notes_dir / f"{safe_user_id}.txt").resolve()
+            if not str(notes_path).startswith(str(notes_dir)):
+                logger.warning(f"Path traversal attempt in student notes: {user_id!r}")
+                return False
+
             notes_path.write_text(notes)
             return True
         except Exception as e:

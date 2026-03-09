@@ -196,17 +196,9 @@ class TutorAgent:
                 reference_path=reference_path,
                 course_content=course_content,
                 course_member_id=course_member_id,
+                assignment_context=assignment_context,
             )
             context.context_id = context_id
-
-            # Enhance context with assignment info from dev mode
-            if assignment_context and not context.assignment:
-                from computor_agent.tutor.context_builder import AssignmentInfo
-                context.assignment = AssignmentInfo(
-                    title=assignment_context.title,
-                    description=assignment_context.readme_content,
-                    directory=assignment_context.identifier,
-                )
 
             # Run security check
             security_result = await self.security_gate.check(context)
@@ -226,7 +218,9 @@ class TutorAgent:
             classification = await self.intent_classifier.classify(context)
 
             # Check if we need to download submission code for code-related intents
-            await self._ensure_code_context(context, classification)
+            # Skip in dev mode (assignment_context set) - no real API to download from
+            if not assignment_context:
+                await self._ensure_code_context(context, classification)
 
             # Get strategy for classification (handles None intent with fallback)
             strategy = self.strategy_registry.get_strategy(classification)

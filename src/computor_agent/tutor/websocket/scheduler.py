@@ -503,16 +503,16 @@ class WebSocketScheduler:
             logger.debug(f"Already processed message {message_id}")
             return
 
-        # Check if already processing
+        # Check if already processing (must set flag before any await)
         if state.processing:
             logger.debug(f"Already processing {submission_group_id}")
             return
 
+        state.processing = True
         logger.info(f"Message trigger detected for {submission_group_id}: {data.get('title', '')[:50]}")
 
         # Process with semaphore and typing indicator
         async with self._semaphore:
-            state.processing = True
             try:
                 # Use typing_channel (submission_group:...) for typing indicator
                 async with self._typing_manager.typing(typing_channel):

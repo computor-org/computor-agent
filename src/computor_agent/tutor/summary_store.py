@@ -138,9 +138,15 @@ class SummaryStore:
 
     def _get_entity_file(self, entity_type: str, entity_id: str) -> Path:
         """Get the file path for an entity."""
-        # Sanitize entity_id to be filesystem-safe
-        safe_id = entity_id.replace("/", "_").replace("\\", "_")
-        return self._get_entity_dir(entity_type) / f"{safe_id}.json"
+        # Sanitize entity_id: keep only alphanumeric, hyphens, underscores
+        safe_id = "".join(c for c in entity_id if c.isalnum() or c in "-_")
+        if not safe_id:
+            raise ValueError(f"Invalid entity_id: {entity_id!r}")
+        entity_dir = self._get_entity_dir(entity_type).resolve()
+        file_path = (entity_dir / f"{safe_id}.json").resolve()
+        if not str(file_path).startswith(str(entity_dir)):
+            raise ValueError(f"Path traversal detected in entity_id: {entity_id!r}")
+        return file_path
 
     def save(self, note: AgentNote) -> None:
         """
@@ -162,10 +168,12 @@ class SummaryStore:
         # Append new note
         notes.append(note.to_dict())
 
-        # Write back
+        # Write atomically via temp file + rename
         try:
-            with open(file_path, "w") as f:
+            tmp_path = file_path.with_suffix(".json.tmp")
+            with open(tmp_path, "w") as f:
                 json.dump(notes, f, indent=2)
+            tmp_path.replace(file_path)
 
             logger.debug(
                 f"Saved note for {note.entity_type}/{note.entity_id}"

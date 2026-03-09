@@ -89,7 +89,7 @@ def cli():
 @click.option(
     "--temperature",
     "-t",
-    type=float,
+    type=click.FloatRange(0.0, 2.0),
     default=0.7,
     help="Sampling temperature (0.0-2.0)",
 )
@@ -889,7 +889,7 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
             logger.info("Shutdown signal received")
             shutdown_event.set()
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, signal_handler)
 
@@ -932,7 +932,8 @@ async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket:
             logger.info("WebSocket scheduler exited")
         except Exception as e:
             error_str = str(e)
-            if "401" in error_str or "Unauthorized" in error_str:
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            if status_code == 401 or "401" in error_str or "Unauthorized" in error_str:
                 logger.error("Authentication failed. Please check your credentials and try again.")
                 logger.error("Run 'computor-agent login' to re-authenticate.")
             else:
@@ -950,7 +951,8 @@ async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket:
             await asyncio.Event().wait()
         except Exception as e:
             error_str = str(e)
-            if "401" in error_str or "Unauthorized" in error_str:
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            if status_code == 401 or "401" in error_str or "Unauthorized" in error_str:
                 logger.error("Authentication failed. Please check your credentials and try again.")
                 logger.error("Run 'computor-agent login' to re-authenticate.")
             else:

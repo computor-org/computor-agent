@@ -475,9 +475,12 @@ class GitCredentialsStore:
         else:
             content = json.dumps(data, indent=2)
 
-        # Write with restricted permissions (owner only)
-        path.write_text(content)
-        os.chmod(path, 0o600)
+        # Write with restricted permissions atomically
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
 
     @classmethod
     def from_env(cls, prefix: str = "GIT_CRED_") -> "GitCredentialsStore":

@@ -494,9 +494,12 @@ class ComputorConfig(BaseModel):
         else:
             content = json.dumps(data, indent=2)
 
-        # Write with restricted permissions
-        path.write_text(content)
-        os.chmod(path, 0o600)
+        # Write with restricted permissions atomically
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
 
     def get_tutor_config(self) -> Any:
         """

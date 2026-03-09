@@ -424,14 +424,19 @@ class SecurityGate:
             initial_detection=initial_detection,
         )
 
-        # Fail safe - if confirmation fails, treat as confirmed (block suspicious content)
+        # Fail safe - if confirmation call fails, default to NOT confirming the threat
+        # (the initial detection already flagged it; blocking on LLM failure causes
+        # false positives when the LLM service is degraded)
         data = await self._llm_json_call(
             prompt,
             max_tokens=500,
-            default_on_failure={"confirmed": True},
+            default_on_failure={"confirmed": False},
         )
 
-        return data.get("confirmed", False)
+        confirmed = data.get("confirmed", False)
+        if confirmed:
+            logger.warning("Security confirmation: threat confirmed by LLM")
+        return confirmed
 
     def _parse_detection_data(
         self,
@@ -468,40 +473,8 @@ class SecurityGate:
 
     def _extract_json(self, text: str) -> str:
         """Extract JSON object from text that may contain other content."""
-        import re
-
-        # Find the first { and last } to extract JSON
-        start = text.find("{")
-        end = text.rfind("}") + 1
-
-        if start == -1 or end == 0:
-            raise ValueError("No JSON object found in response")
-
-        json_str = text[start:end]
-
-        # Sanitize control characters that small LLMs sometimes produce
-        # Replace literal newlines/tabs inside strings with escaped versions
-        # This handles cases where LLM outputs unescaped control chars in JSON strings
-        json_str = re.sub(r'[\x00-\x1f\x7f]', lambda m: f'\\u{ord(m.group()):04x}', json_str)
-
-        # Fix common LLM JSON issues:
-        # 1. Replace single quotes with double quotes (but not inside strings)
-        # 2. Quote unquoted keys
-        # This is a best-effort fix for small LLMs that output JS-style objects
-        try:
-            # First try parsing as-is
-            json.loads(json_str)
-            return json_str
-        except json.JSONDecodeError:
-            # Try fixing single quotes -> double quotes
-            # Simple approach: replace ' with " when it looks like a JSON delimiter
-            fixed = re.sub(r"'([^']*)'(\s*[:\],}])", r'"\1"\2', json_str)
-            fixed = re.sub(r"(\{|\[|,)\s*'([^']*)'", r'\1"\2"', fixed)
-
-            # Try to fix unquoted keys: {key: -> {"key":
-            fixed = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', fixed)
-
-            return fixed
+        from computor_agent.tutor.json_utils import extract_json
+        return extract_json(text)
 
     def _parse_threat_type(self, type_str: str) -> ThreatType:
         """Parse threat type string to enum."""
