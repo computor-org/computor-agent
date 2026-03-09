@@ -320,6 +320,7 @@ class OpenAIProvider(LLMProvider):
                     await response.aread()
                     self._handle_error_response(response)
 
+                received_done = False
                 async for line in response.aiter_lines():
                     if not line:
                         continue
@@ -329,6 +330,7 @@ class OpenAIProvider(LLMProvider):
                         line = line[6:]  # Remove "data: " prefix
 
                     if line == "[DONE]":
+                        received_done = True
                         break
 
                     try:
@@ -353,6 +355,9 @@ class OpenAIProvider(LLMProvider):
                             finish_reason=finish_reason,
                             is_final=finish_reason is not None,
                         )
+
+                if not received_done:
+                    logger.warning("Stream ended without [DONE] sentinel — response may be incomplete")
 
         except httpx.TimeoutException as e:
             raise LLMTimeoutError(
