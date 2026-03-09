@@ -424,14 +424,19 @@ class SecurityGate:
             initial_detection=initial_detection,
         )
 
-        # Fail safe - if confirmation fails, treat as confirmed (block suspicious content)
+        # Fail safe - if confirmation call fails, default to NOT confirming the threat
+        # (the initial detection already flagged it; blocking on LLM failure causes
+        # false positives when the LLM service is degraded)
         data = await self._llm_json_call(
             prompt,
             max_tokens=500,
-            default_on_failure={"confirmed": True},
+            default_on_failure={"confirmed": False},
         )
 
-        return data.get("confirmed", False)
+        confirmed = data.get("confirmed", False)
+        if confirmed:
+            logger.warning("Security confirmation: threat confirmed by LLM")
+        return confirmed
 
     def _parse_detection_data(
         self,
