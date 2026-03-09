@@ -226,13 +226,8 @@ class IntentClassifier:
 
     def _extract_json(self, text: str) -> str:
         """Extract JSON object from text that may contain other content."""
-        start = text.find("{")
-        end = text.rfind("}") + 1
-
-        if start == -1 or end == 0:
-            raise ValueError("No JSON object found in response")
-
-        return text[start:end]
+        from computor_agent.tutor.json_utils import extract_json
+        return extract_json(text)
 
     def _parse_intent(self, intent_str: str) -> Optional[Intent]:
         """Parse intent string to enum."""
