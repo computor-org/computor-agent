@@ -80,8 +80,19 @@ class ComputorWebSocket:
             connect_timeout: Timeout for connection handshake (seconds)
         """
         # Convert http(s) to ws(s)
-        ws_url = base_url.replace("https://", "wss://").replace("http://", "ws://")
-        self.ws_url = f"{ws_url}/ws?token={token}"
+        ws_base = base_url.replace("https://", "wss://").replace("http://", "ws://")
+        self._ws_base = f"{ws_base}/ws"
+        self._token = token
+
+    @property
+    def ws_url(self) -> str:
+        """Build full WS URL with token (avoid storing token in plain attribute)."""
+        return f"{self._ws_base}?token={self._token}"
+
+    @property
+    def _masked_ws_url(self) -> str:
+        """Return WS URL with token masked for logging."""
+        return f"{self._ws_base}?token=***"
 
         self._reconnect_delay = reconnect_delay
         self._max_reconnect_attempts = max_reconnect_attempts
@@ -114,7 +125,7 @@ class ComputorWebSocket:
         """
         while self._reconnect_count < self._max_reconnect_attempts:
             try:
-                logger.info(f"Connecting to WebSocket: {self._mask_url(self.ws_url)}")
+                logger.info(f"Connecting to WebSocket: {self._masked_ws_url}")
                 self._ws = await websockets.connect(
                     self.ws_url,
                     ping_interval=None,  # Disable library ping, we handle it ourselves
@@ -151,7 +162,7 @@ class ComputorWebSocket:
 
                 logger.warning(
                     f"WebSocket connection timed out after {self._connect_timeout}s\n"
-                    f"  Target URL: {self._mask_url(self.ws_url)}\n"
+                    f"  Target URL: {self._masked_ws_url}\n"
                     f"  Attempt: {self._reconnect_count}/{self._max_reconnect_attempts}\n"
                     f"  Next retry in: {delay:.1f}s"
                 )
@@ -389,13 +400,6 @@ class ComputorWebSocket:
             self._connected = False
             raise WebSocketError(f"Connection closed while sending: {e}") from e
 
-    def _mask_url(self, url: str) -> str:
-        """Mask the token in URL for logging."""
-        if "token=" in url:
-            parts = url.split("token=")
-            return f"{parts[0]}token=***"
-        return url
-
     def _extract_error_details(self, e: Exception) -> dict:
         """
         Extract detailed error information from various exception types.
@@ -412,7 +416,7 @@ class ComputorWebSocket:
             "errno": None,
             "host": None,
             "port": None,
-            "url": self._mask_url(self.ws_url)
+            "url": self._masked_ws_url
         }
 
         # Extract OSError details (includes connection errors)
