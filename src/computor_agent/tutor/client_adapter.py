@@ -8,7 +8,9 @@ from computor-client package instead.
 """
 
 import logging
-from typing import Any, Optional
+from typing import Optional
+
+from computor_agent.llm.base import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ class TutorLLMAdapter:
     This adapter extracts the content string from the response.
     """
 
-    def __init__(self, llm_provider: Any) -> None:
+    def __init__(self, llm_provider: LLMProvider) -> None:
         """
         Initialize the adapter.
 
@@ -55,5 +57,4 @@ class TutorLLMAdapter:
 
     async def close(self) -> None:
         """Close the underlying LLM provider."""
-        if hasattr(self._llm, "close"):
-            await self._llm.close()
+        await self._llm.close()
