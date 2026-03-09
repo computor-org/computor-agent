@@ -146,8 +146,7 @@ class TriggerChecker:
         self.course_members = course_members_client
         self.config = config or TriggerConfig()
 
-        # Cache for course_member role lookups
-        self._role_cache: dict[str, str] = {}
+
 
     async def check_message_trigger(
         self,
@@ -391,12 +390,6 @@ class TriggerChecker:
         if not user_id or not course_id:
             return None
 
-        cache_key = f"{user_id}:{course_id}"
-        if cache_key in self._role_cache:
-            # Note: cache stores role string, not full course_member
-            # For full object, we need to fetch anyway
-            pass
-
         try:
             members = await self.course_members.list(
                 user_id=user_id,
@@ -406,10 +399,6 @@ class TriggerChecker:
         except Exception as e:
             logger.warning(f"Failed to get course member: {e}")
             return None
-
-    def clear_cache(self) -> None:
-        """Clear the role cache."""
-        self._role_cache.clear()
 
     def is_student_role(self, role: str) -> bool:
         """Check if a role is a student role."""
