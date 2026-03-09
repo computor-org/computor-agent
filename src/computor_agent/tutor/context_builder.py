@@ -648,7 +648,7 @@ class ContextBuilder:
                 # Only include code files
                 if file_path.is_file() and file_path.suffix.lower() in code_extensions:
                     try:
-                        content = file_path.read_text(errors="replace")
+                        content = file_path.read_text(encoding="utf-8", errors="replace")
                         lines = content.count("\n") + 1
 
                         # Check if adding this file would exceed limit
