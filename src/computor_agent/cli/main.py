@@ -932,7 +932,8 @@ async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket:
             logger.info("WebSocket scheduler exited")
         except Exception as e:
             error_str = str(e)
-            if "401" in error_str or "Unauthorized" in error_str:
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            if status_code == 401 or "401" in error_str or "Unauthorized" in error_str:
                 logger.error("Authentication failed. Please check your credentials and try again.")
                 logger.error("Run 'computor-agent login' to re-authenticate.")
             else:
@@ -950,7 +951,8 @@ async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket:
             await asyncio.Event().wait()
         except Exception as e:
             error_str = str(e)
-            if "401" in error_str or "Unauthorized" in error_str:
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            if status_code == 401 or "401" in error_str or "Unauthorized" in error_str:
                 logger.error("Authentication failed. Please check your credentials and try again.")
                 logger.error("Run 'computor-agent login' to re-authenticate.")
             else:
