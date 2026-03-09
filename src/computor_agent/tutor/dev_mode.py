@@ -643,7 +643,7 @@ class DevelopmentScheduler:
 
 
 async def run_development_mode(
-    config_path: Path,
+    config_path: Optional[Path],
     verbose: bool = False,
     prompts_dir: Optional[Path] = None,
     assignment_path: Optional[Path] = None,
@@ -655,7 +655,7 @@ async def run_development_mode(
     Features hot reload for prompt files.
 
     Args:
-        config_path: Path to configuration file
+        config_path: Path to configuration file (None to use defaults)
         verbose: Enable verbose logging
         prompts_dir: Directory for prompt files (default: ~/.computor/prompts)
         assignment_path: Path to assignment directory (must contain meta.yaml)
@@ -668,8 +668,20 @@ async def run_development_mode(
     from computor_agent.tutor.assignment_loader import AssignmentLoader, AssignmentContext
 
     # Load configuration
-    logger.info(f"Loading config from {config_path}")
-    computor_config = ComputorConfig.from_file(config_path)
+    if config_path is not None:
+        logger.info(f"Loading config from {config_path}")
+        computor_config = ComputorConfig.from_file(config_path)
+    else:
+        from computor_agent.settings.config import BackendConfig, LLMSettings
+        console.print("[dim]No config file specified, using defaults for dev mode.[/dim]")
+        computor_config = ComputorConfig(
+            backend=BackendConfig(url="http://localhost:8000"),
+            llm=LLMSettings(
+                provider="ollama",
+                model="devstral-small",
+                base_url="http://localhost:11434/v1",
+            ),
+        )
     tutor_config = computor_config.get_tutor_config()
 
     # Load assignment context if provided
@@ -718,6 +730,26 @@ async def run_development_mode(
         temperature=computor_config.llm.temperature,
     )
     llm_provider = get_provider(llm_config)
+
+    # Health check: verify the LLM is reachable before entering interactive mode
+    try:
+        console.print(f"[dim]Checking LLM connectivity ({llm_config.provider.value} @ {llm_config.base_url})...[/dim]")
+        await llm_provider.check_health()
+        console.print("[green]✓ LLM is reachable[/green]")
+    except Exception as e:
+        console.print(
+            f"\n[bold red]Error: Cannot connect to LLM provider.[/bold red]\n"
+            f"  Provider: [yellow]{llm_config.provider.value}[/yellow]\n"
+            f"  Base URL: [yellow]{llm_config.base_url}[/yellow]\n"
+            f"  Model:    [yellow]{llm_config.model}[/yellow]\n\n"
+            f"  [dim]{e}[/dim]\n\n"
+            f"Make sure the LLM server is running. For example:\n"
+            f"  • Ollama:    [cyan]ollama serve[/cyan]  then  [cyan]ollama pull {llm_config.model}[/cyan]\n"
+            f"  • LM Studio: Start the server in the LM Studio app\n"
+        )
+        await llm_provider.close()
+        return
+
     tutor_llm = TutorLLMAdapter(llm_provider)
 
     # Create simulator and mock client

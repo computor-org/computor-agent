@@ -467,9 +467,9 @@ def tutor():
 @click.option(
     "--config",
     "-c",
-    type=click.Path(exists=True),
-    default="config.yaml",
-    help="Path to config file (default: config.yaml).",
+    type=click.Path(),
+    default=None,
+    help="Path to config file (default: config.yaml). Optional in dev mode.",
 )
 @click.option(
     "--verbose",
@@ -500,7 +500,7 @@ def tutor():
     help="[Dev mode] Path to assignment directory (must contain meta.yaml).",
 )
 def messaging(
-    config: str,
+    config: Optional[str],
     verbose: bool,
     dry_run: bool,
     dev: bool,
@@ -526,7 +526,25 @@ def messaging(
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
 
-    config_path = Path(config)
+    # Resolve config path: try explicit, then config.yaml, then example.yaml
+    if config is not None:
+        config_path = Path(config)
+        if not config_path.exists():
+            console.print(f"[bold red]Error:[/bold red] Config file '{config}' does not exist.")
+            sys.exit(1)
+    else:
+        if Path("config.yaml").exists():
+            config_path = Path("config.yaml")
+        elif Path("example.yaml").exists():
+            config_path = Path("example.yaml")
+        elif dev:
+            config_path = None  # type: ignore[assignment]
+        else:
+            console.print(
+                "[bold red]Error:[/bold red] No config file found. "
+                "Create a config.yaml or pass one with -c."
+            )
+            sys.exit(1)
 
     # Check if running in development mode
     if dev:
