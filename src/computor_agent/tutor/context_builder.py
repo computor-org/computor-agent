@@ -93,6 +93,7 @@ class ContextBuilder:
         reference_path: Optional[Path] = None,
         course_content: Optional[CourseContentStudentGet] = None,
         course_member_id: Optional[str] = None,
+        assignment_context: Optional["AssignmentContext"] = None,
     ) -> ConversationContext:
         """
         Build context for a message trigger.
@@ -104,6 +105,7 @@ class ContextBuilder:
             reference_path: Path to reference solution (if enabled)
             course_content: Pre-fetched CourseContentStudentGet to avoid redundant API calls
             course_member_id: Course member ID (for efficient data extraction)
+            assignment_context: Assignment context from dev mode (skips API calls for description)
 
         Returns:
             ConversationContext ready for processing
@@ -125,6 +127,7 @@ class ContextBuilder:
             reference_path=reference_path,
             course_content=course_content,
             course_member_id=course_member_id,
+            assignment_context=assignment_context,
         )
 
     async def _build_context(
@@ -135,13 +138,24 @@ class ContextBuilder:
         reference_path: Optional[Path],
         course_content: Optional[CourseContentStudentGet] = None,
         course_member_id: Optional[str] = None,
+        assignment_context: Optional["AssignmentContext"] = None,
     ) -> ConversationContext:
         """Build the full context with all gathered data."""
         # If course_content is provided, extract student and assignment info directly
         # This avoids redundant API calls to /submission-groups, /submission-group-members, /course-contents
         if course_content is not None:
             student_info = self._extract_student_info(course_content, course_member_id)
-            assignment_info = await self._extract_assignment_info(course_content)
+            # Use assignment_context description if available (dev mode), skip API call
+            if assignment_context:
+                assignment_info = AssignmentInfo(
+                    course_content_id=course_content.id,
+                    title=assignment_context.title,
+                    description=assignment_context.readme_content,
+                    course_id=course_content.course_id,
+                    course_title=None,
+                )
+            else:
+                assignment_info = await self._extract_assignment_info(course_content)
         else:
             # Fallback: Gather data via API calls (for backward compatibility)
             student_info = await self._get_student_info(submission_group_id)
