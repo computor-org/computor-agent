@@ -200,8 +200,15 @@ class OpenAIProvider(LLMProvider):
                 self._handle_error_response(response)
 
             data = response.json()
-            choice = data["choices"][0]
-            content = choice["message"]["content"]
+            choices = data.get("choices", [])
+            if not choices:
+                raise LLMResponseError(
+                    "LLM returned empty choices array",
+                    provider=self.provider_name,
+                    model=self.model_name,
+                )
+            choice = choices[0]
+            content = choice.get("message", {}).get("content", "")
 
             logger.debug(f"LLM Response:\n{content}")
 
