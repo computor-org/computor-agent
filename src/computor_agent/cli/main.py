@@ -889,7 +889,7 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
             logger.info("Shutdown signal received")
             shutdown_event.set()
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, signal_handler)
 
