@@ -89,7 +89,7 @@ def cli():
 @click.option(
     "--temperature",
     "-t",
-    type=float,
+    type=click.FloatRange(0.0, 2.0),
     default=0.7,
     help="Sampling temperature (0.0-2.0)",
 )
