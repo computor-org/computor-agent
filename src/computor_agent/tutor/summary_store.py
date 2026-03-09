@@ -162,10 +162,12 @@ class SummaryStore:
         # Append new note
         notes.append(note.to_dict())
 
-        # Write back
+        # Write atomically via temp file + rename
         try:
-            with open(file_path, "w") as f:
+            tmp_path = file_path.with_suffix(".json.tmp")
+            with open(tmp_path, "w") as f:
                 json.dump(notes, f, indent=2)
+            tmp_path.replace(file_path)
 
             logger.debug(
                 f"Saved note for {note.entity_type}/{note.entity_id}"
