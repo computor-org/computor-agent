@@ -105,7 +105,7 @@ class OpenAIProvider(LLMProvider):
             else:
                 detail = error.get("message", str(error_data))
                 error_type = error.get("type")
-        except Exception:
+        except (json.JSONDecodeError, KeyError, AttributeError, TypeError):
             detail = response.text or f"HTTP {status_code}"
             error_type = None
 
@@ -232,9 +232,9 @@ class OpenAIProvider(LLMProvider):
                 provider=self.provider_name,
                 model=self.model_name,
             )
-        except (LLMAuthenticationError, LLMRateLimitError, LLMTimeoutError, LLMResponseError):
+        except (LLMAuthenticationError, LLMRateLimitError, LLMTimeoutError, LLMResponseError, LLMContextLengthError):
             raise
-        except Exception as e:
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError) as e:
             raise LLMConnectionError(
                 f"Request failed: {e}",
                 provider=self.provider_name,
@@ -336,9 +336,9 @@ class OpenAIProvider(LLMProvider):
                 provider=self.provider_name,
                 model=self.model_name,
             )
-        except (LLMAuthenticationError, LLMRateLimitError, LLMTimeoutError, LLMResponseError):
+        except (LLMAuthenticationError, LLMRateLimitError, LLMTimeoutError, LLMResponseError, LLMContextLengthError):
             raise
-        except Exception as e:
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError) as e:
             raise LLMConnectionError(
                 f"Stream failed: {e}",
                 provider=self.provider_name,
