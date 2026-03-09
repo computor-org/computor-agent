@@ -11,7 +11,6 @@ from computor_agent.tutor import (
     PersonalityConfig,
     SecurityConfig,
     ContextConfig,
-    GradingConfig,
     Intent,
     IntentClassification,
     TriggerType,
@@ -41,7 +40,6 @@ class TestTutorConfig:
         assert config.security.enabled is True
         assert config.security.require_confirmation is True
         assert config.context.include_previous_messages == 3
-        assert config.grading.enabled is False
 
     def test_config_from_dict(self):
         """Test creating config from dict."""
@@ -58,10 +56,6 @@ class TestTutorConfig:
                 "include_previous_messages": 5,
                 "student_notes_enabled": True,
             },
-            "grading": {
-                "enabled": True,
-                "auto_submit_grade": True,
-            },
         }
 
         config = TutorConfig.from_dict(data)
@@ -72,8 +66,7 @@ class TestTutorConfig:
         assert config.security.enabled is False
         assert config.context.include_previous_messages == 5
         assert config.context.student_notes_enabled is True
-        assert config.grading.enabled is True
-        assert config.grading.auto_submit_grade is True
+
 
     def test_config_to_dict(self):
         """Test exporting config to dict."""
@@ -83,7 +76,6 @@ class TestTutorConfig:
         assert "personality" in data
         assert "security" in data
         assert "context" in data
-        assert "grading" in data
         assert "strategies" in data
 
 
@@ -98,7 +90,6 @@ class TestIntent:
         assert Intent.HELP_REVIEW.value == "help_review"
         assert Intent.SUBMISSION_REVIEW.value == "submission_review"
         assert Intent.CLARIFICATION.value == "clarification"
-        assert Intent.OTHER.value == "other"
 
 
 class TestIntentClassification:
@@ -109,23 +100,23 @@ class TestIntentClassification:
         classification = IntentClassification(
             intent=Intent.HELP_DEBUG,
             confidence=0.85,
-            reasoning="Student mentioned error message",
+            user_intent_description="Student mentioned error message",
         )
 
         assert classification.intent == Intent.HELP_DEBUG
         assert classification.confidence == 0.85
-        assert "error" in classification.reasoning
+        assert "error" in classification.user_intent_description
 
-    def test_classification_with_secondary(self):
-        """Test classification with secondary intent."""
+    def test_classification_with_none_intent(self):
+        """Test classification with no matched intent."""
         classification = IntentClassification(
-            intent=Intent.QUESTION_EXAMPLE,
-            confidence=0.6,
-            secondary_intent=Intent.QUESTION_HOWTO,
+            intent=None,
+            confidence=0.0,
+            user_intent_description="Student wants something unusual",
         )
 
-        assert classification.intent == Intent.QUESTION_EXAMPLE
-        assert classification.secondary_intent == Intent.QUESTION_HOWTO
+        assert classification.intent is None
+        assert classification.confidence == 0.0
 
 
 class TestConversationContext:
@@ -453,8 +444,6 @@ class TestSchedulerConfig:
         assert config.poll_interval_seconds == 30
         assert config.max_concurrent_processing == 5
         assert config.cooldown_seconds == 60
-        assert config.check_messages is True
-        assert config.check_submissions is True
 
     def test_custom_config(self):
         """Test custom scheduler config."""
@@ -463,9 +452,7 @@ class TestSchedulerConfig:
         config = SchedulerConfig(
             poll_interval_seconds=60,
             max_concurrent_processing=10,
-            course_ids=["course-1", "course-2"],
         )
 
         assert config.poll_interval_seconds == 60
         assert config.max_concurrent_processing == 10
-        assert config.course_ids == ["course-1", "course-2"]

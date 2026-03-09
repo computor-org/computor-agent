@@ -131,6 +131,7 @@ from computor_agent.tutor.trigger import (
     TriggerChecker,
     TriggerCheckResult,
     MessageTrigger,
+    SubmissionTrigger,
     should_tutor_respond,
     STAFF_ROLES,
 )

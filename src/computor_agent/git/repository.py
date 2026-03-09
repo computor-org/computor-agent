@@ -265,10 +265,7 @@ class GitRepository:
         path.mkdir(parents=True, exist_ok=True)
 
         try:
-            repo = Repo.init(path, bare=bare)
-            if initial_branch and not bare:
-                # Set the initial branch name
-                repo.head.reference = repo.create_head(initial_branch)
+            repo = Repo.init(path, bare=bare, initial_branch=initial_branch)
             return cls(path)
         except GitCommandError as e:
             raise GitError(
@@ -305,9 +302,9 @@ class GitRepository:
         unstaged = []
         untracked = list(self._repo.untracked_files)
 
-        # Get staged changes (index vs HEAD)
+        # Get staged changes (HEAD vs index)
         if self._repo.head.is_valid():
-            for diff in self._repo.index.diff(self._repo.head.commit):
+            for diff in self._repo.index.diff(self._repo.head.commit, R=True):
                 staged.append(self._diff_to_file_change(diff, staged=True))
 
         # Get unstaged changes (working tree vs index)
@@ -409,7 +406,7 @@ class GitRepository:
             paths = [paths]
 
         try:
-            self._repo.index.add(paths)
+            self._repo.git.add(*paths)
         except GitCommandError as e:
             raise GitError(
                 f"Failed to stage files: {e.stderr}",
