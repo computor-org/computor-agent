@@ -84,16 +84,6 @@ class ComputorWebSocket:
         self._ws_base = f"{ws_base}/ws"
         self._token = token
 
-    @property
-    def ws_url(self) -> str:
-        """Build full WS URL with token (avoid storing token in plain attribute)."""
-        return f"{self._ws_base}?token={self._token}"
-
-    @property
-    def _masked_ws_url(self) -> str:
-        """Return WS URL with token masked for logging."""
-        return f"{self._ws_base}?token=***"
-
         self._reconnect_delay = reconnect_delay
         self._max_reconnect_attempts = max_reconnect_attempts
         self._connect_timeout = connect_timeout
@@ -103,6 +93,20 @@ class ComputorWebSocket:
         self._reconnect_count = 0
         self._user_id: Optional[str] = None
         self._ping_task: Optional[asyncio.Task] = None
+
+    def update_token(self, token: str) -> None:
+        """Update the authentication token (e.g., after a refresh)."""
+        self._token = token
+
+    @property
+    def ws_url(self) -> str:
+        """Build full WS URL with token (avoid storing token in plain attribute)."""
+        return f"{self._ws_base}?token={self._token}"
+
+    @property
+    def _masked_ws_url(self) -> str:
+        """Return WS URL with token masked for logging."""
+        return f"{self._ws_base}?token=***"
 
     @property
     def is_connected(self) -> bool:

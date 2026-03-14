@@ -9,7 +9,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Optional, Protocol, Union
 
 from computor_types.websocket import WSMessageNew
 
@@ -73,6 +73,7 @@ class WebSocketScheduler:
         max_concurrent_processing: int = 5,
         reconnect_delay_seconds: float = 30.0,
         max_reconnect_attempts: int = 0,  # 0 = unlimited
+        token_provider: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
     ) -> None:
         """
         Initialize the WebSocket scheduler.
@@ -87,9 +88,12 @@ class WebSocketScheduler:
             max_concurrent_processing: Maximum concurrent message processing
             reconnect_delay_seconds: Delay between reconnection attempts
             max_reconnect_attempts: Maximum reconnection attempts (0 = unlimited)
+            token_provider: Async callable that returns a fresh token for WebSocket auth.
+                Called before each reconnection attempt. If None, the original token is reused.
         """
         self.client = client
         self._ws = ws
+        self._token_provider = token_provider
         self.trigger_config = trigger_config or TriggerConfig()
         self.on_message_trigger = on_message_trigger
         self._cooldown_seconds = cooldown_seconds
@@ -382,6 +386,18 @@ class WebSocketScheduler:
                     await self._ws.disconnect()
                 except Exception:
                     pass
+
+                # Refresh token before reconnecting
+                if self._token_provider:
+                    try:
+                        new_token = await self._token_provider()
+                        if new_token:
+                            self._ws.update_token(new_token)
+                            logger.info("Refreshed WebSocket authentication token")
+                        else:
+                            logger.warning("Token provider returned no token, using existing token")
+                    except Exception as e:
+                        logger.warning(f"Failed to refresh token: {e}, using existing token")
 
                 # Reconnect
                 await self._ws.connect()

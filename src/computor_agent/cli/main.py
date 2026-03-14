@@ -866,12 +866,43 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
             from computor_agent.tutor.websocket import ComputorWebSocket, WebSocketScheduler
 
             # Get token for WebSocket auth
+            # For API token auth: use the static token
+            # For username/password auth: extract the access token from the logged-in client
             token = computor_config.backend.get_api_token()
+            if not token:
+                # Try to get access token from the authenticated client session
+                token = await client._auth_provider.get_access_token()
+                if token:
+                    logger.info("Using session access token for WebSocket authentication")
+
             if token:
                 ws = ComputorWebSocket(
                     base_url=computor_config.backend.url,
                     token=token,
                 )
+
+                # Create token provider for refreshing on reconnect
+                async def _provide_fresh_token() -> str | None:
+                    """Get a fresh token for WebSocket reconnection."""
+                    # For API token auth, the token is static
+                    api_token = computor_config.backend.get_api_token()
+                    if api_token:
+                        return api_token
+                    # For username/password auth, refresh via the client
+                    new_token = await client._auth_provider.refresh_token()
+                    if new_token:
+                        return new_token
+                    # Refresh failed — try re-login
+                    try:
+                        await client.login(
+                            username=computor_config.backend.username,
+                            password=computor_config.backend.get_password(),
+                        )
+                        return await client._auth_provider.get_access_token()
+                    except Exception as e:
+                        logger.error(f"Re-login failed during token refresh: {e}")
+                        return None
+
                 scheduler = WebSocketScheduler(
                     client=client,
                     ws=ws,
@@ -879,11 +910,12 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
                     on_message_trigger=on_message_trigger_websocket,
                     cooldown_seconds=scheduler_config.cooldown_seconds,
                     max_concurrent_processing=scheduler_config.max_concurrent_processing,
+                    token_provider=_provide_fresh_token,
                 )
                 use_websocket = True
                 logger.info("Using WebSocket for real-time events")
             else:
-                logger.info("No API token available, WebSocket requires token authentication")
+                logger.info("No authentication token available for WebSocket")
 
         except ImportError as e:
             logger.warning(f"WebSocket support not available ({e}), using HTTP polling")
