@@ -455,9 +455,11 @@ class WebSocketScheduler:
         """Route event to appropriate handler."""
         event_type = event.get("type", "")
 
-        # Log routine events at DEBUG level to reduce noise
-        if event_type not in ("system:ping", "system:pong"):
-            logger.debug(f"WebSocket event received: type={event_type}")
+        # Log routine events at DEBUG level, meaningful events at INFO
+        if event_type in ("system:ping", "system:pong"):
+            logger.debug(f"WebSocket event: {event_type}")
+        else:
+            logger.info(f"WebSocket event received: type={event_type}")
 
         if event_type == "message:new":
             await self._handle_message_new(event)
@@ -491,8 +493,8 @@ class WebSocketScheduler:
             channel = event_channel
             data = event_data
 
-        # Log for debugging
-        logger.debug(f"Received message:new event - channel={channel}")
+        # Log incoming message events at INFO level for visibility
+        logger.info(f"Received message:new event - channel={channel}")
         logger.debug(f"Message data keys: {list(data.keys())}")
 
         # Get submission_group_id from message data or channel
@@ -520,12 +522,12 @@ class WebSocketScheduler:
         logger.debug(f"Configured request tags: {[str(t) for t in self.trigger_config.request_tags]}")
 
         if not self._has_trigger_tags(data):
-            logger.debug(f"Message does not have trigger tags")
+            logger.info(f"Message does not have trigger tags, skipping (title='{title}')")
             return
 
         # Check if this is an AI response (to avoid responding to ourselves)
         if self._is_ai_response(data):
-            logger.debug(f"Ignoring AI response message")
+            logger.info(f"Ignoring AI response message (title='{title}')")
             return
 
         # Note: broadcast events don't include is_read (it's user-specific),
@@ -626,8 +628,13 @@ class WebSocketScheduler:
 
     @staticmethod
     def _match_tag(tag_str: str, title: str) -> bool:
-        """Match a tag as a standalone token (not as substring of another tag)."""
-        return bool(re.search(r'(?<!\S)' + re.escape(tag_str) + r'(?!\S)', title))
+        """Match a tag as a standalone token (not as part of a longer tag like #ai::request-rejected).
+
+        Prevents matching when followed by word chars, hyphens, or colons
+        (which would indicate a continuation like -rejected or ::sub),
+        but allows punctuation like commas, periods, etc.
+        """
+        return bool(re.search(r'(?<!\S)' + re.escape(tag_str) + r'(?![\w:-])', title))
 
     def _has_trigger_tags(self, message_data: dict) -> bool:
         """Check if message has any of the configured trigger tags."""
@@ -673,11 +680,16 @@ class WebSocketScheduler:
         return self._locks[submission_group_id]
 
     def _evict_stale_states(self) -> None:
-        """Remove processing states older than STATE_MAX_AGE to prevent memory leaks."""
+        """Remove processing states older than STATE_MAX_AGE to prevent memory leaks.
+
+        Only evicts states that have been processed (last_processed is set) and are
+        older than STATE_MAX_AGE. States with last_processed=None are freshly created
+        and should not be evicted.
+        """
         now = datetime.now()
         stale_ids = [
             sid for sid, state in self._states.items()
-            if state.last_processed is None or (now - state.last_processed) > STATE_MAX_AGE
+            if state.last_processed is not None and (now - state.last_processed) > STATE_MAX_AGE
         ]
         for sid in stale_ids:
             del self._states[sid]
