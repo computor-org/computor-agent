@@ -562,10 +562,16 @@ class WebSocketScheduler:
 
             # Process with semaphore and typing indicator
             async with self._semaphore:
-                async with self._typing_manager.typing(typing_channel):
-                    await self._process_message(submission_group_id, data, typing_channel)
+                try:
+                    async with self._typing_manager.typing(typing_channel):
+                        await self._process_message(submission_group_id, data, typing_channel)
+                except Exception as e:
+                    # Processing failed (e.g., LLM down) — don't mark as read
+                    # so the message will be retried on next catch-up
+                    logger.error(f"Failed to process message {message_id}: {e}")
+                    return
 
-                # Mark the message as read after successful processing
+                # Only mark as read and update state after successful processing
                 await self._ws.mark_read(typing_channel, message_id)
 
                 state.last_message_id = message_id

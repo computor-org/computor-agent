@@ -851,12 +851,17 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
 
             # For WebSocket, we may need to fetch course_content if needed
             # For now, pass None - the agent can work without it
-            await agent.process_message(
+            processing_result = await agent.process_message(
                 submission_group_id=submission_group_id,
                 message=message,
                 course_content=course_content,
                 course_member_id=None,
             )
+
+            if not processing_result.success:
+                raise RuntimeError(
+                    f"Message processing failed: {processing_result.error}"
+                )
 
         # Try WebSocket first, fall back to HTTP polling
         scheduler = None
