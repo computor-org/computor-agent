@@ -32,14 +32,37 @@ load_dotenv()
 console = Console()
 
 
-def setup_logging(verbose: bool = False) -> None:
-    """Setup rich logging."""
+def setup_logging(verbose: bool = False, log_file: Optional[str] = None) -> None:
+    """Setup rich logging with optional file output."""
     level = logging.DEBUG if verbose else logging.INFO
+
+    handlers: list[logging.Handler] = [
+        RichHandler(console=console, rich_tracebacks=True),
+    ]
+
+    if log_file:
+        from logging.handlers import RotatingFileHandler
+
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=3,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+        file_handler.setLevel(level)
+        handlers.append(file_handler)
+
     logging.basicConfig(
         level=level,
         format="%(message)s",
         datefmt="[%X]",
-        handlers=[RichHandler(console=console, rich_tracebacks=True)],
+        handlers=handlers,
     )
     # Reduce noise from third-party libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -499,6 +522,13 @@ def tutor():
     default=None,
     help="[Dev mode] Path to assignment directory (must contain meta.yaml).",
 )
+@click.option(
+    "--log-file",
+    "-l",
+    type=click.Path(),
+    default=None,
+    help="Log output to file (rotating, 10MB max, 3 backups).",
+)
 def messaging(
     config: Optional[str],
     verbose: bool,
@@ -506,6 +536,7 @@ def messaging(
     dev: bool,
     prompts_dir: Optional[str],
     assignment: Optional[str],
+    log_file: Optional[str],
 ):
     """
     Start the messaging tutor agent.
@@ -522,9 +553,15 @@ def messaging(
 
         # Dev mode with assignment context
         computor-agent tutor messaging --dev --assignment ./my-assignment
+
+        # With file logging
+        computor-agent tutor messaging -v -l tutor.log
     """
-    setup_logging(verbose)
+    setup_logging(verbose, log_file=log_file)
     logger = logging.getLogger(__name__)
+
+    if log_file:
+        logger.info(f"Logging to file: {log_file}")
 
     # Resolve config path: try explicit, then config.yaml, then example.yaml
     if config is not None:
