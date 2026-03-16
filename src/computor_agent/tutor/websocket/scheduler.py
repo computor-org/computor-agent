@@ -7,6 +7,7 @@ subscribes to course channels, and processes messages in real-time.
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional, Protocol, Union
@@ -20,13 +21,16 @@ from computor_agent.tutor.websocket.typing_manager import TypingManager
 logger = logging.getLogger(__name__)
 
 
+MAX_AUTH_FAILURES = 3
+STATE_MAX_AGE = timedelta(hours=24)
+
+
 @dataclass
 class ProcessingState:
     """Tracks processing state for a submission group."""
 
     submission_group_id: str
     last_processed: Optional[datetime] = None
-    processing: bool = False
     last_message_id: Optional[str] = None
 
 
@@ -105,10 +109,12 @@ class WebSocketScheduler:
 
         # State tracking
         self._states: dict[str, ProcessingState] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
         self._course_ids: list[str] = []
         self._subscribed_channels: set[str] = set()  # Track subscribed channels
         self._running = False
         self._reconnect_count = 0
+        self._consecutive_auth_failures = 0
         self._event_task: Optional[asyncio.Task] = None
 
     @property
@@ -239,6 +245,8 @@ class WebSocketScheduler:
         that were sent while the agent was offline.
         """
         logger.info("Checking for unread messages (catch-up)...")
+
+        self._evict_stale_states()
 
         if not self._course_ids:
             logger.debug("No courses to check for unread messages")
@@ -388,16 +396,35 @@ class WebSocketScheduler:
                     pass
 
                 # Refresh token before reconnecting
+                token_ok = True
                 if self._token_provider:
                     try:
                         new_token = await self._token_provider()
                         if new_token:
                             self._ws.update_token(new_token)
+                            self._consecutive_auth_failures = 0
                             logger.info("Refreshed WebSocket authentication token")
                         else:
-                            logger.warning("Token provider returned no token, using existing token")
+                            self._consecutive_auth_failures += 1
+                            token_ok = False
+                            logger.warning(
+                                f"Token provider returned no token "
+                                f"({self._consecutive_auth_failures}/{MAX_AUTH_FAILURES} failures)"
+                            )
                     except Exception as e:
-                        logger.warning(f"Failed to refresh token: {e}, using existing token")
+                        self._consecutive_auth_failures += 1
+                        token_ok = False
+                        logger.warning(
+                            f"Failed to refresh token: {e} "
+                            f"({self._consecutive_auth_failures}/{MAX_AUTH_FAILURES} failures)"
+                        )
+
+                    if self._consecutive_auth_failures >= MAX_AUTH_FAILURES:
+                        logger.error(
+                            "Authentication failed repeatedly. "
+                            "Please check your credentials and restart the agent."
+                        )
+                        return False
 
                 # Reconnect
                 await self._ws.connect()
@@ -408,8 +435,9 @@ class WebSocketScheduler:
                     await self._ws.subscribe(channels)
                     logger.info(f"Re-subscribed to {len(channels)} channel(s)")
 
-                # Reset reconnect count on successful connection
+                # Reset counters on successful connection
                 self._reconnect_count = 0
+                self._consecutive_auth_failures = 0
                 logger.info("WebSocket reconnected successfully")
 
                 # Process any unread messages that arrived while disconnected
@@ -435,6 +463,7 @@ class WebSocketScheduler:
             await self._handle_message_new(event)
         elif event_type == "channel:subscribed":
             channels = event.get("channels", [])
+            self._ws.confirm_subscription(channels)
             logger.debug(f"Confirmed subscription to: {channels}")
         elif event_type == "channel:error":
             logger.warning(f"Channel error: {event}")
@@ -480,13 +509,6 @@ class WebSocketScheduler:
         # Build channel for typing indicator (use submission_group format)
         typing_channel = f"submission_group:{submission_group_id}"
 
-        # Subscribe to the submission_group channel if not already subscribed
-        # This is required before sending typing events
-        if typing_channel not in self._subscribed_channels:
-            await self._ws.subscribe([typing_channel])
-            self._subscribed_channels.add(typing_channel)
-            logger.debug(f"Subscribed to {typing_channel} for typing events")
-
         # Check cooldown
         if self._should_skip(submission_group_id):
             logger.debug(f"Skipping {submission_group_id} due to cooldown")
@@ -506,10 +528,8 @@ class WebSocketScheduler:
             logger.debug(f"Ignoring AI response message")
             return
 
-        # Check if message is already read
-        if data.get("read", False):
-            logger.debug(f"Ignoring already-read message")
-            return
+        # Note: broadcast events don't include is_read (it's user-specific),
+        # so deduplication relies on last_message_id and mark_read after processing.
 
         message_id = data.get("id", "")
         state = self._get_or_create_state(submission_group_id)
@@ -519,18 +539,29 @@ class WebSocketScheduler:
             logger.debug(f"Already processed message {message_id}")
             return
 
-        # Check if already processing (must set flag before any await)
-        if state.processing:
+        # Use per-group lock to prevent concurrent processing of same group
+        lock = self._get_or_create_lock(submission_group_id)
+        if lock.locked():
             logger.debug(f"Already processing {submission_group_id}")
             return
 
-        state.processing = True
-        logger.info(f"Message trigger detected for {submission_group_id}: {data.get('title', '')[:50]}")
+        async with lock:
+            # Re-check after acquiring lock (another event may have processed it)
+            if state.last_message_id == message_id:
+                return
 
-        # Process with semaphore and typing indicator
-        async with self._semaphore:
-            try:
-                # Use typing_channel (submission_group:...) for typing indicator
+            logger.info(f"Message trigger detected for {submission_group_id}: {data.get('title', '')[:50]}")
+
+            # Subscribe to submission_group channel if needed and wait for confirmation
+            if typing_channel not in self._subscribed_channels:
+                await self._ws.subscribe([typing_channel])
+                self._subscribed_channels.add(typing_channel)
+                confirmed = await self._ws.wait_subscribed(typing_channel, timeout=2.0)
+                if not confirmed:
+                    logger.warning(f"Subscription to {typing_channel} not confirmed in time, proceeding without typing")
+
+            # Process with semaphore and typing indicator
+            async with self._semaphore:
                 async with self._typing_manager.typing(typing_channel):
                     await self._process_message(submission_group_id, data, typing_channel)
 
@@ -539,8 +570,6 @@ class WebSocketScheduler:
 
                 state.last_message_id = message_id
                 state.last_processed = datetime.now()
-            finally:
-                state.processing = False
 
     async def _process_message(
         self,
@@ -589,6 +618,11 @@ class WebSocketScheduler:
         # The callback should handle fetching course_content if needed
         await self.on_message_trigger(result, None, channel)
 
+    @staticmethod
+    def _match_tag(tag_str: str, title: str) -> bool:
+        """Match a tag as a standalone token (not as substring of another tag)."""
+        return bool(re.search(r'(?<!\S)' + re.escape(tag_str) + r'(?!\S)', title))
+
     def _has_trigger_tags(self, message_data: dict) -> bool:
         """Check if message has any of the configured trigger tags."""
         if not self.trigger_config.is_enabled:
@@ -596,10 +630,9 @@ class WebSocketScheduler:
 
         title = message_data.get("title", "") or ""
 
-        # Check if any request tag is in the title
         for tag in self.trigger_config.request_tags:
             tag_str = str(tag)  # e.g., "#ai::request"
-            if tag_str in title:
+            if self._match_tag(tag_str, title):
                 return True
 
         return False
@@ -608,7 +641,7 @@ class WebSocketScheduler:
         """Check if message is an AI response (has response tag)."""
         title = message_data.get("title", "") or ""
         response_tag = str(self.trigger_config.response_tag)  # e.g., "#ai::response"
-        return response_tag in title
+        return self._match_tag(response_tag, title)
 
     def _should_skip(self, submission_group_id: str) -> bool:
         """Check if submission group should be skipped due to cooldown."""
@@ -626,6 +659,25 @@ class WebSocketScheduler:
                 submission_group_id=submission_group_id
             )
         return self._states[submission_group_id]
+
+    def _get_or_create_lock(self, submission_group_id: str) -> asyncio.Lock:
+        """Get or create a per-group processing lock."""
+        if submission_group_id not in self._locks:
+            self._locks[submission_group_id] = asyncio.Lock()
+        return self._locks[submission_group_id]
+
+    def _evict_stale_states(self) -> None:
+        """Remove processing states older than STATE_MAX_AGE to prevent memory leaks."""
+        now = datetime.now()
+        stale_ids = [
+            sid for sid, state in self._states.items()
+            if state.last_processed is None or (now - state.last_processed) > STATE_MAX_AGE
+        ]
+        for sid in stale_ids:
+            del self._states[sid]
+            self._locks.pop(sid, None)
+        if stale_ids:
+            logger.debug(f"Evicted {len(stale_ids)} stale processing state(s)")
 
     def get_stats(self) -> dict:
         """Get scheduler statistics."""

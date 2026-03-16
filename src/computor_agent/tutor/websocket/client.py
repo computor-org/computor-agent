@@ -94,6 +94,11 @@ class ComputorWebSocket:
         self._user_id: Optional[str] = None
         self._ping_task: Optional[asyncio.Task] = None
 
+        # Subscription tracking
+        self._pending_subscriptions: set[str] = set()
+        self._confirmed_subscriptions: set[str] = set()
+        self._subscription_events: dict[str, asyncio.Event] = {}
+
     def update_token(self, token: str) -> None:
         """Update the authentication token (e.g., after a refresh)."""
         self._token = token
@@ -223,6 +228,9 @@ class ComputorWebSocket:
             finally:
                 self._ws = None
                 self._user_id = None
+                self._pending_subscriptions.clear()
+                self._confirmed_subscriptions.clear()
+                self._subscription_events.clear()
 
     async def subscribe(self, channels: list[str]) -> None:
         """
@@ -234,9 +242,40 @@ class ComputorWebSocket:
         if not self.is_connected:
             raise WebSocketError("Not connected")
 
+        # Track pending subscriptions with events for waiting
+        for ch in channels:
+            self._pending_subscriptions.add(ch)
+            if ch not in self._subscription_events:
+                self._subscription_events[ch] = asyncio.Event()
+
         msg = WSChannelSubscribe(type="channel:subscribe", channels=channels)
         await self._send(msg.model_dump())
-        logger.info(f"Subscribed to channels: {channels}")
+        logger.info(f"Requested subscription to channels: {channels}")
+
+    def confirm_subscription(self, channels: list[str]) -> None:
+        """Mark channels as confirmed by the server (called on channel:subscribed event)."""
+        for ch in channels:
+            self._pending_subscriptions.discard(ch)
+            self._confirmed_subscriptions.add(ch)
+            if ch in self._subscription_events:
+                self._subscription_events[ch].set()
+
+    def is_subscribed(self, channel: str) -> bool:
+        """Check if a channel subscription has been confirmed by the server."""
+        return channel in self._confirmed_subscriptions
+
+    async def wait_subscribed(self, channel: str, timeout: float = 2.0) -> bool:
+        """Wait for a channel subscription to be confirmed. Returns False on timeout."""
+        if channel in self._confirmed_subscriptions:
+            return True
+        event = self._subscription_events.get(channel)
+        if not event:
+            return False
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     async def unsubscribe(self, channels: list[str]) -> None:
         """
