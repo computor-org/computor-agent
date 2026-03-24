@@ -19,7 +19,7 @@ from typing import Optional, Protocol, Union
 # Import API types from computor-types (source of truth)
 from computor_types.artifacts import SubmissionArtifactList
 from computor_types.course_members import CourseMemberList
-from computor_types.messages import MessageGet, MessageList
+from computor_types.messages import MessageGet, MessageList, MessageThread
 
 from computor_agent.tutor.config import TriggerConfig
 
@@ -100,6 +100,10 @@ class MessagesClientProtocol(Protocol):
         """Get a single message by ID."""
         ...
 
+    async def thread(self, id: str, **kwargs) -> MessageThread:
+        """Get the full conversation thread for a message."""
+        ...
+
 
 class CourseMembersClientProtocol(Protocol):
     """Protocol for the course_members API client."""
@@ -173,8 +177,15 @@ class TriggerChecker:
             )
 
         try:
-            # Check for messages with request tags
+            # Check for messages with request tags (new conversations)
             result = await self._check_new_conversation_trigger(
+                submission_group_id, course_id
+            )
+            if result.should_respond:
+                return result
+
+            # Check for follow-up replies in existing AI conversations
+            result = await self._check_follow_up_trigger(
                 submission_group_id, course_id
             )
             if result.should_respond:
@@ -182,7 +193,7 @@ class TriggerChecker:
 
             return TriggerCheckResult(
                 should_respond=False,
-                reason="No unread messages with request tags found",
+                reason="No unread messages with request tags or follow-ups found",
             )
 
         except Exception as e:
@@ -268,6 +279,95 @@ class TriggerChecker:
             reason=f"New conversation: message with request tag(s): {self.config.request_tag_strings}",
             message_trigger=trigger,
             root_message_id=message_id,
+        )
+
+    async def _check_follow_up_trigger(
+        self,
+        submission_group_id: str,
+        course_id: str,
+    ) -> TriggerCheckResult:
+        """Check for unread follow-up replies in existing AI conversations.
+
+        A follow-up is an unread message whose thread contains an AI response
+        (identified by the response tag) but the message itself has no request tag.
+        """
+        logger.debug(
+            f"Checking for follow-up triggers in {submission_group_id}"
+        )
+
+        # Get all unread messages in this submission group
+        unread_messages = await self.messages.list(
+            submission_group_id=submission_group_id,
+            unread=True,
+        )
+
+        if not unread_messages:
+            return TriggerCheckResult(
+                should_respond=False,
+                reason="No unread messages found",
+            )
+
+        # Filter out messages that have request or response tags (already handled)
+        candidates = []
+        for msg in unread_messages:
+            title = getattr(msg, "title", "") or ""
+            has_request_tag = any(
+                tag in title for tag in self.config.request_tag_strings
+            )
+            has_response_tag = self.config.response_tag_string in title
+            if not has_request_tag and not has_response_tag and msg.parent_id:
+                candidates.append(msg)
+
+        if not candidates:
+            return TriggerCheckResult(
+                should_respond=False,
+                reason="No unread follow-up candidates found",
+            )
+
+        logger.debug(f"Found {len(candidates)} unread reply candidates, checking threads")
+
+        # Sort oldest first
+        candidates.sort(
+            key=lambda m: getattr(m, "created_at", datetime.min) or datetime.min
+        )
+
+        # Check each candidate's thread for an AI response
+        response_tag = str(self.config.response_tag)  # e.g., "#ai::response"
+        for msg in candidates:
+            try:
+                thread = await self.messages.thread(msg.id)
+            except Exception as e:
+                logger.warning(f"Failed to fetch thread for message {msg.id}: {e}")
+                continue
+
+            # Check if any message in the thread has the AI response tag
+            has_ai_response = any(
+                response_tag in (getattr(m, "title", "") or "")
+                for m in thread.messages
+            )
+
+            if has_ai_response:
+                logger.info(
+                    f"Follow-up detected: message {msg.id} is a reply in an AI conversation "
+                    f"(root={thread.root_message_id})"
+                )
+
+                trigger = await self._build_message_trigger(
+                    msg, submission_group_id, course_id
+                )
+                trigger.root_message_id = thread.root_message_id
+                trigger.is_follow_up = True
+
+                return TriggerCheckResult(
+                    should_respond=True,
+                    reason=f"Follow-up reply in AI conversation (root={thread.root_message_id})",
+                    message_trigger=trigger,
+                    root_message_id=thread.root_message_id,
+                )
+
+        return TriggerCheckResult(
+            should_respond=False,
+            reason="No unread replies in AI conversation threads",
         )
 
     async def _build_message_trigger(

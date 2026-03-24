@@ -843,6 +843,8 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
                 "content": result.message_trigger.content,
                 "title": result.message_trigger.title,
                 "author_id": result.message_trigger.author_id,
+                "is_follow_up": result.message_trigger.is_follow_up,
+                "thread_root_id": result.root_message_id,
             }
 
             # Get submission_group_id from the course content
@@ -882,6 +884,8 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
                 "content": result.message_trigger.content,
                 "title": result.message_trigger.title,
                 "author_id": result.message_trigger.author_id,
+                "is_follow_up": result.message_trigger.is_follow_up,
+                "thread_root_id": result.root_message_id,
             }
 
             submission_group_id = result.message_trigger.submission_group_id

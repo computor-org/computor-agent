@@ -118,6 +118,7 @@ class ContextBuilder:
             author_id=message.get("author_id", ""),
             author_name=message.get("author_name"),
             is_from_student=message.get("is_from_student", True),
+            thread_root_id=message.get("thread_root_id"),
         )
 
         return await self._build_context(
@@ -161,7 +162,13 @@ class ContextBuilder:
             student_info = await self._get_student_info(submission_group_id)
             assignment_info = await self._get_assignment_info(submission_group_id)
 
-        previous_messages = await self._get_previous_messages(submission_group_id)
+        # Use thread endpoint for follow-ups (focused conversation history),
+        # fall back to all submission group messages otherwise
+        thread_root_id = trigger_message.thread_root_id if hasattr(trigger_message, 'thread_root_id') else None
+        if thread_root_id:
+            previous_messages = await self._get_thread_messages(thread_root_id)
+        else:
+            previous_messages = await self._get_previous_messages(submission_group_id)
 
         # Load student notes if enabled
         student_notes: Optional[str] = None
@@ -443,6 +450,44 @@ class ContextBuilder:
             return result
         except Exception as e:
             logger.warning(f"Failed to get previous messages: {e}")
+            return []
+
+    async def _get_thread_messages(
+        self,
+        thread_root_id: str,
+    ) -> list[MessageInfo]:
+        """Get all messages in a conversation thread.
+
+        Uses the /messages/{id}/thread endpoint to fetch the full thread
+        starting from the root message. This provides focused conversation
+        context for follow-up messages.
+        """
+        try:
+            thread = await self.client.messages.thread(thread_root_id)
+
+            result = []
+            for msg in thread.messages:
+                author_name = None
+                if msg.author:
+                    author_name = f"{msg.author.given_name or ''} {msg.author.family_name or ''}".strip()
+                    if not author_name:
+                        author_name = None
+
+                result.append(
+                    MessageInfo(
+                        id=msg.id,
+                        title=msg.title or "",
+                        content=msg.content or "",
+                        author_id=msg.author_id or "",
+                        author_name=author_name,
+                        is_from_student=True,  # Determined by checking role if needed
+                    )
+                )
+
+            logger.info(f"Fetched {len(result)} messages from thread (root={thread_root_id})")
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to get thread messages for {thread_root_id}: {e}")
             return []
 
     async def _get_assignment_info(

@@ -40,6 +40,7 @@ class MessageInfo:
     author_name: Optional[str] = None
     is_from_student: bool = True
     created_at: Optional[datetime] = None
+    thread_root_id: Optional[str] = None
 
 
 @dataclass

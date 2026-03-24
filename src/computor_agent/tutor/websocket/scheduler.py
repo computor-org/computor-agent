@@ -516,19 +516,40 @@ class WebSocketScheduler:
             logger.debug(f"Skipping {submission_group_id} due to cooldown")
             return
 
-        # Check if this message has trigger tags
-        title = data.get("title", "") or ""
-        logger.debug(f"Checking trigger tags in title: '{title}'")
-        logger.debug(f"Configured request tags: {[str(t) for t in self.trigger_config.request_tags]}")
-
-        if not self._has_trigger_tags(data):
-            logger.info(f"Message does not have trigger tags, skipping (title='{title}')")
-            return
-
         # Check if this is an AI response (to avoid responding to ourselves)
         if self._is_ai_response(data):
-            logger.info(f"Ignoring AI response message (title='{title}')")
+            logger.info(f"Ignoring AI response message (title='{data.get('title', '')}')")
             return
+
+        # Determine trigger type: direct tag match or follow-up in AI thread
+        title = data.get("title", "") or ""
+        is_direct_trigger = self._has_trigger_tags(data)
+        is_follow_up = False
+
+        if not is_direct_trigger:
+            # No request tag — check if this is a reply in an existing AI conversation
+            parent_id = data.get("parent_id")
+            if not parent_id:
+                logger.debug(f"Message has no trigger tags and no parent_id, skipping (title='{title}')")
+                return
+
+            # Fetch the thread to check for AI participation
+            try:
+                message_id_for_thread = data.get("id", "")
+                thread = await self.client.messages.thread(message_id_for_thread)
+                response_tag = str(self.trigger_config.response_tag)
+                has_ai_response = any(
+                    response_tag in (getattr(m, "title", "") or "")
+                    for m in thread.messages
+                )
+                if not has_ai_response:
+                    logger.debug(f"Reply message thread has no AI response, skipping")
+                    return
+                is_follow_up = True
+                logger.info(f"Follow-up detected via WebSocket: message in AI thread (root={thread.root_message_id})")
+            except Exception as e:
+                logger.warning(f"Failed to check thread for follow-up: {e}")
+                return
 
         # Note: broadcast events don't include is_read (it's user-specific),
         # so deduplication relies on last_message_id and mark_read after processing.
@@ -552,7 +573,8 @@ class WebSocketScheduler:
             if state.last_message_id == message_id:
                 return
 
-            logger.info(f"Message trigger detected for {submission_group_id}: {data.get('title', '')[:50]}")
+            trigger_type = "follow-up" if is_follow_up else "direct"
+            logger.info(f"Message trigger ({trigger_type}) for {submission_group_id}: {title[:50]}")
 
             # Subscribe to submission_group channel if needed and wait for confirmation
             if typing_channel not in self._subscribed_channels:
@@ -566,7 +588,11 @@ class WebSocketScheduler:
             async with self._semaphore:
                 try:
                     async with self._typing_manager.typing(typing_channel):
-                        await self._process_message(submission_group_id, data, typing_channel)
+                        await self._process_message(
+                            submission_group_id, data, typing_channel,
+                            is_follow_up=is_follow_up,
+                            thread_root_id=thread.root_message_id if is_follow_up else None,
+                        )
                 except Exception as e:
                     # Processing failed (e.g., LLM down) — don't mark as read
                     # so the message will be retried on next catch-up
@@ -584,6 +610,8 @@ class WebSocketScheduler:
         submission_group_id: str,
         message_data: dict,
         channel: str,
+        is_follow_up: bool = False,
+        thread_root_id: Optional[str] = None,
     ) -> None:
         """
         Process a triggered message.
@@ -592,6 +620,8 @@ class WebSocketScheduler:
             submission_group_id: The submission group ID
             message_data: Message data from WebSocket event
             channel: The channel the message was received on
+            is_follow_up: Whether this is a follow-up in an AI conversation
+            thread_root_id: Root message ID of the thread (if follow-up)
         """
         if not self.on_message_trigger:
             logger.warning("No message trigger callback configured")
@@ -601,8 +631,11 @@ class WebSocketScheduler:
         # This matches the interface expected by the existing on_message_trigger callback
         from computor_agent.tutor.trigger import MessageTrigger, TriggerCheckResult
 
+        message_id = message_data.get("id", "")
+        root_id = thread_root_id if is_follow_up else message_id
+
         trigger = MessageTrigger(
-            message_id=message_data.get("id", ""),
+            message_id=message_id,
             submission_group_id=submission_group_id,
             author_id=message_data.get("author_id", ""),
             author_course_member_id=message_data.get("author_course_member_id", ""),
@@ -610,16 +643,17 @@ class WebSocketScheduler:
             content=message_data.get("content", ""),
             title=message_data.get("title", ""),
             created_at=None,
-            root_message_id=message_data.get("id"),
+            root_message_id=root_id,
             parent_id=message_data.get("parent_id"),
-            is_follow_up=False,
+            is_follow_up=is_follow_up,
         )
 
+        reason = "Follow-up reply in AI conversation" if is_follow_up else "WebSocket message:new event with trigger tags"
         result = TriggerCheckResult(
             should_respond=True,
-            reason="WebSocket message:new event with trigger tags",
+            reason=reason,
             message_trigger=trigger,
-            root_message_id=message_data.get("id"),
+            root_message_id=root_id,
         )
 
         # Call the callback with result, course_content (None for WS), and channel
