@@ -241,13 +241,14 @@ class TriggerChecker:
             logger.debug(f"  - Message {msg_id}: title='{msg_title}'")
 
         # Filter out AI's own messages (have response_tag in title)
+        response_tag_hash = f"#{self.config.response_tag_string}"
         filtered_messages = [
             m for m in request_messages
-            if self.config.response_tag_string not in (getattr(m, "title", "") or "")
+            if response_tag_hash not in (getattr(m, "title", "") or "")
         ]
 
         logger.debug(
-            f"After filtering AI responses (response_tag={self.config.response_tag_string}): "
+            f"After filtering AI responses (response_tag={response_tag_hash}): "
             f"{len(filtered_messages)} messages remain"
         )
 
@@ -308,13 +309,13 @@ class TriggerChecker:
             )
 
         # Filter out messages that have request or response tags (already handled)
+        request_tags_with_hash = [f"#{t}" for t in self.config.request_tag_strings]
+        response_tag_with_hash = f"#{self.config.response_tag_string}"
         candidates = []
         for msg in unread_messages:
             title = getattr(msg, "title", "") or ""
-            has_request_tag = any(
-                tag in title for tag in self.config.request_tag_strings
-            )
-            has_response_tag = self.config.response_tag_string in title
+            has_request_tag = any(tag in title for tag in request_tags_with_hash)
+            has_response_tag = response_tag_with_hash in title
             if not has_request_tag and not has_response_tag and msg.parent_id:
                 candidates.append(msg)
 
@@ -332,7 +333,7 @@ class TriggerChecker:
         )
 
         # Check each candidate's thread for an AI response
-        response_tag = str(self.config.response_tag)  # e.g., "#ai::response"
+        response_tag = f"#{self.config.response_tag_string}"  # e.g., "#ai-response"
         for msg in candidates:
             try:
                 thread = await self.messages.thread(msg.id)
@@ -451,21 +452,22 @@ class TriggerChecker:
 
         # Check if we already responded to this submission group
         try:
+            response_tag = self.config.response_tag_string
             existing_responses = await self.messages.list(
                 submission_group_id=submission_group_id,
-                tag_scope=self.config.response_tag.scope,
+                tags=[response_tag],
             )
 
-            response_tag = self.config.response_tag_string
+            response_tag_hash = f"#{response_tag}"
             has_response = any(
-                response_tag in (m.title or "")
+                response_tag_hash in (m.title or "")
                 for m in existing_responses
             )
 
             if has_response:
                 return TriggerCheckResult(
                     should_respond=False,
-                    reason=f"Already responded to submission (found #{response_tag} tag)",
+                    reason=f"Already responded to submission (found {response_tag_hash} tag)",
                 )
         except Exception as e:
             logger.warning(f"Could not check for existing responses: {e}")

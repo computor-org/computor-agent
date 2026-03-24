@@ -254,7 +254,7 @@ class WebSocketScheduler:
 
         try:
             processed_count = 0
-            response_tag = self.trigger_config.response_tag_string
+            response_tag = f"#{self.trigger_config.response_tag_string}"
 
             # Query messages API directly for each course
             for course_id in self._course_ids:
@@ -537,7 +537,7 @@ class WebSocketScheduler:
             try:
                 message_id_for_thread = data.get("id", "")
                 thread = await self.client.messages.thread(message_id_for_thread)
-                response_tag = str(self.trigger_config.response_tag)
+                response_tag = f"#{self.trigger_config.response_tag_string}"
                 has_ai_response = any(
                     response_tag in (getattr(m, "title", "") or "")
                     for m in thread.messages
@@ -568,13 +568,43 @@ class WebSocketScheduler:
             logger.debug(f"Already processing {submission_group_id}")
             return
 
+        trigger_type = "follow-up" if is_follow_up else "direct"
+        logger.info(f"Message trigger ({trigger_type}) for {submission_group_id}: {title[:50]}")
+
+        # Spawn processing as a background task so the event loop stays free
+        # to consume WebSocket frames (pings, new events) during LLM processing.
+        asyncio.create_task(
+            self._process_triggered_message(
+                submission_group_id=submission_group_id,
+                message_id=message_id,
+                data=data,
+                typing_channel=typing_channel,
+                state=state,
+                lock=lock,
+                is_follow_up=is_follow_up,
+                thread_root_id=thread.root_message_id if is_follow_up else None,
+            )
+        )
+
+    async def _process_triggered_message(
+        self,
+        submission_group_id: str,
+        message_id: str,
+        data: dict,
+        typing_channel: str,
+        state: ProcessingState,
+        lock: asyncio.Lock,
+        is_follow_up: bool = False,
+        thread_root_id: Optional[str] = None,
+    ) -> None:
+        """Process a triggered message in the background.
+
+        Runs outside the event loop so WebSocket frames keep flowing.
+        """
         async with lock:
             # Re-check after acquiring lock (another event may have processed it)
             if state.last_message_id == message_id:
                 return
-
-            trigger_type = "follow-up" if is_follow_up else "direct"
-            logger.info(f"Message trigger ({trigger_type}) for {submission_group_id}: {title[:50]}")
 
             # Subscribe to submission_group channel if needed and wait for confirmation
             if typing_channel not in self._subscribed_channels:
@@ -591,7 +621,7 @@ class WebSocketScheduler:
                         await self._process_message(
                             submission_group_id, data, typing_channel,
                             is_follow_up=is_follow_up,
-                            thread_root_id=thread.root_message_id if is_follow_up else None,
+                            thread_root_id=thread_root_id,
                         )
                 except Exception as e:
                     # Processing failed (e.g., LLM down) — don't mark as read
@@ -677,8 +707,8 @@ class WebSocketScheduler:
 
         title = message_data.get("title", "") or ""
 
-        for tag in self.trigger_config.request_tags:
-            tag_str = str(tag)  # e.g., "#ai::request"
+        for tag in self.trigger_config.request_tag_strings:
+            tag_str = f"#{tag}"  # e.g., "#ai"
             if self._match_tag(tag_str, title):
                 return True
 
@@ -687,7 +717,7 @@ class WebSocketScheduler:
     def _is_ai_response(self, message_data: dict) -> bool:
         """Check if message is an AI response (has response tag)."""
         title = message_data.get("title", "") or ""
-        response_tag = str(self.trigger_config.response_tag)  # e.g., "#ai::response"
+        response_tag = f"#{self.trigger_config.response_tag_string}"  # e.g., "#ai-response"
         return self._match_tag(response_tag, title)
 
     def _should_skip(self, submission_group_id: str) -> bool:

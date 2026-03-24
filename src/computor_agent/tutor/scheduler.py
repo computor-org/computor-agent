@@ -264,8 +264,8 @@ class TutorScheduler:
 
     Usage:
         trigger_config = TriggerConfig(
-            request_tags=[TriggerTag(scope="ai", value="request")],
-            response_tag=TriggerTag(scope="ai", value="response"),
+            request_tags=["ai"],
+            response_tag="ai-response",
         )
         scheduler = TutorScheduler(
             client=computor_client,

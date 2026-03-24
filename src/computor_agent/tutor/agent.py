@@ -327,7 +327,7 @@ class TutorAgent:
         Returns:
             Title with response tag prepended
         """
-        response_tag = str(self.config.triggers.response_tag)  # e.g., "#ai::response"
+        response_tag = f"#{self.config.triggers.response_tag_string}"  # e.g., "#ai-response"
         base_title = title or default
         if base_title:
             return f"{response_tag} {base_title}"

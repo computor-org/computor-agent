@@ -36,11 +36,8 @@ tutor:
 
   triggers:
     request_tags:
-      - scope: ai
-        value: request
-    response_tag:
-      scope: ai
-      value: response
+      - "ai"
+    response_tag: "ai-response"
 
   # Scheduler settings
   scheduler:

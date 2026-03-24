@@ -97,14 +97,11 @@ tutor:
 
   # Triggers - when the agent responds
   triggers:
-    # Tags that trigger the agent to respond to messages
+    # Tags that trigger the agent (students write #ai in their message title)
     request_tags:
-      - scope: "ai"
-        value: "request"
-    # Tag added to agent responses
-    response_tag:
-      scope: "ai"
-      value: "response"
+      - "ai"
+    # Tag added to agent responses (e.g., #ai-response)
+    response_tag: "ai-response"
     # Also trigger on new submission artifacts
     check_submissions: true
 

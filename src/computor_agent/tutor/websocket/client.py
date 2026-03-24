@@ -137,8 +137,8 @@ class ComputorWebSocket:
                 logger.info(f"Connecting to WebSocket: {self._masked_ws_url}")
                 self._ws = await websockets.connect(
                     self.ws_url,
-                    ping_interval=None,  # Disable library ping, we handle it ourselves
-                    ping_timeout=None,
+                    ping_interval=20,   # Protocol-level ping every 20s to detect dead connections
+                    ping_timeout=10,    # Close if no pong within 10s
                     open_timeout=self._connect_timeout,
                     close_timeout=10.0,
                 )
