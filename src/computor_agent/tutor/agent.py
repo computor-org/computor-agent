@@ -3,10 +3,9 @@ Tutor Agent orchestrator for the Computor Agent.
 
 This is the main entry point for tutor functionality. It:
 1. Builds context from API data
-2. Runs security checks
-3. Classifies intent
-4. Executes the appropriate strategy
-5. Returns the response
+2. Runs security checks (optional)
+3. Generates response via single LLM call
+4. Sends the response
 
 Note: The agent does NOT schedule itself. A separate scheduler
 should call process_message() when triggered.
@@ -27,6 +26,7 @@ from computor_agent.tutor.config import TutorConfig
 from computor_agent.tutor.context import ConversationContext
 from computor_agent.tutor.context_builder import ContextBuilder
 from computor_agent.tutor.intents import IntentClassification, IntentClassifier
+from computor_agent.tutor.prompts.templates import TUTOR_SYSTEM_PROMPT, PERSONALITY_PROMPTS
 from computor_agent.tutor.security import SecurityCheckResult, SecurityGate
 from computor_agent.tutor.strategies import StrategyRegistry, StrategyResponse
 
@@ -200,7 +200,7 @@ class TutorAgent:
             )
             context.context_id = context_id
 
-            # Run security check
+            # Run security check (optional)
             security_result = await self.security_gate.check(context)
 
             if not security_result.is_safe and self.config.security.block_on_threat:
@@ -214,36 +214,28 @@ class TutorAgent:
                     context_id=context_id,
                 )
 
-            # Classify intent
-            classification = await self.intent_classifier.classify(context)
-
-            # Check if we need to download submission code for code-related intents
-            # Skip in dev mode (assignment_context set) - no real API to download from
+            # Try to download submission code (always attempt — the LLM
+            # can decide itself whether the student needs code help)
             if not assignment_context:
-                await self._ensure_code_context(context, classification)
+                await self._ensure_code_context(context)
 
-            # Get strategy for classification (handles None intent with fallback)
-            strategy = self.strategy_registry.get_strategy(classification)
+            # Build unified system prompt with all available context
+            system_prompt = self._build_system_prompt(context)
+            user_message = context.trigger_message.content if context.trigger_message else "(No message)"
 
-            # Get strategy config
-            strategy_config = self._get_strategy_config(classification.intent)
+            # Single LLM call — no intent classification needed
+            logger.info("Generating response via unified prompt")
+            response_content = await self.llm.complete(
+                prompt=user_message,
+                system_prompt=system_prompt,
+                max_tokens=self.config.strategies.fallback.max_response_tokens,
+                temperature=self.config.strategies.fallback.temperature,
+            )
 
-            # Check if strategy is enabled
-            if not strategy_config.enabled:
-                elapsed_ms = (time.perf_counter() - start_time) * 1000
-                intent_name = classification.intent.value if classification.intent else "fallback"
-                return ProcessingResult(
-                    success=True,
-                    message_sent=False,
-                    intent=classification,
-                    security_result=security_result,
-                    error=f"Strategy {intent_name} is disabled",
-                    processing_time_ms=elapsed_ms,
-                    context_id=context_id,
-                )
-
-            # Execute strategy with classification
-            response = await strategy.execute(context, classification, self.llm, strategy_config)
+            response = StrategyResponse(
+                message_content=response_content,
+                strategy_name="unified",
+            )
 
             # Send response if configured
             message_sent = False
@@ -254,22 +246,16 @@ class TutorAgent:
 
                 # Reply to the triggering message to create a chain
                 parent_id = reply_to_message_id or message.get("id")
-                logger.debug(f"reply_to_message_id={reply_to_message_id}, message.get('id')={message.get('id')}, parent_id={parent_id}")
 
-                # Use ComputorClient.messages.create() directly
-                # When replying (parent_id set), don't set target - it's inherited from parent
-                # Only set submission_group_id for new threads
+                # When replying (parent_id set), don't set target — inherited from parent
                 message_data: dict[str, Any] = {
                     "content": response.message_content,
                     "title": formatted_title,
                 }
                 if parent_id:
                     message_data["parent_id"] = parent_id
-                    logger.debug(f"Using parent_id for reply: {parent_id}")
                 else:
-                    # New message thread - must specify target
                     message_data["submission_group_id"] = submission_group_id
-                    logger.debug(f"New thread, using submission_group_id: {submission_group_id}")
 
                 logger.info(f"Creating message with data: {message_data}")
                 created_message = await self.client.messages.create(data=message_data)
@@ -290,7 +276,6 @@ class TutorAgent:
                 success=True,
                 message_sent=message_sent,
                 response=response,
-                intent=classification,
                 security_result=security_result,
                 processing_time_ms=elapsed_ms,
                 context_id=context_id,
@@ -333,63 +318,77 @@ class TutorAgent:
             return f"{response_tag} {base_title}"
         return response_tag
 
-    def _get_strategy_config(self, intent: Optional["Intent"]):
-        """Get the strategy config for an intent (None returns fallback config)."""
-        from computor_agent.tutor.intents import Intent
+    def _build_system_prompt(self, context: ConversationContext) -> str:
+        """Build the unified system prompt with all available context."""
+        # Personality
+        tone = self.config.personality.tone.value
+        try:
+            from computor_agent.tutor.prompts.loader import get_personality_prompt
+            personality = get_personality_prompt(tone)
+        except Exception:
+            personality = PERSONALITY_PROMPTS.get(tone, PERSONALITY_PROMPTS["friendly_professional"])
+        personality = personality.format(tutor_name=self.config.personality.name)
 
-        if intent is None:
-            return self.config.strategies.fallback
+        # Try custom "tutor" prompt from loader, fall back to built-in
+        try:
+            from computor_agent.tutor.prompts.loader import get_prompt_loader
+            loader = get_prompt_loader()
+            # Only use loader if there's an explicit tutor.md — don't fall back to old prompts
+            template = loader._strategy_prompts.get("tutor")
+        except Exception:
+            template = None
+        if not template:
+            template = TUTOR_SYSTEM_PROMPT
 
-        config_map = {
-            Intent.QUESTION_EXAMPLE: self.config.strategies.question_example,
-            Intent.QUESTION_HOWTO: self.config.strategies.question_howto,
-            Intent.HELP_DEBUG: self.config.strategies.help_debug,
-            Intent.HELP_REVIEW: self.config.strategies.help_review,
-            Intent.CLARIFICATION: self.config.strategies.clarification,
-        }
-        return config_map.get(intent, self.config.strategies.fallback)
+        # Assignment
+        assignment_section = ""
+        if context.assignment:
+            parts = []
+            if context.assignment.title:
+                parts.append(f"Title: {context.assignment.title}")
+            if context.assignment.description:
+                parts.append(context.assignment.description)
+            if parts:
+                assignment_section = f"Assignment:\n---\n{chr(10).join(parts)}\n---"
 
-    async def _ensure_code_context(
-        self,
-        context: ConversationContext,
-        classification: IntentClassification,
-    ) -> None:
-        """
-        Ensure code context is available for code-related intents.
+        # Student code
+        code_section = ""
+        if context.has_code:
+            code_section = f"Student's Code:\n---\n{context.get_formatted_code()}\n---"
+        elif context.no_submission_available:
+            code_section = "(No code available — student has not submitted any code yet)"
 
-        Downloads submission artifact if:
-        1. The intent requires code (HELP_DEBUG, HELP_REVIEW)
-        2. No code is currently loaded in the context
-        3. Or checks if the user's description mentions needing to look at code
+        # Test results
+        test_results_section = ""
+        if context.has_test_results:
+            test_results_section = f"Test Results:\n---\n{context.test_results.format_for_prompt()}\n---"
 
-        Args:
-            context: The conversation context
-            classification: The intent classification
-        """
-        from computor_agent.tutor.intents import Intent
+        # Previous messages
+        previous_messages_section = ""
+        prev = context.get_formatted_previous_messages()
+        if prev and prev.strip():
+            previous_messages_section = f"Previous Conversation:\n---\n{prev}\n---"
 
-        # Check if this intent typically needs code
-        code_related_intents = {Intent.HELP_DEBUG, Intent.HELP_REVIEW}
-        needs_code = (
-            classification.intent in code_related_intents
-            or self._user_intent_needs_code(classification.user_intent_description)
+        # Reference comparison
+        reference_comparison_section = ""
+        if context.has_reference_comparison:
+            reference_comparison_section = f"Reference Comparison:\n---\n{context.reference_comparison.format_for_prompt(max_diffs=3, max_lines_per_diff=30)}\n---"
+
+        return template.format(
+            personality_prompt=personality,
+            language=self.config.personality.language,
+            assignment_section=assignment_section,
+            code_section=code_section,
+            test_results_section=test_results_section,
+            previous_messages_section=previous_messages_section,
+            reference_comparison_section=reference_comparison_section,
         )
 
-        logger.debug(f"Intent: {classification.intent}, needs_code: {needs_code}, has_code: {context.has_code}")
-
-        # If we already have code or don't need it, return
-        if not needs_code:
-            logger.debug("Intent does not require code, skipping download")
-            return
-
+    async def _ensure_code_context(self, context: ConversationContext) -> None:
+        """Try to download submission code if not already available."""
         if context.has_code:
-            logger.debug("Code already loaded, skipping download")
             return
 
-        # Try to download the latest submission
-        logger.info("Intent requires code but none loaded - attempting to download submission")
-
-        # Get identifiers from context
         course_member_id = (
             context.student.course_member_ids[0]
             if context.student.course_member_ids
@@ -401,55 +400,26 @@ class TutorAgent:
             else None
         )
 
-        # Try to download submission
-        # Use submission_group_id if available, otherwise use course_content_id + course_member_id
         if context.submission_group_id:
-            logger.debug(f"Using submission_group_id for download: {context.submission_group_id}")
             submission_code = await self.context_builder.download_submission_code(
                 submission_group_id=context.submission_group_id,
-                submit_only=False,  # Include test uploads too
+                submit_only=False,
             )
         elif course_content_id and course_member_id:
-            logger.debug(f"Using course_content_id + course_member_id for download: {course_content_id} + {course_member_id}")
             submission_code = await self.context_builder.download_submission_code(
                 course_content_id=course_content_id,
                 course_member_id=course_member_id,
-                submit_only=False,  # Include test uploads too
+                submit_only=False,
             )
         else:
-            logger.warning("No valid parameters for submission download (need submission_group_id OR course_content_id+course_member_id)")
             submission_code = None
 
         if submission_code:
             context.student_code = submission_code
-            logger.info(f"Successfully downloaded submission with {len(submission_code.files)} files")
-            for filename in list(submission_code.files.keys())[:5]:
-                logger.debug(f"  - {filename}")
+            logger.info(f"Downloaded submission with {len(submission_code.files)} files")
         else:
-            # Mark that we tried but found no submission
             context.no_submission_available = True
-            logger.info("No submission found for student - will inform them to submit code")
-
-    def _user_intent_needs_code(self, user_intent_description: str) -> bool:
-        """
-        Check if the user's intent description suggests they need code analysis.
-
-        Args:
-            user_intent_description: The LLM's description of what the user wants
-
-        Returns:
-            True if the description suggests code analysis is needed
-        """
-        # Keywords that suggest code analysis is needed
-        code_keywords = [
-            "debug", "error", "bug", "fix", "review", "code",
-            "implementation", "solution", "function", "method",
-            "line", "syntax", "compile", "runtime", "exception",
-            "traceback", "stack", "segfault", "crash", "fails"
-        ]
-
-        description_lower = user_intent_description.lower()
-        return any(keyword in description_lower for keyword in code_keywords)
+            logger.info("No submission found for student")
 
     async def check_security_only(
         self,

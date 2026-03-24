@@ -255,31 +255,53 @@ class WebSocketScheduler:
         try:
             processed_count = 0
             response_tag = f"#{self.trigger_config.response_tag_string}"
+            request_tags_with_hash = [f"#{t}" for t in self.trigger_config.request_tag_strings]
 
-            # Query messages API directly for each course
             for course_id in self._course_ids:
                 try:
-                    # Get unread messages with trigger tags for this course
-                    messages = await self.client.messages.list(
+                    # 1. Catch-up: tagged messages (direct triggers)
+                    tagged_messages = await self.client.messages.list(
                         course_id=course_id,
                         tags=self.trigger_config.request_tag_strings,
                         tags_match_all=self.trigger_config.require_all_tags,
                         unread=True,
                     )
 
-                    if not messages:
-                        continue
-
-                    # Filter out AI responses (those with response_tag in title)
                     trigger_messages = [
-                        m for m in messages
+                        m for m in (tagged_messages or [])
                         if response_tag not in (getattr(m, "title", "") or "")
                     ]
+
+                    # 2. Catch-up: untagged follow-up replies in AI threads
+                    all_unread = await self.client.messages.list(
+                        course_id=course_id,
+                        unread=True,
+                    )
+
+                    for msg in (all_unread or []):
+                        title = getattr(msg, "title", "") or ""
+                        has_request_tag = any(tag in title for tag in request_tags_with_hash)
+                        has_response_tag = response_tag in title
+                        # Skip tagged messages (already in trigger_messages) and AI responses
+                        if has_request_tag or has_response_tag or not msg.parent_id:
+                            continue
+
+                        # Check if this reply is in an AI conversation thread
+                        try:
+                            thread = await self.client.messages.thread(msg.id)
+                            has_ai = any(
+                                response_tag in (getattr(m, "title", "") or "")
+                                for m in thread.messages
+                            )
+                            if has_ai:
+                                trigger_messages.append(msg)
+                        except Exception:
+                            continue
 
                     if not trigger_messages:
                         continue
 
-                    logger.info(f"Found {len(trigger_messages)} unread trigger message(s) in course {course_id}")
+                    logger.info(f"Found {len(trigger_messages)} unread message(s) to process in course {course_id}")
 
                     for msg in trigger_messages:
                         submission_group_id = getattr(msg, "submission_group_id", None)
@@ -293,32 +315,43 @@ class WebSocketScheduler:
                         if state.last_message_id == message_id:
                             continue
 
-                        logger.info(f"Processing unread trigger message: {message_id}")
+                        # Determine if follow-up
+                        title = getattr(msg, "title", "") or ""
+                        is_follow_up = not any(tag in title for tag in request_tags_with_hash) and msg.parent_id
+                        thread_root_id = None
+                        if is_follow_up:
+                            try:
+                                thread = await self.client.messages.thread(msg.id)
+                                thread_root_id = thread.root_message_id
+                            except Exception:
+                                pass
 
-                        # Build message data for processing
+                        trigger_type = "follow-up" if is_follow_up else "direct"
+                        logger.info(f"Processing unread {trigger_type} message: {message_id}")
+
                         message_data = {
                             "id": message_id,
                             "content": getattr(msg, "content", "") or "",
-                            "title": getattr(msg, "title", "") or "",
+                            "title": title,
                             "author_id": getattr(msg, "author_id", "") or "",
                             "submission_group_id": submission_group_id,
                         }
 
                         typing_channel = f"submission_group:{submission_group_id}"
 
-                        # Subscribe to the submission_group channel for typing
                         if typing_channel not in self._subscribed_channels:
                             await self._ws.subscribe([typing_channel])
                             self._subscribed_channels.add(typing_channel)
 
-                        # Process with typing indicator
                         async with self._typing_manager.typing(typing_channel):
-                            await self._process_message(submission_group_id, message_data, typing_channel)
+                            await self._process_message(
+                                submission_group_id, message_data, typing_channel,
+                                is_follow_up=is_follow_up,
+                                thread_root_id=thread_root_id,
+                            )
 
-                        # Mark the message as read after successful processing
                         await self._ws.mark_read(typing_channel, message_id)
 
-                        # Track as processed
                         state.last_message_id = message_id
                         processed_count += 1
 

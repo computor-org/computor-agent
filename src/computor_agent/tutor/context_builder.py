@@ -317,31 +317,9 @@ class ContextBuilder:
             except Exception as e:
                 logger.debug(f"Failed to get test results: {e}")
 
-        # Get submission history from course content data
-        if self.config.include_submission_history:
-            try:
-                # Extract gradings from submission_group in course content data
-                gradings = None
-                if course_content_data:
-                    sg = getattr(course_content_data, "submission_group", None)
-                    if sg:
-                        gradings = getattr(sg, "gradings", None)
-
-                if gradings is not None:
-                    # Use pre-fetched gradings directly (no API call)
-                    # Note: gradings can be empty list [], which is valid (no submissions graded yet)
-                    context.submission_history = self.history_service._parse_gradings(
-                        gradings, submission_group_id
-                    )
-                elif course_content_data is None:
-                    # Only fallback if we don't have pre-fetched data at all
-                    # Fallback: fetch via service (will call /tutors/submission-groups)
-                    context.submission_history = await self.history_service.get_history(
-                        submission_group_id
-                    )
-                # If course_content_data exists but no submission_group, skip (no history)
-            except Exception as e:
-                logger.debug(f"Failed to get submission history: {e}")
+        # Submission history — disabled (not used in prompt currently)
+        # if self.config.include_submission_history:
+        #     ...
 
         # Get reference comparison if enabled and we have both student and reference code
         if self.config.include_reference_comparison and context.has_code and context.has_reference:
@@ -353,19 +331,9 @@ class ContextBuilder:
             except Exception as e:
                 logger.debug(f"Failed to generate reference comparison: {e}")
 
-        # Get student progress if enabled
-        if self.config.include_student_progress and assignment_info and course_member_id:
-            try:
-                course_id = assignment_info.course_id
-                if course_id:
-                    # Pass course_content_id and prefetched data to avoid duplicate API call
-                    course_content_ids = [course_content_id] if course_content_id else None
-                    context.student_progress = await self.progress_service.get_member_progress(
-                        course_id, course_member_id, course_content_ids,
-                        prefetched_content=course_content_data,
-                    )
-            except Exception as e:
-                logger.debug(f"Failed to get student progress: {e}")
+        # Student progress — disabled (not used in prompt currently)
+        # if self.config.include_student_progress and assignment_info and course_member_id:
+        #     ...
 
     async def _get_student_info(self, submission_group_id: str) -> StudentInfo:
         """Get student information from submission group."""
