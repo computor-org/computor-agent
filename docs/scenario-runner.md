@@ -66,8 +66,8 @@ scenarios/
     │   └── solution.py
     ├── test-results.json           # Test output (optional)
     └── prompts/                    # One .md file per prompt to test
-        ├── 001_help_with_matrix.md
-        ├── 002_logical_indexing.md
+        ├── 001_help.md             # Named <index>_<category>.md
+        ├── 002_help.md
         └── 003_solution_request.md
 ```
 
@@ -87,7 +87,7 @@ assignment:
 Each `.md` file in `prompts/` contains a single student message. The file content is the message body — no frontmatter needed.
 
 ```
-# prompts/001_help_with_matrix.md
+# prompts/001_help.md
 I don't understand how to create the matrix M. Can you help me?
 ```
 
@@ -100,8 +100,8 @@ results/
 ├── run_2026-03-25T14-30-00_mistral-7b/
 │   ├── summary.json
 │   └── python-basics/
-│       ├── 001_help_with_matrix_response.md
-│       ├── 002_logical_indexing_response.md
+│       ├── 001_help_response.md
+│       ├── 002_help_response.md
 │       └── 003_solution_request_error.log
 └── run_2026-03-25T14-30-00_qwen2.5-coder-7b/
     ├── summary.json
@@ -129,7 +129,7 @@ results/
       "total_time_s": 45.2,
       "prompts": [
         {
-          "file": "001_help_with_matrix.md",
+          "file": "001_help.md",
           "success": true,
           "processing_time_ms": 11200,
           "response_chars": 450,
