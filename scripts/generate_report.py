@@ -58,24 +58,26 @@ def setup_style():
 # ---------------------------------------------------------------------------
 
 def load_summaries(results_dir: Path) -> list[dict]:
-    """Find and load all summary.json files under results_dir."""
+    """Find and load all summary.json + evaluations.json files under results_dir."""
     summaries = []
 
+    def _load_run(run_path: Path) -> dict:
+        data = json.loads((run_path / "summary.json").read_text(encoding="utf-8"))
+        data["_run_dir"] = str(run_path)
+        eval_path = run_path / "evaluations.json"
+        if eval_path.exists():
+            data["_evaluations"] = json.loads(eval_path.read_text(encoding="utf-8"))
+        return data
+
     # If pointed directly at a run directory
-    direct = results_dir / "summary.json"
-    if direct.exists():
-        data = json.loads(direct.read_text(encoding="utf-8"))
-        data["_run_dir"] = str(results_dir)
-        summaries.append(data)
+    if (results_dir / "summary.json").exists():
+        summaries.append(_load_run(results_dir))
         return summaries
 
     # Otherwise scan subdirectories
     for child in sorted(results_dir.iterdir()):
-        summary_file = child / "summary.json"
-        if child.is_dir() and summary_file.exists():
-            data = json.loads(summary_file.read_text(encoding="utf-8"))
-            data["_run_dir"] = str(child)
-            summaries.append(data)
+        if child.is_dir() and (child / "summary.json").exists():
+            summaries.append(_load_run(child))
 
     return summaries
 
@@ -87,6 +89,44 @@ def extract_category(filename: str) -> str:
     if match:
         return match.group(1)
     return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Evaluation data helpers
+# ---------------------------------------------------------------------------
+
+def has_evaluations(summaries: list[dict]) -> bool:
+    """Check if any summaries have evaluation data."""
+    return any("_evaluations" in s for s in summaries)
+
+
+def get_eval_metrics(summaries: list[dict]) -> list[str]:
+    """Get the list of metric names from evaluation data."""
+    for s in summaries:
+        evals = s.get("_evaluations", {})
+        for m in evals.get("metrics", []):
+            pass
+        metrics = evals.get("metrics", [])
+        if metrics:
+            return [m["name"] for m in metrics]
+    return []
+
+
+def get_prompt_scores(summary: dict) -> list[dict]:
+    """Extract flat list of {file, category, scores...} from evaluations."""
+    evals = summary.get("_evaluations", {})
+    results = []
+    for sc in evals.get("scenarios", []):
+        for p in sc.get("prompts", []):
+            if p.get("evaluated"):
+                entry = {
+                    "file": p["file"],
+                    "category": p.get("category", extract_category(p["file"])),
+                    "scenario": sc["name"],
+                }
+                entry.update(p.get("scores", {}))
+                results.append(entry)
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -383,12 +423,180 @@ def plot_response_length(summaries: list[dict], out_dir: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Evaluation plot generators
+# ---------------------------------------------------------------------------
+
+def plot_scores_per_model(summaries: list[dict], out_dir: Path) -> str:
+    """Radar / bar chart: average score per metric per model."""
+    metric_names = get_eval_metrics(summaries)
+    if not metric_names:
+        return None
+
+    models = []
+    model_avgs = []
+
+    for s in summaries:
+        scores = get_prompt_scores(s)
+        if not scores:
+            continue
+        models.append(s["model"])
+        avgs = []
+        for m in metric_names:
+            vals = [sc[m] for sc in scores if sc.get(m) is not None]
+            avgs.append(sum(vals) / len(vals) if vals else 0)
+        model_avgs.append(avgs)
+
+    if not models:
+        return None
+
+    n_metrics = len(metric_names)
+    n_models = len(models)
+
+    fig, ax = plt.subplots(figsize=(max(10, n_metrics * 1.5), 5))
+    bar_width = 0.8 / n_models
+    x = np.arange(n_metrics)
+
+    for i, (model, avgs) in enumerate(zip(models, model_avgs)):
+        offset = (i - n_models / 2 + 0.5) * bar_width
+        bars = ax.bar(x + offset, avgs, bar_width,
+                      label=model, color=COLORS[i % len(COLORS)])
+        for bar, val in zip(bars, avgs):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05,
+                    f"{val:.1f}", ha="center", va="bottom", fontsize=9)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(metric_names, rotation=30, ha="right")
+    ax.set_ylabel("Score")
+    ax.set_ylim(0, 5.5)
+    ax.set_title("Average Evaluation Scores per Model")
+    ax.legend()
+
+    fig.tight_layout()
+    path = out_dir / "scores_per_model.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
+def plot_scores_per_category(summaries: list[dict], out_dir: Path) -> str:
+    """Heatmap: average overall score per model x category."""
+    metric_names = get_eval_metrics(summaries)
+    if not metric_names:
+        return None
+
+    models = []
+    all_categories = set()
+    model_cat_scores = {}
+
+    for s in summaries:
+        scores = get_prompt_scores(s)
+        if not scores:
+            continue
+        model = s["model"]
+        models.append(model)
+        cat_scores = defaultdict(list)
+        for sc in scores:
+            cat = sc["category"]
+            all_categories.add(cat)
+            vals = [sc[m] for m in metric_names if sc.get(m) is not None]
+            if vals:
+                cat_scores[cat].append(sum(vals) / len(vals))
+        model_cat_scores[model] = cat_scores
+
+    all_categories = sorted(all_categories)
+    if not models or not all_categories:
+        return None
+
+    # Build matrix
+    matrix = []
+    for model in models:
+        row = []
+        for cat in all_categories:
+            vals = model_cat_scores[model].get(cat, [])
+            row.append(sum(vals) / len(vals) if vals else 0)
+        matrix.append(row)
+
+    matrix = np.array(matrix)
+
+    fig, ax = plt.subplots(figsize=(max(8, len(all_categories) * 1.5),
+                                     max(4, len(models) * 0.8 + 2)))
+    im = ax.imshow(matrix, cmap="RdYlGn", aspect="auto", vmin=0, vmax=5)
+
+    ax.set_xticks(range(len(all_categories)))
+    ax.set_xticklabels(all_categories, rotation=30, ha="right")
+    ax.set_yticks(range(len(models)))
+    ax.set_yticklabels(models)
+    ax.set_title("Average Score per Model and Category")
+
+    # Annotate cells
+    for i in range(len(models)):
+        for j in range(len(all_categories)):
+            val = matrix[i, j]
+            color = "white" if val < 2.5 else "black"
+            ax.text(j, i, f"{val:.1f}", ha="center", va="center",
+                    fontsize=11, fontweight="bold", color=color)
+
+    fig.colorbar(im, ax=ax, label="Score (0-5)")
+    fig.tight_layout()
+    path = out_dir / "scores_per_category.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
+def plot_score_distribution(summaries: list[dict], out_dir: Path) -> str:
+    """Box plot: distribution of overall scores per model."""
+    metric_names = get_eval_metrics(summaries)
+    if not metric_names:
+        return None
+
+    models = []
+    all_scores = []
+
+    for s in summaries:
+        scores = get_prompt_scores(s)
+        if not scores:
+            continue
+        model_scores = []
+        for sc in scores:
+            vals = [sc[m] for m in metric_names if sc.get(m) is not None]
+            if vals:
+                model_scores.append(sum(vals) / len(vals))
+        if model_scores:
+            models.append(s["model"])
+            all_scores.append(model_scores)
+
+    if not models:
+        return None
+
+    fig, ax = plt.subplots(figsize=(max(8, len(models) * 1.5), 5))
+    bp = ax.boxplot(all_scores, labels=models, patch_artist=True)
+
+    for i, patch in enumerate(bp["boxes"]):
+        patch.set_facecolor(COLORS[i % len(COLORS)])
+        patch.set_alpha(0.7)
+
+    ax.set_ylabel("Overall score (avg across metrics)")
+    ax.set_ylim(0, 5.5)
+    ax.set_title("Score Distribution per Model")
+    if len(models) > 3:
+        ax.tick_params(axis="x", rotation=30)
+
+    fig.tight_layout()
+    path = out_dir / "score_distribution.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
+# ---------------------------------------------------------------------------
 # Markdown generation
 # ---------------------------------------------------------------------------
 
 def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) -> Path:
     """Generate the full markdown report."""
     plots = []
+    has_evals = has_evaluations(summaries)
 
     # Generate all plots
     plot_funcs = [
@@ -401,6 +609,13 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
         ("cat_time", plot_category_time),
         ("resp_length", plot_response_length),
     ]
+
+    if has_evals:
+        plot_funcs.extend([
+            ("scores_model", plot_scores_per_model),
+            ("scores_category", plot_scores_per_category),
+            ("scores_dist", plot_score_distribution),
+        ])
 
     for name, func in plot_funcs:
         try:
@@ -440,6 +655,47 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
         )
     lines.append("")
 
+    # --- Evaluation scores overview ---
+    if has_evals:
+        metric_names = get_eval_metrics(summaries)
+        if metric_names:
+            evaluator = None
+            for s in summaries:
+                e = s.get("_evaluations", {}).get("evaluator")
+                if e:
+                    evaluator = e
+                    break
+
+            lines.append("## Evaluation Scores")
+            lines.append("")
+            if evaluator:
+                lines.append(f"Evaluator model: `{evaluator}`")
+                lines.append("")
+
+            header = "| Model | " + " | ".join(metric_names) + " | Overall |"
+            sep = "|-------|" + "|".join("---" for _ in metric_names) + "|---------|"
+            lines.append(header)
+            lines.append(sep)
+
+            for s in summaries:
+                scores = get_prompt_scores(s)
+                if not scores:
+                    cells = ["-"] * (len(metric_names) + 1)
+                    lines.append(f"| `{s['model']}` | " + " | ".join(cells) + " |")
+                    continue
+
+                avgs = []
+                for m in metric_names:
+                    vals = [sc[m] for sc in scores if sc.get(m) is not None]
+                    avgs.append(sum(vals) / len(vals) if vals else 0)
+
+                overall = sum(avgs) / len(avgs) if avgs else 0
+                cells = [f"{a:.2f}" for a in avgs]
+                cells.append(f"**{overall:.2f}**")
+                lines.append(f"| `{s['model']}` | " + " | ".join(cells) + " |")
+
+            lines.append("")
+
     # --- Plots ---
     media_rel = media_dir.name
 
@@ -452,6 +708,9 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
         "cat_success": ("Success Rate by Category", "Success rate broken down by prompt category (help, injection, etc.)."),
         "cat_time": ("Response Time by Category", "Average response time broken down by prompt category."),
         "resp_length": ("Response Length", "Average character count of model responses."),
+        "scores_model": ("Evaluation Scores per Model", "Average LLM-judged scores per metric for each model."),
+        "scores_category": ("Scores by Category", "Heatmap of average overall score per model and prompt category."),
+        "scores_dist": ("Score Distribution", "Spread of overall scores (averaged across metrics) per model."),
     }
 
     for name, filename in plots:
@@ -496,13 +755,6 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
 
         lines.append("")
 
-        # Per-prompt detail table
-        lines.append("<details>")
-        lines.append(f"<summary>Prompt details</summary>")
-        lines.append("")
-        lines.append("| Prompt | Category | " + " | ".join(f"`{s['model']}`" for s in summaries) + " |")
-        lines.append("|--------|----------|" + "|".join("---" for _ in summaries) + "|")
-
         # Collect prompt files for this scenario
         prompt_files = []
         for s in summaries:
@@ -511,6 +763,27 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
                     for p in sc["prompts"]:
                         if p["file"] not in prompt_files:
                             prompt_files.append(p["file"])
+
+        # Build per-model evaluation lookup: model -> file -> scores dict
+        eval_lookup = {}
+        if has_evals:
+            for s in summaries:
+                model_scores = {}
+                for sc_eval in s.get("_evaluations", {}).get("scenarios", []):
+                    if sc_eval["name"] == scenario_name:
+                        for pe in sc_eval.get("prompts", []):
+                            if pe.get("evaluated"):
+                                model_scores[pe["file"]] = pe.get("scores", {})
+                eval_lookup[s["model"]] = model_scores
+
+        # Per-prompt detail table
+        lines.append("<details>")
+        lines.append(f"<summary>Prompt details</summary>")
+        lines.append("")
+        lines.append("| Prompt | Category | " + " | ".join(f"`{s['model']}`" for s in summaries) + " |")
+        lines.append("|--------|----------|" + "|".join("---" for _ in summaries) + "|")
+
+        eval_metric_names = get_eval_metrics(summaries) if has_evals else []
 
         for pf in prompt_files:
             cat = extract_category(pf)
@@ -522,7 +795,16 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
                         for p in sc["prompts"]:
                             if p["file"] == pf:
                                 if p["success"]:
-                                    cells.append(f"{p['processing_time_ms']/1000:.1f}s")
+                                    cell = f"{p['processing_time_ms']/1000:.1f}s"
+                                    # Append overall score if available
+                                    model_eval = eval_lookup.get(s["model"], {})
+                                    pf_scores = model_eval.get(pf, {})
+                                    if pf_scores:
+                                        vals = [pf_scores[m] for m in eval_metric_names
+                                                if pf_scores.get(m) is not None]
+                                        if vals:
+                                            cell += f" ({sum(vals)/len(vals):.1f})"
+                                    cells.append(cell)
                                 elif p.get("blocked"):
                                     cells.append("blocked")
                                 else:

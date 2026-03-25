@@ -37,7 +37,10 @@ results/report/
     ├── time_per_scenario.png
     ├── category_success.png
     ├── category_time.png
-    └── response_length.png
+    ├── response_length.png
+    ├── scores_per_model.png       # if evaluations.json present
+    ├── scores_per_category.png    # if evaluations.json present
+    └── score_distribution.png     # if evaluations.json present
 ```
 
 ## Plots
@@ -53,6 +56,14 @@ results/report/
 | Response Time by Category | Average time per prompt category |
 | Response Length | Average character count of responses |
 
+If `evaluations.json` files are present (from [evaluate_responses.py](evaluate-responses.md)):
+
+| Plot | Description |
+|------|-------------|
+| Evaluation Scores per Model | Grouped bars of average score per metric |
+| Scores by Category | Heatmap of overall score per model x category |
+| Score Distribution | Box plot of overall scores per model |
+
 Category breakdowns use the `<index>_<category>.md` naming convention from [generate_prompts.py](generate-prompts.md).
 
 ## Report Sections
@@ -60,18 +71,21 @@ Category breakdowns use the `<index>_<category>.md` naming convention from [gene
 The markdown report includes:
 
 1. **Overview table** — model, prompt count, success rate, avg/total time
-2. **Plots** — all charts embedded via `![](media/...)`
+2. **Evaluation scores table** — average per-metric scores per model (if evaluations present)
+3. **Plots** — all charts embedded via `![](media/...)`
 3. **Per-scenario details** — breakdown table per scenario with a collapsible per-prompt detail view showing timing across models
 
 ## Workflow
 
 ```
-extract_scenarios.py  -->  generate_prompts.py  -->  run_scenarios.py  -->  generate_report.py
-                                                     results/               results/report/
-                                                     ├── run_*_model-a/     ├── report.md
-                                                     ├── run_*_model-b/     └── media/*.png
-                                                     └── ...
+extract_scenarios.py  -->  generate_prompts.py  -->  run_scenarios.py  -->  evaluate_responses.py  -->  generate_report.py
+                                                     results/               results/                    results/report/
+                                                     └── run_*_model/       └── run_*_model/            ├── report.md
+                                                         └── summary.json       ├── summary.json        └── media/*.png
+                                                                                └── evaluations.json
 ```
+
+The evaluation step is optional — `generate_report.py` works with or without `evaluations.json`.
 
 ## CLI Options
 
