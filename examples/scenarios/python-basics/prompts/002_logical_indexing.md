@@ -1,0 +1,1 @@
+How do I use np.where to create the logical index arrays L1 and L2?
