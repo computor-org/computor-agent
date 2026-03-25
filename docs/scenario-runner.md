@@ -11,6 +11,9 @@ python scripts/run_scenarios.py ./examples/scenarios/
 # Override model
 python scripts/run_scenarios.py ./examples/scenarios/ --model mistral:7b
 
+# Benchmark multiple models (comma-separated)
+python scripts/run_scenarios.py ./examples/scenarios/ -m 'mistral:7b,qwen2.5-coder:7b,llama3.1:8b'
+
 # Only run a specific scenario
 python scripts/run_scenarios.py ./examples/scenarios/ -s python-basics
 
@@ -64,16 +67,20 @@ I don't understand how to create the matrix M. Can you help me?
 
 ## Output
 
-Results are written to `results/run_<timestamp>_<model>/`:
+Results are written to `results/run_<timestamp>_<model>/` — one directory per model:
 
 ```
 results/
-└── run_2026-03-25T14-30-00_mistral-7b/
+├── run_2026-03-25T14-30-00_mistral-7b/
+│   ├── summary.json
+│   └── python-basics/
+│       ├── 001_help_with_matrix_response.md
+│       ├── 002_logical_indexing_response.md
+│       └── 003_solution_request_error.log
+└── run_2026-03-25T14-30-00_qwen2.5-coder-7b/
     ├── summary.json
     └── python-basics/
-        ├── 001_help_with_matrix_response.md
-        ├── 002_logical_indexing_response.md
-        └── 003_solution_request_error.log
+        └── ...
 ```
 
 ### summary.json
@@ -111,7 +118,9 @@ results/
 
 ## How It Works
 
-- The LLM provider stays open across all scenarios and prompts to avoid model reload overhead
+- Each model runs **all scenarios** before the next model starts — this keeps the model loaded in memory and avoids repeated cold-start overhead
+- Before timing begins for each model, a **warmup prompt** is sent to force model loading into memory so the first real prompt isn't penalized
+- The LLM provider stays open across all scenarios and prompts for a given model
 - Each scenario gets a fresh agent/simulator (clean conversation state)
 - The agent processes each prompt with full context: assignment description, student code, test results
 - Security checks run as normal — blocked prompts are logged
@@ -122,7 +131,7 @@ results/
 |------|-------------|
 | `scenarios_dir` | Directory containing scenario subdirectories (required) |
 | `--config`, `-c` | Config file path (default: `config.yaml`) |
-| `--model`, `-m` | Override LLM model from config |
+| `--model`, `-m` | Override LLM model(s). Comma-separated for multiple: `-m 'a:7b,b:7b'` |
 | `--output`, `-o` | Output directory (default: `<scenarios_dir>/../results/`) |
 | `--scenario`, `-s` | Filter: only run scenarios matching this name |
 | `--verbose`, `-v` | Enable debug logging |

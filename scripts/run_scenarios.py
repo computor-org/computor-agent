@@ -374,13 +374,133 @@ async def run_scenario(
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
-async def run_all_scenarios(args: argparse.Namespace) -> None:
-    """Initialize LLM once, run all scenarios, write summary."""
-    from computor_agent.settings import ComputorConfig
-    from computor_agent.settings.config import BackendConfig, LLMSettings
+async def warmup_model(llm_provider) -> None:
+    """Send a short throwaway prompt to force model loading before benchmarking.
+
+    Local providers (Ollama, LM Studio) load the model into memory on the first
+    request.  Without a warmup the first timed prompt would include that cold-start
+    latency, skewing the statistics.
+    """
+    logger.info("Warming up model (loading into memory)...")
+    warmup_start = time.perf_counter()
+    await llm_provider.complete("Say OK.")
+    warmup_ms = (time.perf_counter() - warmup_start) * 1000
+    logger.info(f"Warmup done ({warmup_ms:.0f}ms)")
+
+
+async def run_model(
+    model_name: str,
+    llm_settings,
+    tutor_config,
+    scenario_dirs: list[Path],
+    output_base: Path,
+    timestamp: str,
+) -> RunSummary:
+    """Run all scenarios for a single model and return the summary."""
+    from computor_agent.settings.config import LLMSettings
     from computor_agent.llm.config import LLMConfig, ProviderType
     from computor_agent.llm.factory import get_provider
     from computor_agent.tutor import TutorLLMAdapter
+
+    model_llm_settings = LLMSettings(
+        provider=llm_settings.provider,
+        model=model_name,
+        base_url=llm_settings.base_url,
+        api_key=getattr(llm_settings, "api_key", None),
+        temperature=llm_settings.temperature,
+    )
+
+    llm_config = LLMConfig(
+        provider=ProviderType(model_llm_settings.provider),
+        model=model_llm_settings.model,
+        base_url=model_llm_settings.base_url,
+        api_key=model_llm_settings.get_api_key(),
+        temperature=model_llm_settings.temperature,
+    )
+    llm_provider = get_provider(llm_config)
+
+    try:
+        logger.info(f"Checking LLM connectivity ({llm_config.provider.value}/{llm_config.model})...")
+        await llm_provider.check_health()
+        logger.info(f"LLM ready: {llm_config.provider.value}/{llm_config.model} @ {llm_config.base_url}")
+    except Exception as e:
+        logger.error(f"Cannot connect to LLM ({model_name}): {e}")
+        await llm_provider.close()
+        return None
+
+    # Warmup: force model loading so first timed prompt isn't penalized
+    try:
+        await warmup_model(llm_provider)
+    except Exception as e:
+        logger.warning(f"Warmup failed for {model_name} (continuing anyway): {e}")
+
+    tutor_llm = TutorLLMAdapter(llm_provider)
+
+    model_slug = model_name.replace(":", "-").replace("/", "-")
+    run_dir = output_base / f"run_{timestamp}_{model_slug}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Output: {run_dir}")
+
+    summary = RunSummary(
+        model=llm_config.model,
+        provider=llm_config.provider.value,
+        timestamp=timestamp,
+    )
+
+    run_start = time.perf_counter()
+
+    for scenario_dir in scenario_dirs:
+        scenario_result = await run_scenario(
+            scenario_dir=scenario_dir,
+            output_dir=run_dir,
+            tutor_config=tutor_config,
+            tutor_llm=tutor_llm,
+        )
+        summary.scenarios.append(scenario_result)
+
+    total_time = time.perf_counter() - run_start
+
+    # Compute summary
+    all_prompts = [p for s in summary.scenarios for p in s.prompts]
+    summary.total_scenarios = len(summary.scenarios)
+    summary.total_prompts = len(all_prompts)
+    summary.total_successes = sum(1 for p in all_prompts if p.success)
+    summary.total_failures = sum(1 for p in all_prompts if not p.success)
+    summary.total_time_s = total_time
+    if all_prompts:
+        summary.avg_processing_time_ms = (
+            sum(p.processing_time_ms for p in all_prompts) / len(all_prompts)
+        )
+
+    # Write summary.json
+    summary_path = run_dir / "summary.json"
+    summary_path.write_text(
+        json.dumps(summary.to_dict(), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    # Report
+    logger.info(f"{'=' * 60}")
+    logger.info(
+        f"[{model_name}] Run complete: {summary.total_prompts} prompt(s) across "
+        f"{summary.total_scenarios} scenario(s)"
+    )
+    logger.info(f"  Successes: {summary.total_successes}")
+    logger.info(f"  Failures:  {summary.total_failures}")
+    logger.info(f"  Total time: {summary.total_time_s:.1f}s")
+    if all_prompts:
+        logger.info(f"  Avg time/prompt: {summary.avg_processing_time_ms:.0f}ms")
+    logger.info(f"  Output: {run_dir}")
+    logger.info(f"  Summary: {summary_path}")
+
+    await llm_provider.close()
+    return summary
+
+
+async def run_all_scenarios(args: argparse.Namespace) -> None:
+    """Initialize config, then run all scenarios for each model sequentially."""
+    from computor_agent.settings import ComputorConfig
+    from computor_agent.settings.config import BackendConfig, LLMSettings
     from computor_agent.tutor.prompts.loader import get_prompt_loader
     from computor_agent.tutor.dev_mode import _ensure_prompt_files
 
@@ -389,7 +509,7 @@ async def run_all_scenarios(args: argparse.Namespace) -> None:
         logger.error(f"Scenarios directory does not exist: {scenarios_dir}")
         sys.exit(1)
 
-    # --- Phase 1: Configuration ---
+    # --- Configuration ---
     config_path = Path(args.config)
     if config_path.exists():
         computor_config = ComputorConfig.from_file(config_path)
@@ -411,37 +531,14 @@ async def run_all_scenarios(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     llm_settings = computor_config.llm
+
+    # --- Build model list ---
     if args.model:
-        llm_settings = LLMSettings(
-            provider=llm_settings.provider,
-            model=args.model,
-            base_url=llm_settings.base_url,
-            api_key=getattr(llm_settings, "api_key", None),
-            temperature=llm_settings.temperature,
-        )
+        models = [m.strip() for m in args.model.split(",") if m.strip()]
+    else:
+        models = [llm_settings.model]
 
-    # --- Phase 2: LLM provider (initialized once, reused across all scenarios) ---
-    llm_config = LLMConfig(
-        provider=ProviderType(llm_settings.provider),
-        model=llm_settings.model,
-        base_url=llm_settings.base_url,
-        api_key=llm_settings.get_api_key(),
-        temperature=llm_settings.temperature,
-    )
-    llm_provider = get_provider(llm_config)
-
-    try:
-        logger.info(f"Checking LLM connectivity ({llm_config.provider.value}/{llm_config.model})...")
-        await llm_provider.check_health()
-        logger.info(f"LLM ready: {llm_config.provider.value}/{llm_config.model} @ {llm_config.base_url}")
-    except Exception as e:
-        logger.error(f"Cannot connect to LLM: {e}")
-        await llm_provider.close()
-        sys.exit(1)
-
-    tutor_llm = TutorLLMAdapter(llm_provider)
-
-    # --- Phase 3: Prompts ---
+    # --- Prompts ---
     prompts_dir = Path.home() / ".computor" / "prompts"
     _ensure_prompt_files(prompts_dir)
     get_prompt_loader(
@@ -450,83 +547,51 @@ async def run_all_scenarios(args: argparse.Namespace) -> None:
         force_reload=True,
     )
 
-    # --- Phase 4: Discover scenarios ---
+    # --- Discover scenarios ---
     scenario_dirs = discover_scenarios(scenarios_dir, name_filter=args.scenario)
     if not scenario_dirs:
         logger.error(f"No scenarios found in {scenarios_dir}")
         if args.scenario:
             logger.error(f"  (filter: '{args.scenario}')")
-        await llm_provider.close()
         sys.exit(1)
 
-    logger.info(f"Found {len(scenario_dirs)} scenario(s)")
+    logger.info(f"Found {len(scenario_dirs)} scenario(s), {len(models)} model(s)")
 
-    # --- Phase 5: Prepare output directory ---
+    # --- Output base ---
     if args.output:
         output_base = Path(args.output).resolve()
     else:
         output_base = scenarios_dir.parent / "results"
 
     timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    model_slug = llm_config.model.replace(":", "-").replace("/", "-")
-    run_dir = output_base / f"run_{timestamp}_{model_slug}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Output: {run_dir}")
 
-    # --- Phase 6: Run scenarios ---
-    summary = RunSummary(
-        model=llm_config.model,
-        provider=llm_config.provider.value,
-        timestamp=timestamp,
-    )
+    # --- Run each model: all scenarios, then next model ---
+    summaries: list[RunSummary] = []
+    for i, model_name in enumerate(models, 1):
+        logger.info(f"\n{'#' * 60}")
+        logger.info(f"Model {i}/{len(models)}: {model_name}")
+        logger.info(f"{'#' * 60}")
 
-    run_start = time.perf_counter()
-
-    for scenario_dir in scenario_dirs:
-        scenario_result = await run_scenario(
-            scenario_dir=scenario_dir,
-            output_dir=run_dir,
+        summary = await run_model(
+            model_name=model_name,
+            llm_settings=llm_settings,
             tutor_config=tutor_config,
-            tutor_llm=tutor_llm,
+            scenario_dirs=scenario_dirs,
+            output_base=output_base,
+            timestamp=timestamp,
         )
-        summary.scenarios.append(scenario_result)
+        if summary:
+            summaries.append(summary)
 
-    total_time = time.perf_counter() - run_start
-
-    # --- Phase 7: Compute summary ---
-    all_prompts = [p for s in summary.scenarios for p in s.prompts]
-    summary.total_scenarios = len(summary.scenarios)
-    summary.total_prompts = len(all_prompts)
-    summary.total_successes = sum(1 for p in all_prompts if p.success)
-    summary.total_failures = sum(1 for p in all_prompts if not p.success)
-    summary.total_time_s = total_time
-    if all_prompts:
-        summary.avg_processing_time_ms = (
-            sum(p.processing_time_ms for p in all_prompts) / len(all_prompts)
-        )
-
-    # --- Phase 8: Write summary.json ---
-    summary_path = run_dir / "summary.json"
-    summary_path.write_text(
-        json.dumps(summary.to_dict(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-    # --- Phase 9: Report ---
-    logger.info(f"{'=' * 60}")
-    logger.info(
-        f"Run complete: {summary.total_prompts} prompt(s) across "
-        f"{summary.total_scenarios} scenario(s)"
-    )
-    logger.info(f"  Successes: {summary.total_successes}")
-    logger.info(f"  Failures:  {summary.total_failures}")
-    logger.info(f"  Total time: {summary.total_time_s:.1f}s")
-    if all_prompts:
-        logger.info(f"  Avg time/prompt: {summary.avg_processing_time_ms:.0f}ms")
-    logger.info(f"  Output: {run_dir}")
-    logger.info(f"  Summary: {summary_path}")
-
-    await llm_provider.close()
+    # --- Final report (multi-model) ---
+    if len(models) > 1:
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"All models complete ({len(summaries)}/{len(models)} succeeded)")
+        for s in summaries:
+            logger.info(
+                f"  {s.model}: {s.total_successes}/{s.total_prompts} OK, "
+                f"avg {s.avg_processing_time_ms:.0f}ms, total {s.total_time_s:.1f}s"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +614,7 @@ def main():
     parser.add_argument(
         "--model", "-m",
         default=None,
-        help="Override LLM model from config",
+        help="Override LLM model(s) from config. Comma-separated for multiple: -m 'mistral:7b,qwen2.5-coder:7b'",
     )
     parser.add_argument(
         "--output", "-o",
