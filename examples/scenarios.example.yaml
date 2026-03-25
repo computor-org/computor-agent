@@ -1,0 +1,25 @@
+# Configuration for the scenario runner.
+#
+# Usage:
+#   python scripts/run_scenarios.py scenarios.yaml
+#
+# All fields are optional — CLI arguments take precedence over this file,
+# and this file takes precedence over defaults.
+
+# Models to run (sequentially, each completes all scenarios before the next)
+models:
+  - mistral:7b
+  - qwen2.5-coder:7b
+  - llama3.1:8b
+
+# Path to scenario directories
+scenarios_dir: ./examples/scenarios/
+
+# Output directory for results (default: <scenarios_dir>/../results/)
+# output: ./results/
+
+# Only run scenarios matching this name (default: all)
+# scenario_filter: python-basics
+
+# Path to config.yaml for LLM provider/backend settings (default: config.yaml)
+# config: config.yaml

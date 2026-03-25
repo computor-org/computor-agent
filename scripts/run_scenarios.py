@@ -7,6 +7,7 @@ each prompt file through the full tutor pipeline (context building,
 security checks, response generation).
 
 Usage:
+    python scripts/run_scenarios.py benchmark.yaml
     python scripts/run_scenarios.py ./examples/scenarios/
     python scripts/run_scenarios.py ./examples/scenarios/ --model mistral:7b
     python scripts/run_scenarios.py ./examples/scenarios/ -s python-basics
@@ -24,6 +25,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +170,31 @@ class SilentMockComputorClient:
 
     async def __aexit__(self, *args):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Run configuration (loaded from YAML)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RunConfig:
+    """Settings loaded from a scenario runner config file."""
+    models: list[str] = field(default_factory=list)
+    scenarios_dir: Optional[str] = None
+    output: Optional[str] = None
+    scenario_filter: Optional[str] = None
+    config: Optional[str] = None  # path to config.yaml
+
+    @classmethod
+    def from_file(cls, path: Path) -> "RunConfig":
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return cls(
+            models=data.get("models", []),
+            scenarios_dir=data.get("scenarios_dir"),
+            output=data.get("output"),
+            scenario_filter=data.get("scenario_filter"),
+            config=data.get("config"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -504,13 +532,33 @@ async def run_all_scenarios(args: argparse.Namespace) -> None:
     from computor_agent.tutor.prompts.loader import get_prompt_loader
     from computor_agent.tutor.dev_mode import _ensure_prompt_files
 
-    scenarios_dir = Path(args.scenarios_dir).resolve()
+    # --- Resolve target: benchmark config file or scenarios directory ---
+    target = Path(args.target)
+    run_config = None
+    if target.is_file() and target.suffix in (".yaml", ".yml"):
+        run_config = RunConfig.from_file(target)
+        logger.info(f"Loaded run config: {target}")
+        scenarios_dir_str = run_config.scenarios_dir
+        if not scenarios_dir_str:
+            logger.error(f"Config file must set 'scenarios_dir'")
+            sys.exit(1)
+        # Resolve relative paths against the benchmark file's directory
+        scenarios_dir = (target.parent / scenarios_dir_str).resolve()
+    elif target.is_dir():
+        scenarios_dir = target.resolve()
+    else:
+        logger.error(f"Target not found or not recognized: {target}")
+        sys.exit(1)
     if not scenarios_dir.is_dir():
         logger.error(f"Scenarios directory does not exist: {scenarios_dir}")
         sys.exit(1)
 
+    config_file = args.config or (run_config and run_config.config) or "config.yaml"
+    output_override = args.output or (run_config and run_config.output)
+    scenario_filter = args.scenario or (run_config and run_config.scenario_filter)
+
     # --- Configuration ---
-    config_path = Path(args.config)
+    config_path = Path(config_file)
     if config_path.exists():
         computor_config = ComputorConfig.from_file(config_path)
     else:
@@ -522,7 +570,7 @@ async def run_all_scenarios(args: argparse.Namespace) -> None:
                 base_url="http://localhost:11434/v1",
             ),
         )
-        logger.warning(f"Config file '{args.config}' not found, using defaults")
+        logger.warning(f"Config file '{config_file}' not found, using defaults")
 
     tutor_config = computor_config.get_tutor_config()
 
@@ -532,9 +580,11 @@ async def run_all_scenarios(args: argparse.Namespace) -> None:
 
     llm_settings = computor_config.llm
 
-    # --- Build model list ---
+    # --- Build model list (CLI > run config > config.yaml) ---
     if args.model:
         models = [m.strip() for m in args.model.split(",") if m.strip()]
+    elif run_config and run_config.models:
+        models = run_config.models
     else:
         models = [llm_settings.model]
 
@@ -548,18 +598,18 @@ async def run_all_scenarios(args: argparse.Namespace) -> None:
     )
 
     # --- Discover scenarios ---
-    scenario_dirs = discover_scenarios(scenarios_dir, name_filter=args.scenario)
+    scenario_dirs = discover_scenarios(scenarios_dir, name_filter=scenario_filter)
     if not scenario_dirs:
         logger.error(f"No scenarios found in {scenarios_dir}")
-        if args.scenario:
-            logger.error(f"  (filter: '{args.scenario}')")
+        if scenario_filter:
+            logger.error(f"  (filter: '{scenario_filter}')")
         sys.exit(1)
 
     logger.info(f"Found {len(scenario_dirs)} scenario(s), {len(models)} model(s)")
 
     # --- Output base ---
-    if args.output:
-        output_base = Path(args.output).resolve()
+    if output_override:
+        output_base = Path(output_override).resolve()
     else:
         output_base = scenarios_dir.parent / "results"
 
@@ -603,18 +653,18 @@ def main():
         description="Batch-run tutor agent against pre-defined scenarios",
     )
     parser.add_argument(
-        "scenarios_dir",
-        help="Directory containing scenario subdirectories",
+        "target",
+        help="Benchmark config file (.yaml) or scenarios directory",
     )
     parser.add_argument(
         "--config", "-c",
-        default="config.yaml",
+        default=None,
         help="Config file path (default: config.yaml)",
     )
     parser.add_argument(
         "--model", "-m",
         default=None,
-        help="Override LLM model(s) from config. Comma-separated for multiple: -m 'mistral:7b,qwen2.5-coder:7b'",
+        help="Override LLM model(s). Comma-separated for multiple: -m 'mistral:7b,qwen2.5-coder:7b'",
     )
     parser.add_argument(
         "--output", "-o",

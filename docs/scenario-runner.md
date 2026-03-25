@@ -5,13 +5,16 @@ Batch-runs the tutor agent against pre-defined scenarios to evaluate LLM respons
 ## Usage
 
 ```bash
-# Run all scenarios with model from config.yaml
+# Run from a config file (recommended)
+python scripts/run_scenarios.py scenarios.yaml
+
+# Or pass a scenarios directory directly
 python scripts/run_scenarios.py ./examples/scenarios/
 
 # Override model
 python scripts/run_scenarios.py ./examples/scenarios/ --model mistral:7b
 
-# Benchmark multiple models (comma-separated)
+# Multiple models (comma-separated)
 python scripts/run_scenarios.py ./examples/scenarios/ -m 'mistral:7b,qwen2.5-coder:7b,llama3.1:8b'
 
 # Only run a specific scenario
@@ -23,6 +26,29 @@ python scripts/run_scenarios.py ./examples/scenarios/ -o ./results/
 # Verbose logging
 python scripts/run_scenarios.py ./examples/scenarios/ -v
 ```
+
+## Configuration File
+
+Instead of passing models and options via CLI, use a config file:
+
+```yaml
+# scenarios.yaml
+models:
+  - mistral:7b
+  - qwen2.5-coder:7b
+  - llama3.1:8b
+
+scenarios_dir: ./examples/scenarios/
+# output: ./results/
+# scenario_filter: python-basics
+# config: config.yaml
+```
+
+```bash
+python scripts/run_scenarios.py scenarios.yaml
+```
+
+The target is auto-detected: `.yaml`/`.yml` files are loaded as run configs, directories are used as scenarios directories directly. CLI arguments always take precedence over the config file. See [examples/scenarios.example.yaml](../examples/scenarios.example.yaml) for a full template.
 
 ## Scenario Directory Structure
 
@@ -129,7 +155,7 @@ results/
 
 | Flag | Description |
 |------|-------------|
-| `scenarios_dir` | Directory containing scenario subdirectories (required) |
+| `target` | Config file (`.yaml`) or scenarios directory (required) |
 | `--config`, `-c` | Config file path (default: `config.yaml`) |
 | `--model`, `-m` | Override LLM model(s). Comma-separated for multiple: `-m 'a:7b,b:7b'` |
 | `--output`, `-o` | Output directory (default: `<scenarios_dir>/../results/`) |
