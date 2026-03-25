@@ -1,0 +1,17 @@
+{
+  "total": 10,
+  "passed": 0,
+  "failed": 10,
+  "details": [
+    {"name": "test_M_exists", "status": "failed", "message": "NameError: name 'M' is not defined"},
+    {"name": "test_M_shape", "status": "failed", "message": "NameError: name 'M' is not defined"},
+    {"name": "test_M_dtype", "status": "failed", "message": "NameError: name 'M' is not defined"},
+    {"name": "test_M_values", "status": "failed", "message": "NameError: name 'M' is not defined"},
+    {"name": "test_L1", "status": "failed", "message": "NameError: name 'L1' is not defined"},
+    {"name": "test_L2", "status": "failed", "message": "NameError: name 'L2' is not defined"},
+    {"name": "test_L3", "status": "failed", "message": "NameError: name 'L3' is not defined"},
+    {"name": "test_L4", "status": "failed", "message": "NameError: name 'L4' is not defined"},
+    {"name": "test_L5", "status": "failed", "message": "NameError: name 'L5' is not defined"},
+    {"name": "test_no_loops", "status": "failed", "message": "NameError: name 'M' is not defined"}
+  ]
+}

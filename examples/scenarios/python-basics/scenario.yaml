@@ -1,0 +1,6 @@
+student:
+  name: "Max Mustermann"
+
+assignment:
+  title: "Python Basics 1 - NumPy Matrix Operations"
+  language: "en"

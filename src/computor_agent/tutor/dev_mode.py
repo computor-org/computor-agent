@@ -191,13 +191,14 @@ class MessageSimulator:
 class MockComputorClient:
     """Mock client that simulates API responses without making actual calls."""
 
-    def __init__(self, simulator: MessageSimulator):
+    def __init__(self, simulator: MessageSimulator, scenario=None):
         self.simulator = simulator
+        self._scenario = scenario
         self.messages = MockMessagesEndpoint(simulator)
         self.tutors = MockTutorsEndpoint()
         self.course_members = MockCourseMembersEndpoint()
         self.submission_groups = MockSubmissionGroupsEndpoint()
-        self.submissions = MockSubmissionsEndpoint()
+        self.submissions = MockSubmissionsEndpoint(scenario=scenario)
 
     async def login(self, username: str, password: str):
         """Mock login - always succeeds."""
@@ -344,19 +345,31 @@ class MockSubmissionGroupsEndpoint:
 
 
 class MockSubmissionsEndpoint:
-    """Mock submissions endpoint - no real downloads in dev mode."""
+    """Mock submissions endpoint - serves scenario data if available."""
 
-    async def artifacts_download(self, **kwargs) -> None:
-        """Mock artifact download - no data in dev mode."""
-        return None
+    def __init__(self, scenario=None):
+        self._scenario = scenario
+
+    async def artifacts_download(self, **kwargs) -> Optional[bytes]:
+        """Return scenario submission files as a ZIP if available."""
+        if not self._scenario or not self._scenario.submission_files:
+            return None
+
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for filename, content in self._scenario.submission_files.items():
+                zf.writestr(filename, content)
+        return buf.getvalue()
 
     async def get_artifacts(self, **kwargs) -> list:
-        """Mock artifact listing - no data in dev mode."""
+        """Mock artifact listing."""
         return []
 
-    async def get_artifacts_download(self, *args, **kwargs) -> None:
-        """Mock artifact download by ID - no data in dev mode."""
-        return None
+    async def get_artifacts_download(self, *args, **kwargs) -> Optional[bytes]:
+        """Alias for artifacts_download."""
+        return await self.artifacts_download()
 
 
 def _ensure_prompt_files(prompts_dir: Path) -> None:
@@ -459,10 +472,11 @@ editable: true
 class DevelopmentScheduler:
     """Interactive scheduler for development mode."""
 
-    def __init__(self, agent, simulator: MessageSimulator, assignment_context=None):
+    def __init__(self, agent, simulator: MessageSimulator, assignment_context=None, scenario=None):
         self.agent = agent
         self.simulator = simulator
         self.assignment_context = assignment_context
+        self.scenario = scenario
         self.running = False
 
     async def start(self):
@@ -593,7 +607,16 @@ class DevelopmentScheduler:
         """Process a message through the agent."""
         console.print("[dim]Processing message...[/dim]")
 
-        # Create mock course content with assignment info if available
+        # Create mock course content with assignment/scenario info
+        student_name = (
+            self.scenario.student.name if self.scenario else "Dev User"
+        )
+        sg_member = MockSubmissionGroupMember(full_name=student_name)
+        sg = MockSubmissionGroup(
+            id=message.submission_group_id or str(uuid.uuid4()),
+            members=[sg_member],
+        )
+
         if self.assignment_context:
             course_content = MockCourseContent(
                 submission_group_id=message.submission_group_id,
@@ -601,11 +624,13 @@ class DevelopmentScheduler:
                 title=self.assignment_context.title,
                 description=self.assignment_context.readme_content,
                 directory=self.assignment_context.identifier,
+                submission_group=sg,
             )
         else:
             course_content = MockCourseContent(
                 submission_group_id=message.submission_group_id,
-                unread_message_count=1
+                unread_message_count=1,
+                submission_group=sg,
             )
 
         try:
@@ -647,6 +672,8 @@ async def run_development_mode(
     verbose: bool = False,
     prompts_dir: Optional[Path] = None,
     assignment_path: Optional[Path] = None,
+    scenario_path: Optional[Path] = None,
+    prompt: Optional[str] = None,
 ):
     """
     Run the tutor agent in development mode.
@@ -659,6 +686,8 @@ async def run_development_mode(
         verbose: Enable verbose logging
         prompts_dir: Directory for prompt files (default: ~/.computor/prompts)
         assignment_path: Path to assignment directory (must contain meta.yaml)
+        scenario_path: Path to scenario directory (must contain scenario.yaml)
+        prompt: Single message to process and exit (no interactive loop)
     """
     from computor_agent.settings import ComputorConfig
     from computor_agent.llm.config import LLMConfig, ProviderType
@@ -667,7 +696,9 @@ async def run_development_mode(
     from computor_agent.tutor.prompts.loader import get_prompt_loader
     from computor_agent.tutor.assignment_loader import AssignmentLoader, AssignmentContext
 
-    # Load configuration
+    is_single_shot = prompt is not None
+
+    # --- Phase 1: Configuration ---
     if config_path is not None:
         logger.info(f"Loading config from {config_path}")
         computor_config = ComputorConfig.from_file(config_path)
@@ -683,41 +714,9 @@ async def run_development_mode(
             ),
         )
     tutor_config = computor_config.get_tutor_config()
+    console.print(f"[green]✓ Config loaded[/green]")
 
-    # Load assignment context if provided
-    assignment_context: Optional[AssignmentContext] = None
-    if assignment_path:
-        try:
-            assignment_context = AssignmentLoader.load_from_path(assignment_path)
-            console.print(f"[green]✓ Loaded assignment: {assignment_context.title}[/green]")
-            console.print(f"[dim]  Files: {', '.join(f.path for f in assignment_context.files)}[/dim]")
-        except Exception as e:
-            console.print(f"[red]Failed to load assignment: {e}[/red]")
-
-    # Setup prompt hot reload callback
-    def on_prompt_reload(filename: str):
-        """Callback when a prompt file is reloaded."""
-        console.print(f"[yellow]🔄 Prompt reloaded: {filename}[/yellow]")
-
-    # Determine prompts directory
-    if prompts_dir is None:
-        prompts_dir = Path.home() / ".computor" / "prompts"
-    else:
-        prompts_dir = Path(prompts_dir).expanduser().resolve()
-
-    # Auto-initialize missing prompt files
-    _ensure_prompt_files(prompts_dir)
-
-    console.print(f"[dim]Loading prompts from: {prompts_dir}[/dim]")
-
-    prompt_loader = get_prompt_loader(
-        prompts_dir=prompts_dir,
-        enable_hot_reload=True,
-        reload_callback=on_prompt_reload,
-        force_reload=True
-    )
-
-    # Create LLM provider
+    # --- Phase 2: LLM ---
     if not computor_config.llm:
         console.print("[bold red]Error:[/bold red] LLM configuration is required")
         return
@@ -731,11 +730,10 @@ async def run_development_mode(
     )
     llm_provider = get_provider(llm_config)
 
-    # Health check: verify the LLM is reachable before entering interactive mode
     try:
-        console.print(f"[dim]Checking LLM connectivity ({llm_config.provider.value} @ {llm_config.base_url})...[/dim]")
+        console.print(f"[dim]Checking LLM connectivity ({llm_config.provider.value}/{llm_config.model})...[/dim]")
         await llm_provider.check_health()
-        console.print("[green]✓ LLM is reachable[/green]")
+        console.print(f"[green]✓ LLM ready[/green] [dim]({llm_config.provider.value}/{llm_config.model} @ {llm_config.base_url})[/dim]")
     except Exception as e:
         console.print(
             f"\n[bold red]Error: Cannot connect to LLM provider.[/bold red]\n"
@@ -750,53 +748,99 @@ async def run_development_mode(
         await llm_provider.close()
         return
 
+    # --- Phase 3: Prompts ---
+    if prompts_dir is None:
+        prompts_dir = Path.home() / ".computor" / "prompts"
+    else:
+        prompts_dir = Path(prompts_dir).expanduser().resolve()
+
+    _ensure_prompt_files(prompts_dir)
+
+    def on_prompt_reload(filename: str):
+        console.print(f"[yellow]Prompt reloaded: {filename}[/yellow]")
+
+    prompt_loader = get_prompt_loader(
+        prompts_dir=prompts_dir,
+        enable_hot_reload=not is_single_shot,
+        reload_callback=on_prompt_reload,
+        force_reload=True,
+    )
+    console.print(f"[green]✓ Prompts loaded[/green] [dim]({prompts_dir})[/dim]")
+
+    # --- Phase 4: Scenario / Assignment ---
+    scenario = None
+    assignment_context: Optional[AssignmentContext] = None
+
+    if scenario_path:
+        from computor_agent.tutor.scenario_loader import load_scenario
+        try:
+            scenario = load_scenario(scenario_path)
+            parts = [f"[green]✓ Scenario loaded:[/green] {scenario.assignment.title}"]
+            if scenario.description:
+                parts.append(f"  [dim]Description: {len(scenario.description)} chars[/dim]")
+            if scenario.submission_files:
+                parts.append(f"  [dim]Submission: {', '.join(scenario.submission_files.keys())}[/dim]")
+            if scenario.reference_files:
+                parts.append(f"  [dim]Reference: {', '.join(scenario.reference_files.keys())}[/dim]")
+            if scenario.test_results:
+                parts.append(f"  [dim]Tests: {scenario.test_results.passed}/{scenario.test_results.total} passed[/dim]")
+            console.print("\n".join(parts))
+
+            assignment_context = AssignmentContext(
+                identifier="scenario",
+                title=scenario.assignment.title,
+                description="",
+                language=scenario.assignment.language,
+                readme_content=scenario.description or "(No description)",
+                files=[],
+                slug="scenario",
+            )
+        except Exception as e:
+            console.print(f"[red]Failed to load scenario: {e}[/red]")
+
+    elif assignment_path:
+        try:
+            assignment_context = AssignmentLoader.load_from_path(assignment_path)
+            console.print(f"[green]✓ Assignment loaded:[/green] {assignment_context.title}")
+            console.print(f"  [dim]Files: {', '.join(f.path for f in assignment_context.files)}[/dim]")
+        except Exception as e:
+            console.print(f"[red]Failed to load assignment: {e}[/red]")
+
+    # --- Phase 5: Agent setup ---
     tutor_llm = TutorLLMAdapter(llm_provider)
-
-    # Create simulator and mock client
     simulator = MessageSimulator()
-    mock_client = MockComputorClient(simulator)
-
-    # Create the tutor agent with mock client
+    mock_client = MockComputorClient(simulator, scenario=scenario)
     agent = TutorAgent(
         config=tutor_config,
         llm=tutor_llm,
         client=mock_client,
     )
+    scheduler = DevelopmentScheduler(agent, simulator, assignment_context, scenario=scenario)
 
-    # Build info panel
+    # --- Phase 6: Run ---
+    if is_single_shot:
+        console.print(f"\n[bold]Prompt:[/bold] {prompt}")
+        message = simulator.create_message(content=prompt, add_request_tag=True)
+        await scheduler._process_message(message)
+        await llm_provider.close()
+        return
+
+    # Interactive mode — show info panel
     info_lines = [
-        "[bold green]Development Mode with Hot Reload[/bold green]\n",
-        f"LLM: [green]{computor_config.llm.provider}[/green] ([green]{computor_config.llm.model}[/green])",
-        f"Prompts directory: [cyan]{prompts_dir}[/cyan]",
-        "Hot reload: [green]Enabled[/green] - Edit .md files to see changes instantly",
+        f"LLM: [green]{computor_config.llm.provider}/{computor_config.llm.model}[/green]",
+        f"Prompts: [cyan]{prompts_dir}[/cyan] (hot reload enabled)",
     ]
-
     if assignment_context:
-        info_lines.append(f"\nAssignment: [cyan]{assignment_context.title}[/cyan]")
-        info_lines.append(f"  Identifier: [dim]{assignment_context.identifier}[/dim]")
-        info_lines.append(f"  Files: [dim]{', '.join(f.path for f in assignment_context.files)}[/dim]")
-
+        info_lines.append(f"Assignment: [cyan]{assignment_context.title}[/cyan]")
     info_lines.extend([
-        "\nCommands:",
-        "  [yellow]/new[/yellow] - Start a new conversation",
-        "  [yellow]/show[/yellow] - Show conversation history",
-        "  [yellow]/assignment[/yellow] - Show assignment details",
-        "  [yellow]/reload[/yellow] - Manually reload all prompts",
-        "  [yellow]/exit[/yellow] - Exit development mode",
+        "",
+        "Commands: [yellow]/new[/yellow] [yellow]/show[/yellow] [yellow]/assignment[/yellow] [yellow]/reload[/yellow] [yellow]/exit[/yellow]",
     ])
-
-    console.print(Panel(
-        "\n".join(info_lines),
-        title="Tutor Agent Development Mode",
-        border_style="green"
-    ))
-
-    scheduler = DevelopmentScheduler(agent, simulator, assignment_context)
+    console.print(Panel("\n".join(info_lines), title="Tutor Agent Dev Mode", border_style="green"))
 
     try:
         await scheduler.start()
     except KeyboardInterrupt:
         console.print("\n[yellow]Development mode stopped.[/yellow]")
     finally:
-        # Stop watching files
         prompt_loader.stop_watching()

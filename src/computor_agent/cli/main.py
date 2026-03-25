@@ -523,11 +523,24 @@ def tutor():
     help="[Dev mode] Path to assignment directory (must contain meta.yaml).",
 )
 @click.option(
+    "--scenario",
+    type=click.Path(exists=True),
+    default=None,
+    help="[Dev mode] Path to scenario directory (must contain scenario.yaml).",
+)
+@click.option(
     "--log-file",
     "-l",
     type=click.Path(),
     default=None,
     help="Log output to file (rotating, 10MB max, 3 backups).",
+)
+@click.option(
+    "--prompt",
+    "-p",
+    type=str,
+    default=None,
+    help="[Dev mode] Process a single message and exit (no interactive loop).",
 )
 def messaging(
     config: Optional[str],
@@ -536,7 +549,9 @@ def messaging(
     dev: bool,
     prompts_dir: Optional[str],
     assignment: Optional[str],
+    scenario: Optional[str],
     log_file: Optional[str],
+    prompt: Optional[str],
 ):
     """
     Start the messaging tutor agent.
@@ -588,11 +603,14 @@ def messaging(
         from computor_agent.tutor.dev_mode import run_development_mode
         prompts_path = Path(prompts_dir) if prompts_dir else None
         assignment_path = Path(assignment) if assignment else None
+        scenario_path = Path(scenario) if scenario else None
         asyncio.run(run_development_mode(
             config_path,
             verbose,
             prompts_path,
             assignment_path=assignment_path,
+            scenario_path=scenario_path,
+            prompt=prompt,
         ))
         return
 

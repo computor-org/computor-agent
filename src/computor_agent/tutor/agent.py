@@ -216,8 +216,7 @@ class TutorAgent:
 
             # Try to download submission code (always attempt — the LLM
             # can decide itself whether the student needs code help)
-            if not assignment_context:
-                await self._ensure_code_context(context)
+            await self._ensure_code_context(context)
 
             # Build unified system prompt with all available context
             system_prompt = self._build_system_prompt(context)
