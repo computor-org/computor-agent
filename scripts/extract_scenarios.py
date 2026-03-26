@@ -154,6 +154,7 @@ ORDER BY c.title, cc.path, sg.id, sa.uploaded_at ASC
 MEMBERS_QUERY = """
 SELECT
     sgm.submission_group_id,
+    u.id AS user_id,
     u.given_name,
     u.family_name,
     u.email,
@@ -595,11 +596,11 @@ def write_scenario(
         json.dumps(grade_data, indent=2), encoding="utf-8"
     )
 
-    # --- prompts/ (student messages, excluding AI responses) ---
+    # --- prompts/ (only messages from submission group members) ---
+    member_user_ids = {str(m["user_id"]) for m in scenario.members if m.get("user_id")}
     student_messages = [
         m for m in scenario.messages
-        if not m.get("is_service", False)
-        and not (m.get("title") or "").startswith("#ai")
+        if str(m.get("author_id", "")) in member_user_ids
     ]
 
     if student_messages:
