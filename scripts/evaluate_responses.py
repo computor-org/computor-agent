@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import re
+import statistics
 import sys
 import time
 from dataclasses import dataclass, field
@@ -73,6 +74,7 @@ class EvalConfig:
     model: Optional[str] = None
     config: Optional[str] = None
     metrics: list[Metric] = field(default_factory=list)
+    repeats: int = 1
 
     @classmethod
     def from_file(cls, path: Path) -> "EvalConfig":
@@ -90,6 +92,7 @@ class EvalConfig:
             model=data.get("model"),
             config=data.get("config"),
             metrics=metrics,
+            repeats=data.get("repeats", 1),
         )
 
 
@@ -162,6 +165,12 @@ def build_scenario_context(scenario_dir: Path) -> str:
     if desc_file.exists():
         parts.append(f"\n--- Assignment Description ---\n{desc_file.read_text(encoding='utf-8').strip()}")
 
+    reference_dir = scenario_dir / "reference"
+    if reference_dir.is_dir():
+        for f in sorted(reference_dir.iterdir()):
+            if f.is_file():
+                parts.append(f"\n--- Reference Solution: {f.name} ---\n{f.read_text(encoding='utf-8').strip()}")
+
     submission_dir = scenario_dir / "submission"
     if submission_dir.is_dir():
         for f in sorted(submission_dir.iterdir()):
@@ -190,7 +199,7 @@ You are an expert evaluator for an AI tutoring system. Your job is to grade \
 the tutor's response to a student message.
 
 You will be given:
-- The assignment context (description, student code, test results)
+- The assignment context (description, reference solution, student code, test results)
 - The student's message and its category (help, injection, solution_request, etc.)
 - The tutor's response
 
@@ -270,6 +279,27 @@ def parse_scores(raw: str, metrics: list[Metric]) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Statistics
+# ---------------------------------------------------------------------------
+
+def aggregate_scores(all_scores: list[dict], metrics: list[Metric]) -> dict:
+    """Compute mean, median, min, max per metric across multiple evaluation runs."""
+    stats = {}
+    for m in metrics:
+        values = [s[m.name] for s in all_scores if s.get(m.name) is not None]
+        if not values:
+            stats[m.name] = {"mean": None, "median": None, "min": None, "max": None}
+            continue
+        stats[m.name] = {
+            "mean": round(statistics.mean(values), 2),
+            "median": round(statistics.median(values), 2),
+            "min": round(min(values), 1),
+            "max": round(max(values), 1),
+        }
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # Core evaluation
 # ---------------------------------------------------------------------------
 
@@ -304,6 +334,7 @@ async def evaluate_run(
     scenarios_dir: Path,
     llm_provider,
     metrics: list[Metric],
+    repeats: int = 1,
 ) -> dict:
     """Evaluate all responses in a single run directory."""
     summary_path = run_dir / "summary.json"
@@ -315,6 +346,7 @@ async def evaluate_run(
     evaluations = {
         "model": summary["model"],
         "evaluator": llm_provider.model_name,
+        "repeats": repeats,
         "metrics": [
             {"name": m.name, "description": m.description,
              "min_score": m.min_score, "max_score": m.max_score}
@@ -379,57 +411,81 @@ async def evaluate_run(
                 scenario_eval["prompts"].append(prompt_eval)
                 continue
 
-            logger.info(f"    Evaluating: {prompt_file} [{category}]")
+            repeat_label = f" ({repeats} repeats)" if repeats > 1 else ""
+            logger.info(f"    Evaluating: {prompt_file} [{category}]{repeat_label}")
             start = time.perf_counter()
 
-            try:
-                scores = await evaluate_response(
-                    llm_provider=llm_provider,
-                    system_prompt=system_prompt,
-                    scenario_context=scenario_context,
-                    student_message=student_message,
-                    category=category,
-                    tutor_response=tutor_response,
-                    metrics=metrics,
-                )
-                eval_time_ms = (time.perf_counter() - start) * 1000
-
-                if scores:
-                    prompt_eval = {
-                        "file": prompt_file,
-                        "category": category,
-                        "evaluated": True,
-                        "scores": {m: scores.get(m) for m in metric_names},
-                        "comment": scores.get("comment", ""),
-                        "eval_time_ms": round(eval_time_ms, 1),
-                    }
-                    total_evaluated += 1
-                    score_str = ", ".join(
-                        f"{m}={scores.get(m, '?')}" for m in metric_names
+            # Run N independent evaluations
+            all_scores = []
+            repeat_failures = 0
+            for r in range(repeats):
+                try:
+                    scores = await evaluate_response(
+                        llm_provider=llm_provider,
+                        system_prompt=system_prompt,
+                        scenario_context=scenario_context,
+                        student_message=student_message,
+                        category=category,
+                        tutor_response=tutor_response,
+                        metrics=metrics,
                     )
-                    logger.info(f"      {score_str}")
-                else:
-                    prompt_eval = {
-                        "file": prompt_file,
-                        "category": category,
-                        "evaluated": False,
-                        "reason": "failed to parse evaluator response",
-                        "eval_time_ms": round(eval_time_ms, 1),
-                    }
-                    total_failed += 1
-                    logger.warning(f"      Failed to parse scores")
+                    if scores:
+                        all_scores.append(scores)
+                        if repeats > 1:
+                            score_str = ", ".join(
+                                f"{m}={scores.get(m, '?')}" for m in metric_names
+                            )
+                            logger.debug(f"      [{r+1}/{repeats}] {score_str}")
+                    else:
+                        repeat_failures += 1
+                        logger.debug(f"      [{r+1}/{repeats}] Failed to parse scores")
+                except Exception as e:
+                    repeat_failures += 1
+                    logger.debug(f"      [{r+1}/{repeats}] Error: {e}")
 
-            except Exception as e:
-                eval_time_ms = (time.perf_counter() - start) * 1000
+            eval_time_ms = (time.perf_counter() - start) * 1000
+
+            if all_scores:
+                # Aggregate: mean scores for backward compatibility
+                stats = aggregate_scores(all_scores, metrics)
+                mean_scores = {m: stats[m]["mean"] for m in stats}
+
+                prompt_eval = {
+                    "file": prompt_file,
+                    "category": category,
+                    "evaluated": True,
+                    "repeats": repeats,
+                    "repeats_succeeded": len(all_scores),
+                    "scores": mean_scores,
+                    "score_stats": stats,
+                    "all_scores": [
+                        {m: s.get(m) for m in metric_names + ["comment"]}
+                        for s in all_scores
+                    ],
+                    "comment": all_scores[0].get("comment", ""),
+                    "eval_time_ms": round(eval_time_ms, 1),
+                }
+                total_evaluated += 1
+
+                score_str = ", ".join(
+                    f"{m}={mean_scores.get(m, '?')}" for m in metric_names
+                )
+                if repeats > 1:
+                    logger.info(f"      Mean: {score_str} ({len(all_scores)}/{repeats} succeeded)")
+                else:
+                    logger.info(f"      {score_str}")
+            else:
                 prompt_eval = {
                     "file": prompt_file,
                     "category": category,
                     "evaluated": False,
-                    "reason": str(e),
+                    "repeats": repeats,
+                    "repeats_succeeded": 0,
+                    "reason": "all evaluation attempts failed",
                     "eval_time_ms": round(eval_time_ms, 1),
                 }
                 total_failed += 1
-                logger.error(f"      Error: {e}")
+                logger.warning(f"      All {repeats} evaluation attempts failed")
 
             scenario_eval["prompts"].append(prompt_eval)
 
@@ -525,8 +581,13 @@ async def run_evaluation(args: argparse.Namespace) -> None:
         await llm_provider.close()
         sys.exit(1)
 
+    # --- Repeats ---
+    repeats = args.repeats or (eval_config and eval_config.repeats) or 1
+
     logger.info(f"Found {len(run_dirs)} run(s) to evaluate")
     logger.info(f"Metrics: {', '.join(m.name for m in metrics)}")
+    if repeats > 1:
+        logger.info(f"Repeats per response: {repeats}")
 
     # --- Evaluate each run ---
     for run_dir in run_dirs:
@@ -545,6 +606,7 @@ async def run_evaluation(args: argparse.Namespace) -> None:
             scenarios_dir=scenarios_dir,
             llm_provider=llm_provider,
             metrics=metrics,
+            repeats=repeats,
         )
 
         # Write evaluations.json alongside summary.json
@@ -601,6 +663,12 @@ def main():
         "--run",
         default=None,
         help="Filter: only evaluate runs matching this name",
+    )
+    parser.add_argument(
+        "--repeats", "-n",
+        type=int,
+        default=None,
+        help="Number of independent evaluation runs per response (default: 1)",
     )
     parser.add_argument(
         "--verbose", "-v",
