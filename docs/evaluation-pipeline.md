@@ -173,15 +173,45 @@ Pulls real student submissions and messages from the computor database into scen
 
 ```bash
 python scripts/extract_scenarios.py -o ./scenarios/
-python scripts/extract_scenarios.py -o ./scenarios/ --course-id <uuid> --limit 50
+python scripts/extract_scenarios.py -o ./scenarios/ --course-id <uuid> --limit 50 \
+  --db-host <db-host> --db-port <db-port> --db-name <db-name> \
+  --db-user <db-user> --db-password <db-password> \
+  --minio-host <minio-host> --minio-access-key <minio-access-key> --minio-secret-key <minio-secret-key>
 python scripts/extract_scenarios.py -o ./scenarios/ --skip-files  # without MinIO
 ```
 
-Requires PostgreSQL access to `docker-postgres-1` and optionally MinIO for submission files.
+Requires PostgreSQL access to the computor database and optionally MinIO for downloading submission files.
+
+#### Database & MinIO Connection
+
+All connection details are passed as CLI flags. The defaults match the standard local Docker setup (`docker-postgres-1` + MinIO), so no extra flags are needed if you're running against that:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--db-host` | `localhost` | PostgreSQL host |
+| `--db-port` | `5432` | PostgreSQL port |
+| `--db-name` | `codeability` | Database name |
+| `--db-user` | `postgres` | Database user |
+| `--db-password` | `postgres_secret` | Database password |
+| `--minio-host` | `localhost:9000` | MinIO endpoint |
+| `--minio-access-key` | `minioadmin` | MinIO access key |
+| `--minio-secret-key` | `minioadmin` | MinIO secret key |
+| `--minio-secure` | `false` | Use HTTPS for MinIO |
+
+Example with custom connection:
+
+```bash
+python scripts/extract_scenarios.py -o ./scenarios/ \
+  --db-host db.example.com --db-port 5432 --db-name codeability \
+  --db-user myuser --db-password mypassword \
+  --minio-host minio.example.com:9000 --minio-access-key KEY --minio-secret-key SECRET
+```
+
+Use `--skip-files` to skip MinIO entirely (no submission files will be downloaded).
 
 **Output:** One directory per scenario with `scenario.yaml`, `assignment/`, `submission/`, `test-results.json`, and `prompts/` (may contain real student messages).
 
-See [docs/extract-scenarios.md](extract-scenarios.md) for database connection options and data flow.
+See [docs/extract-scenarios.md](extract-scenarios.md) for the full data flow and obfuscation details.
 
 ### Step 2: Generate Prompts
 

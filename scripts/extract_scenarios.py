@@ -10,8 +10,10 @@ Output per qualifying submission group:
     <output_dir>/<course>__<assignment>__<sg_number>/
     ├── scenario.yaml           # Metadata (obfuscated student name, assignment, grade)
     ├── assignment/
-    │   └── description.md      # Course content description
+    │   └── description.md      # Assignment README (index_en.md from example repo)
     ├── submission/             # Actual submission files from MinIO
+    │   └── *.py
+    ├── reference/              # Reference solution files from example repo
     │   └── *.py
     ├── test-results.json       # Test results for the graded artifact
     ├── grade.json              # Grade info (score, status, comment)
@@ -146,7 +148,7 @@ JOIN submission_artifact sa ON sa.submission_group_id = sg.id
 JOIN submission_grade sgr ON sgr.artifact_id = sa.id
     AND sgr.graded_at > sa.uploaded_at
 WHERE sg.course_id = COALESCE(%(course_id)s, sg.course_id)
-ORDER BY c.title, cc.path, sg.id, sa.uploaded_at DESC
+ORDER BY c.title, cc.path, sg.id, sa.uploaded_at ASC
 """
 
 MEMBERS_QUERY = """
@@ -159,12 +161,13 @@ SELECT
 FROM submission_group_member sgm
 JOIN course_member cm ON cm.id = sgm.course_member_id
 JOIN "user" u ON u.id = cm.user_id
-WHERE sgm.submission_group_id = ANY(%(sg_ids)s)
+WHERE sgm.submission_group_id = ANY(%(sg_ids)s::uuid[])
 """
 
 MESSAGES_QUERY = """
 SELECT
     m.id,
+    m.submission_group_id,
     m.title,
     m.content,
     m.parent_id,
@@ -175,7 +178,7 @@ SELECT
     u.is_service
 FROM message m
 JOIN "user" u ON u.id = m.author_id
-WHERE m.submission_group_id = ANY(%(sg_ids)s)
+WHERE m.submission_group_id = ANY(%(sg_ids)s::uuid[])
     AND m.archived_at IS NULL
 ORDER BY m.submission_group_id, m.created_at ASC
 """
@@ -189,8 +192,23 @@ SELECT
     r.finished_at,
     r.properties
 FROM result r
-WHERE r.submission_artifact_id = ANY(%(artifact_ids)s)
+WHERE r.submission_artifact_id = ANY(%(artifact_ids)s::uuid[])
 ORDER BY r.created_at ASC
+"""
+
+EXAMPLE_VERSION_QUERY = """
+SELECT
+    ccd.course_content_id,
+    ev.storage_path,
+    ev.meta_yaml,
+    er.source_url
+FROM course_content_deployment ccd
+JOIN example_version ev ON ev.id = ccd.example_version_id
+JOIN example e ON e.id = ev.example_id
+JOIN example_repository er ON er.id = e.example_repository_id
+WHERE ccd.course_content_id = ANY(%(cc_ids)s::uuid[])
+  AND ccd.example_version_id IS NOT NULL
+ORDER BY ccd.assigned_at DESC
 """
 
 
@@ -206,6 +224,7 @@ GRADE_STATUS_MAP = {
 class ExtractedScenario:
     """All data for one scenario."""
     submission_group_id: str
+    course_content_id: str
     course_title: str
     assignment_title: str
     assignment_path: str
@@ -221,9 +240,11 @@ class ExtractedScenario:
     messages: list[dict] = field(default_factory=list)
     test_results: list[dict] = field(default_factory=list)
     submission_files: dict[str, bytes] = field(default_factory=dict)
+    reference_files: dict[str, bytes] = field(default_factory=dict)
+    readme_content: Optional[str] = None
 
 
-def fetch_scenarios(conn, course_id: Optional[str] = None, limit: Optional[int] = None) -> list[ExtractedScenario]:
+def fetch_scenarios(conn, course_id: Optional[str] = None, limit: Optional[int] = None, limit_per_assignment: Optional[int] = None) -> list[ExtractedScenario]:
     """Fetch all qualifying scenarios from the database."""
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -243,6 +264,18 @@ def fetch_scenarios(conn, course_id: Optional[str] = None, limit: Optional[int] 
         if sg_id not in seen_sg:
             seen_sg.add(sg_id)
             unique_rows.append(row)
+
+    # Cap per assignment (course_content) if requested
+    if limit_per_assignment:
+        count_per_cc: dict[str, int] = {}
+        filtered = []
+        for row in unique_rows:
+            cc_id = str(row["course_content_id"])
+            count_per_cc.setdefault(cc_id, 0)
+            if count_per_cc[cc_id] < limit_per_assignment:
+                count_per_cc[cc_id] += 1
+                filtered.append(row)
+        unique_rows = filtered
 
     if limit:
         unique_rows = unique_rows[:limit]
@@ -276,6 +309,7 @@ def fetch_scenarios(conn, course_id: Optional[str] = None, limit: Optional[int] 
 
         scenario = ExtractedScenario(
             submission_group_id=sg_id,
+            course_content_id=str(row["course_content_id"]),
             course_title=row["course_title"] or "Unknown Course",
             assignment_title=row["assignment_title"] or "Unknown Assignment",
             assignment_path=str(row["assignment_path"]) if row["assignment_path"] else "unknown",
@@ -350,6 +384,97 @@ def download_submission_files(minio_client: Minio, scenario: ExtractedScenario) 
     return files
 
 
+def fetch_example_data(conn, minio_client: Minio, scenarios: list[ExtractedScenario]):
+    """Fetch reference solution files and assignment README from MinIO for each scenario.
+
+    Resolves course_content → deployment → example_version → example → repository
+    to find the MinIO bucket and storage path, then downloads:
+    - Reference solution files (from meta_yaml properties)
+    - Assignment README (content/index_en.md or content/index.md)
+    """
+    # Collect unique course_content_ids
+    cc_ids = list({s.course_content_id for s in scenarios})
+    if not cc_ids:
+        return
+
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(EXAMPLE_VERSION_QUERY, {"cc_ids": cc_ids})
+    rows = cur.fetchall()
+    cur.close()
+
+    # Deduplicate: keep latest deployment per course_content_id
+    version_by_cc: dict[str, dict] = {}
+    for row in rows:
+        cc_id = str(row["course_content_id"])
+        if cc_id not in version_by_cc:
+            version_by_cc[cc_id] = dict(row)
+
+    if not version_by_cc:
+        logger.warning("No example version deployments found for any course content")
+        return
+
+    # Cache downloaded data per course_content_id (multiple scenarios may share one)
+    cache: dict[str, tuple[dict[str, bytes], Optional[str]]] = {}
+
+    for cc_id, version_info in version_by_cc.items():
+        storage_path = version_info["storage_path"]
+        meta_yaml_text = version_info["meta_yaml"]
+        source_url = version_info["source_url"]
+        bucket_name = source_url.split("/")[0]
+
+        # --- Download README ---
+        readme_content = None
+        for readme_name in ["content/index_en.md", "content/index.md"]:
+            object_key = f"{storage_path}/{readme_name}"
+            try:
+                resp = minio_client.get_object(bucket_name, object_key)
+                readme_content = resp.read().decode("utf-8")
+                resp.close()
+                resp.release_conn()
+                logger.debug(f"Downloaded README: {bucket_name}/{object_key}")
+                break
+            except Exception:
+                continue
+
+        if not readme_content:
+            logger.warning(f"No README found for CC {cc_id} at {storage_path}/content/")
+
+        # --- Download reference files ---
+        ref_files: dict[str, bytes] = {}
+        if meta_yaml_text:
+            try:
+                meta = yaml.safe_load(meta_yaml_text)
+                properties = meta.get("properties", {}) if meta else {}
+                submission_files = properties.get("studentSubmissionFiles", []) or []
+                additional_files = properties.get("additionalFiles", []) or []
+                ref_paths = set(submission_files + additional_files)
+
+                for ref_path in ref_paths:
+                    if "_master." in ref_path:
+                        continue
+                    object_key = f"{storage_path}/{ref_path}"
+                    try:
+                        resp = minio_client.get_object(bucket_name, object_key)
+                        ref_files[ref_path] = resp.read()
+                        resp.close()
+                        resp.release_conn()
+                    except Exception as e:
+                        logger.warning(f"Failed to download reference file {bucket_name}/{object_key}: {e}")
+
+                logger.info(f"Downloaded {len(ref_files)} reference files for CC {cc_id}")
+            except yaml.YAMLError as e:
+                logger.warning(f"Failed to parse meta_yaml for CC {cc_id}: {e}")
+
+        cache[cc_id] = (ref_files, readme_content)
+
+    # Attach to scenarios
+    for scenario in scenarios:
+        if scenario.course_content_id in cache:
+            ref_files, readme = cache[scenario.course_content_id]
+            scenario.reference_files = ref_files
+            scenario.readme_content = readme
+
+
 def write_scenario(
     scenario: ExtractedScenario,
     output_dir: Path,
@@ -406,7 +531,7 @@ def write_scenario(
     # --- assignment/description.md ---
     assignment_dir = scenario_dir / "assignment"
     assignment_dir.mkdir(exist_ok=True)
-    description = scenario.assignment_description or "(No description available)"
+    description = scenario.readme_content or scenario.assignment_description or "(No description available)"
     (assignment_dir / "description.md").write_text(description, encoding="utf-8")
 
     # --- submission/ files ---
@@ -415,6 +540,21 @@ def write_scenario(
         sub_dir.mkdir(exist_ok=True)
         for filename, content in scenario.submission_files.items():
             file_path = sub_dir / filename
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(content, bytes):
+                try:
+                    file_path.write_text(content.decode("utf-8"), encoding="utf-8")
+                except UnicodeDecodeError:
+                    file_path.write_bytes(content)
+            else:
+                file_path.write_text(content, encoding="utf-8")
+
+    # --- reference/ files ---
+    if scenario.reference_files:
+        ref_dir = scenario_dir / "reference"
+        ref_dir.mkdir(exist_ok=True)
+        for filename, content in scenario.reference_files.items():
+            file_path = ref_dir / filename
             file_path.parent.mkdir(parents=True, exist_ok=True)
             if isinstance(content, bytes):
                 try:
@@ -483,7 +623,8 @@ def main():
     parser = argparse.ArgumentParser(description="Extract scenarios from computor database")
     parser.add_argument("--output", "-o", type=Path, required=True, help="Output directory")
     parser.add_argument("--course-id", type=str, default=None, help="Filter by course UUID")
-    parser.add_argument("--limit", type=int, default=None, help="Max scenarios to extract")
+    parser.add_argument("--limit", type=int, default=None, help="Max scenarios to extract (global)")
+    parser.add_argument("--limit-per-assignment", type=int, default=None, help="Max scenarios per assignment (course content)")
 
     # Database connection
     parser.add_argument("--db-host", default="localhost")
@@ -533,7 +674,7 @@ def main():
     try:
         # Fetch scenarios
         logger.info("Fetching graded submissions from database...")
-        scenarios = fetch_scenarios(conn, course_id=args.course_id, limit=args.limit)
+        scenarios = fetch_scenarios(conn, course_id=args.course_id, limit=args.limit, limit_per_assignment=args.limit_per_assignment)
         logger.info(f"Found {len(scenarios)} qualifying scenarios")
 
         if not scenarios:
@@ -545,6 +686,10 @@ def main():
             for i, scenario in enumerate(scenarios, 1):
                 logger.info(f"Downloading files for scenario {i}/{len(scenarios)}: {scenario.assignment_title}")
                 scenario.submission_files = download_submission_files(minio_client, scenario)
+
+            # Fetch reference solutions and assignment READMEs
+            logger.info("Fetching reference solutions and assignment READMEs...")
+            fetch_example_data(conn, minio_client, scenarios)
 
         # Write scenarios
         obfuscator = Obfuscator()
@@ -562,7 +707,8 @@ def main():
         for p in written:
             has_files = (p / "submission").exists() and any((p / "submission").iterdir())
             has_prompts = (p / "prompts").exists() and any((p / "prompts").iterdir())
-            logger.info(f"  - {p.name} (files={'yes' if has_files else 'no'}, prompts={'yes' if has_prompts else 'no'})")
+            has_ref = (p / "reference").exists() and any((p / "reference").iterdir())
+            logger.info(f"  - {p.name} (files={'yes' if has_files else 'no'}, ref={'yes' if has_ref else 'no'}, prompts={'yes' if has_prompts else 'no'})")
 
     finally:
         conn.close()
