@@ -169,13 +169,19 @@ def build_scenario_context(scenario_dir: Path) -> str:
     if reference_dir.is_dir():
         for f in sorted(reference_dir.iterdir()):
             if f.is_file():
-                parts.append(f"\n--- Reference Solution: {f.name} ---\n{f.read_text(encoding='utf-8').strip()}")
+                try:
+                    parts.append(f"\n--- Reference Solution: {f.name} ---\n{f.read_text(encoding='utf-8').strip()}")
+                except (UnicodeDecodeError, ValueError):
+                    logger.debug(f"Skipping binary file: reference/{f.name}")
 
     submission_dir = scenario_dir / "submission"
     if submission_dir.is_dir():
         for f in sorted(submission_dir.iterdir()):
             if f.is_file():
-                parts.append(f"\n--- Student Submission: {f.name} ---\n{f.read_text(encoding='utf-8').strip()}")
+                try:
+                    parts.append(f"\n--- Student Submission: {f.name} ---\n{f.read_text(encoding='utf-8').strip()}")
+                except (UnicodeDecodeError, ValueError):
+                    logger.debug(f"Skipping binary file: submission/{f.name}")
 
     test_file = scenario_dir / "test-results.json"
     if test_file.exists():

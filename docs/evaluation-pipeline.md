@@ -221,11 +221,12 @@ Uses an LLM to create diverse test prompts grounded in each scenario's context.
 ```bash
 python scripts/generate_prompts.py generate-prompts.yaml
 python scripts/generate_prompts.py ./scenarios/                      # default categories
-python scripts/generate_prompts.py generate-prompts.yaml --clear     # replace existing
 python scripts/generate_prompts.py generate-prompts.yaml -s numpy    # filter scenarios
+python scripts/generate_prompts.py generate-prompts.yaml --override  # regenerate all
+python scripts/generate_prompts.py generate-prompts.yaml --clear     # wipe & regenerate
 ```
 
-The LLM reads the assignment description, student submission, test results, and reference solution to generate realistic messages. The model stays alive across all scenarios.
+The LLM reads the assignment description, student submission, test results, and reference solution to generate realistic messages (binary files like images are skipped automatically). The model stays alive across all scenarios. Re-running the script is safe — it only generates prompts for categories that don't yet have enough.
 
 **Output:** Numbered `.md` files in each scenario's `prompts/` directory, named `<index>_<category>.md` (e.g. `004_debug.md`).
 

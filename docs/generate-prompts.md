@@ -17,7 +17,13 @@ python scripts/generate_prompts.py generate-prompts.yaml -m mistral:7b
 # Only generate for one scenario
 python scripts/generate_prompts.py generate-prompts.yaml -s python-basics
 
-# Clear existing prompts before generating
+# Re-run after a crash — only generates missing categories
+python scripts/generate_prompts.py generate-prompts.yaml -m gpt-oss:120b
+
+# Force regeneration of all categories (removes & recreates per category)
+python scripts/generate_prompts.py generate-prompts.yaml --override
+
+# Clear ALL existing prompts before generating
 python scripts/generate_prompts.py generate-prompts.yaml --clear
 
 # Verbose logging
@@ -55,15 +61,18 @@ See [examples/generate-prompts.example.yaml](../examples/generate-prompts.exampl
 ## How It Works
 
 1. Loads all scenario directories (each with `scenario.yaml`, assignment description, student submission, test results, reference solution)
-2. For each scenario, builds a context summary from all available files
-3. For each category, sends the context + category instruction to the LLM and asks it to generate the specified number of student messages
-4. Writes each generated message as a numbered `.md` file in the scenario's `prompts/` directory
+2. For each scenario, builds a context summary from all available files (binary files like images are automatically skipped)
+3. For each category, checks how many prompts already exist — skips if the required count is met, generates only the missing ones otherwise
+4. Sends the context + category instruction to the LLM and asks it to generate the needed student messages
+5. Writes each generated message as a numbered `.md` file in the scenario's `prompts/` directory
 
 The LLM provider is initialized once and stays alive across all scenarios to avoid model reload overhead.
 
+**Resume behavior:** By default, re-running the script skips categories that already have enough prompts. This allows safe re-runs after crashes or interruptions — only missing prompts are generated. Use `--override` to force regeneration of all categories, or `--clear` to wipe everything and start fresh.
+
 ## Output
 
-Generated files are named `<index>_<category>.md` and appended after any existing prompts:
+Generated files are named `<index>_<category>.md`:
 
 ```
 scenarios/python-basics/prompts/
@@ -80,7 +89,7 @@ scenarios/python-basics/prompts/
 └── 011_off_topic.md
 ```
 
-Use `--clear` to remove existing prompts before generating.
+Use `--override` to regenerate all categories, or `--clear` to remove all prompts before generating.
 
 ## Workflow
 
@@ -105,5 +114,6 @@ extract_scenarios.py          generate_prompts.py          run_scenarios.py
 | `--config`, `-c` | Config file path for LLM settings (default: `config.yaml`) |
 | `--model`, `-m` | Override LLM model |
 | `--scenario`, `-s` | Filter: only generate for scenarios matching this name |
-| `--clear` | Remove existing prompts before generating |
+| `--override` | Regenerate all categories even if prompts already exist |
+| `--clear` | Remove all existing prompts before generating |
 | `--verbose`, `-v` | Enable debug logging |

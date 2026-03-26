@@ -17,6 +17,7 @@ Usage:
 import argparse
 import asyncio
 import logging
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,6 +70,15 @@ class GenerateConfig:
 # Scenario discovery & context building
 # ---------------------------------------------------------------------------
 
+def extract_category(filename: str) -> str:
+    """Extract category from prompt filename like '004_debug.md' -> 'debug'."""
+    stem = Path(filename).stem
+    match = re.match(r"\d+_(.*)", stem)
+    if match:
+        return match.group(1)
+    return "unknown"
+
+
 def discover_scenarios(
     scenarios_dir: Path,
     name_filter: Optional[str] = None,
@@ -112,7 +122,10 @@ def build_scenario_context(scenario_dir: Path) -> str:
     if submission_dir.is_dir():
         for f in sorted(submission_dir.iterdir()):
             if f.is_file():
-                parts.append(f"\n--- Student Submission: {f.name} ---\n{f.read_text(encoding='utf-8').strip()}")
+                try:
+                    parts.append(f"\n--- Student Submission: {f.name} ---\n{f.read_text(encoding='utf-8').strip()}")
+                except (UnicodeDecodeError, ValueError):
+                    logger.debug(f"Skipping binary file: submission/{f.name}")
 
     # Test results
     test_file = scenario_dir / "test-results.json"
@@ -124,7 +137,10 @@ def build_scenario_context(scenario_dir: Path) -> str:
     if ref_dir.is_dir():
         for f in sorted(ref_dir.iterdir()):
             if f.is_file():
-                parts.append(f"\n--- Reference Solution: {f.name} ---\n{f.read_text(encoding='utf-8').strip()}")
+                try:
+                    parts.append(f"\n--- Reference Solution: {f.name} ---\n{f.read_text(encoding='utf-8').strip()}")
+                except (UnicodeDecodeError, ValueError):
+                    logger.debug(f"Skipping binary file: reference/{f.name}")
 
     return "\n".join(parts)
 
@@ -292,8 +308,24 @@ async def run_generation(args: argparse.Namespace) -> None:
                     f.unlink()
                 logger.info(f"  Cleared {len(existing)} existing prompt(s)")
 
-        # Find next available index
+        # Override: remove existing prompts for categories we're about to generate
+        if args.override and not args.clear:
+            for category in categories:
+                cat_files = [f for f in prompts_dir.glob("*.md")
+                             if extract_category(f.name) == category.name]
+                for f in cat_files:
+                    f.unlink()
+                if cat_files:
+                    logger.info(f"  Override: removed {len(cat_files)} existing '{category.name}' prompt(s)")
+
+        # Count existing prompts per category
         existing_files = sorted(prompts_dir.glob("*.md"))
+        existing_by_category = {}
+        for f in existing_files:
+            cat = extract_category(f.name)
+            existing_by_category[cat] = existing_by_category.get(cat, 0) + 1
+
+        # Find next available index
         if existing_files:
             # Parse highest index from filenames like "003_help.md"
             last_name = existing_files[-1].stem
@@ -307,13 +339,28 @@ async def run_generation(args: argparse.Namespace) -> None:
         scenario_context = build_scenario_context(scenario_dir)
 
         for category in categories:
-            logger.info(f"  Generating {category.count} '{category.name}' prompt(s)...")
+            # Skip categories that already have enough prompts
+            existing_count = existing_by_category.get(category.name, 0)
+            if existing_count >= category.count:
+                logger.info(f"  Skipping '{category.name}': {existing_count}/{category.count} prompt(s) already exist")
+                continue
+
+            needed = category.count - existing_count
+            if existing_count > 0:
+                logger.info(f"  Generating {needed} more '{category.name}' prompt(s) ({existing_count} already exist)...")
+            else:
+                logger.info(f"  Generating {needed} '{category.name}' prompt(s)...")
 
             try:
+                gen_category = PromptCategory(
+                    name=category.name,
+                    count=needed,
+                    instruction=category.instruction,
+                )
                 messages = await generate_for_category(
                     llm_provider=llm_provider,
                     scenario_context=scenario_context,
-                    category=category,
+                    category=gen_category,
                 )
             except Exception as e:
                 logger.error(f"  Failed to generate '{category.name}': {e}")
@@ -362,7 +409,12 @@ def main():
     parser.add_argument(
         "--clear",
         action="store_true",
-        help="Remove existing prompts before generating new ones",
+        help="Remove all existing prompts before generating new ones",
+    )
+    parser.add_argument(
+        "--override",
+        action="store_true",
+        help="Regenerate all categories even if prompts already exist",
     )
     parser.add_argument(
         "--verbose", "-v",
