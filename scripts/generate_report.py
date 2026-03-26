@@ -129,6 +129,37 @@ def get_prompt_scores(summary: dict) -> list[dict]:
     return results
 
 
+def get_prompt_score_details(summary: dict) -> list[dict]:
+    """Extract detailed per-prompt data including all_scores and score_stats."""
+    evals = summary.get("_evaluations", {})
+    results = []
+    for sc in evals.get("scenarios", []):
+        for p in sc.get("prompts", []):
+            if p.get("evaluated"):
+                entry = {
+                    "file": p["file"],
+                    "category": p.get("category", extract_category(p["file"])),
+                    "scenario": sc["name"],
+                    "scores": p.get("scores", {}),
+                    "score_stats": p.get("score_stats", {}),
+                    "all_scores": p.get("all_scores", []),
+                    "repeats": p.get("repeats", 1),
+                    "repeats_succeeded": p.get("repeats_succeeded", 1),
+                }
+                results.append(entry)
+    return results
+
+
+def get_eval_repeats(summaries: list[dict]) -> int:
+    """Get the number of evaluation repeats (from the first summary that has it)."""
+    for s in summaries:
+        evals = s.get("_evaluations", {})
+        r = evals.get("repeats", 1)
+        if r > 1:
+            return r
+    return 1
+
+
 # ---------------------------------------------------------------------------
 # Plot generators
 # ---------------------------------------------------------------------------
@@ -427,24 +458,38 @@ def plot_response_length(summaries: list[dict], out_dir: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def plot_scores_per_model(summaries: list[dict], out_dir: Path) -> str:
-    """Radar / bar chart: average score per metric per model."""
+    """Bar chart: average score per metric per model, with min/max error bars when repeats > 1."""
     metric_names = get_eval_metrics(summaries)
     if not metric_names:
         return None
 
+    has_repeats = get_eval_repeats(summaries) > 1
     models = []
     model_avgs = []
+    model_mins = []
+    model_maxs = []
 
     for s in summaries:
-        scores = get_prompt_scores(s)
-        if not scores:
+        details = get_prompt_score_details(s)
+        if not details:
             continue
         models.append(s["model"])
-        avgs = []
+        avgs, mins, maxs = [], [], []
         for m in metric_names:
-            vals = [sc[m] for sc in scores if sc.get(m) is not None]
+            vals = [d["scores"].get(m) for d in details if d["scores"].get(m) is not None]
             avgs.append(sum(vals) / len(vals) if vals else 0)
+            if has_repeats:
+                # Aggregate min/max across all prompts from score_stats
+                m_mins = [d["score_stats"].get(m, {}).get("min")
+                          for d in details if d["score_stats"].get(m, {}).get("min") is not None]
+                m_maxs = [d["score_stats"].get(m, {}).get("max")
+                          for d in details if d["score_stats"].get(m, {}).get("max") is not None]
+                mins.append(sum(m_mins) / len(m_mins) if m_mins else avgs[-1])
+                maxs.append(sum(m_maxs) / len(m_maxs) if m_maxs else avgs[-1])
         model_avgs.append(avgs)
+        if has_repeats:
+            model_mins.append(mins)
+            model_maxs.append(maxs)
 
     if not models:
         return None
@@ -456,10 +501,19 @@ def plot_scores_per_model(summaries: list[dict], out_dir: Path) -> str:
     bar_width = 0.8 / n_models
     x = np.arange(n_metrics)
 
-    for i, (model, avgs) in enumerate(zip(models, model_avgs)):
+    for i, model in enumerate(models):
+        avgs = model_avgs[i]
         offset = (i - n_models / 2 + 0.5) * bar_width
-        bars = ax.bar(x + offset, avgs, bar_width,
-                      label=model, color=COLORS[i % len(COLORS)])
+        if has_repeats:
+            yerr_lo = [a - mn for a, mn in zip(avgs, model_mins[i])]
+            yerr_hi = [mx - a for a, mx in zip(avgs, model_maxs[i])]
+            bars = ax.bar(x + offset, avgs, bar_width,
+                          label=model, color=COLORS[i % len(COLORS)],
+                          yerr=[yerr_lo, yerr_hi], capsize=3,
+                          error_kw={"elinewidth": 1, "capthick": 1})
+        else:
+            bars = ax.bar(x + offset, avgs, bar_width,
+                          label=model, color=COLORS[i % len(COLORS)])
         for bar, val in zip(bars, avgs):
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05,
                     f"{val:.1f}", ha="center", va="bottom", fontsize=9)
@@ -468,7 +522,10 @@ def plot_scores_per_model(summaries: list[dict], out_dir: Path) -> str:
     ax.set_xticklabels(metric_names, rotation=30, ha="right")
     ax.set_ylabel("Score")
     ax.set_ylim(0, 5.5)
-    ax.set_title("Average Evaluation Scores per Model")
+    title = "Average Evaluation Scores per Model"
+    if has_repeats:
+        title += f" (error bars: avg min/max across {get_eval_repeats(summaries)} repeats)"
+    ax.set_title(title)
     ax.legend()
 
     fig.tight_layout()
@@ -545,23 +602,39 @@ def plot_scores_per_category(summaries: list[dict], out_dir: Path) -> str:
 
 
 def plot_score_distribution(summaries: list[dict], out_dir: Path) -> str:
-    """Box plot: distribution of overall scores per model."""
+    """Box plot: distribution of overall scores per model.
+
+    When repeats > 1, uses individual repeat scores for richer data points
+    instead of just per-prompt mean scores.
+    """
     metric_names = get_eval_metrics(summaries)
     if not metric_names:
         return None
 
+    has_repeats = get_eval_repeats(summaries) > 1
     models = []
     all_scores = []
 
     for s in summaries:
-        scores = get_prompt_scores(s)
-        if not scores:
+        details = get_prompt_score_details(s)
+        if not details:
             continue
         model_scores = []
-        for sc in scores:
-            vals = [sc[m] for m in metric_names if sc.get(m) is not None]
-            if vals:
-                model_scores.append(sum(vals) / len(vals))
+        if has_repeats:
+            # Use individual repeat scores for more data points
+            for d in details:
+                for repeat_scores in d.get("all_scores", []):
+                    vals = [repeat_scores.get(m) for m in metric_names
+                            if repeat_scores.get(m) is not None]
+                    if vals:
+                        model_scores.append(sum(vals) / len(vals))
+        if not model_scores:
+            # Fallback to mean scores (no repeats or no all_scores data)
+            scores = get_prompt_scores(s)
+            for sc in scores:
+                vals = [sc[m] for m in metric_names if sc.get(m) is not None]
+                if vals:
+                    model_scores.append(sum(vals) / len(vals))
         if model_scores:
             models.append(s["model"])
             all_scores.append(model_scores)
@@ -578,7 +651,10 @@ def plot_score_distribution(summaries: list[dict], out_dir: Path) -> str:
 
     ax.set_ylabel("Overall score (avg across metrics)")
     ax.set_ylim(0, 5.5)
-    ax.set_title("Score Distribution per Model")
+    title = "Score Distribution per Model"
+    if has_repeats:
+        title += f" (from {get_eval_repeats(summaries)} repeats per response)"
+    ax.set_title(title)
     if len(models) > 3:
         ax.tick_params(axis="x", rotation=30)
 
@@ -668,8 +744,14 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
 
             lines.append("## Evaluation Scores")
             lines.append("")
+            repeats = get_eval_repeats(summaries)
+            eval_info_parts = []
             if evaluator:
-                lines.append(f"Evaluator model: `{evaluator}`")
+                eval_info_parts.append(f"Evaluator model: `{evaluator}`")
+            if repeats > 1:
+                eval_info_parts.append(f"Repeats per response: **{repeats}** (scores are means)")
+            if eval_info_parts:
+                lines.append(" | ".join(eval_info_parts))
                 lines.append("")
 
             header = "| Model | " + " | ".join(metric_names) + " | Overall |"

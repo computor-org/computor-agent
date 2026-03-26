@@ -60,9 +60,14 @@ If `evaluations.json` files are present (from [evaluate_responses.py](evaluate-r
 
 | Plot | Description |
 |------|-------------|
-| Evaluation Scores per Model | Grouped bars of average score per metric |
+| Evaluation Scores per Model | Grouped bars of average score per metric. When `repeats > 1`, includes min/max error bars showing score variance across independent evaluations. |
 | Scores by Category | Heatmap of overall score per model x category |
-| Score Distribution | Box plot of overall scores per model |
+| Score Distribution | Box plot of overall scores per model. When `repeats > 1`, uses individual repeat scores as data points for richer distributions. |
+
+When evaluations used `--repeats N`, the report automatically detects this and:
+- Displays the number of repeats in the evaluation scores table header
+- Adds min/max error bars to the scores-per-model chart
+- Uses all individual repeat scores (not just per-prompt means) for the score distribution box plot
 
 Category breakdowns use the `<index>_<category>.md` naming convention from [generate_prompts.py](generate-prompts.md).
 
@@ -71,7 +76,7 @@ Category breakdowns use the `<index>_<category>.md` naming convention from [gene
 The markdown report includes:
 
 1. **Overview table** — model, prompt count, success rate, avg/total time
-2. **Evaluation scores table** — average per-metric scores per model (if evaluations present)
+2. **Evaluation scores table** — average per-metric scores per model, with evaluator model and repeat count (if evaluations present)
 3. **Plots** — all charts embedded via `![](media/...)`
 3. **Per-scenario details** — breakdown table per scenario with a collapsible per-prompt detail view showing timing across models
 
