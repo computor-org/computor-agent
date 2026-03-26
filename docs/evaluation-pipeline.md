@@ -130,11 +130,12 @@ See [examples/scenarios.example.yaml](../examples/scenarios.example.yaml).
 
 ### evaluate.yaml — Response Evaluation
 
-Defines the scoring metrics for the LLM judge.
+Defines the scoring metrics for the LLM judge and statistical settings.
 
 ```yaml
 scenarios_dir: ./scenarios/
 # model: llama3.1:70b     # use a strong model as evaluator
+# repeats: 3              # independent evaluations per response (default: 1)
 
 metrics:
   - name: correctness
@@ -248,16 +249,19 @@ See [docs/scenario-runner.md](scenario-runner.md).
 
 ### Step 4: Evaluate Responses
 
-Scores each tutor response using a strong LLM as a judge.
+Scores each tutor response using a strong LLM as a judge. The evaluator receives the full scenario context (assignment description, reference solution, student submission, test results), the student message, and the tutor's response, then returns numeric scores per metric.
 
 ```bash
 python scripts/evaluate_responses.py evaluate.yaml ./results/
 python scripts/evaluate_responses.py ./results/                      # default metrics
 python scripts/evaluate_responses.py ./results/ -m llama3.1:70b      # strong evaluator
 python scripts/evaluate_responses.py ./results/ --run run_*_mistral  # filter runs
+python scripts/evaluate_responses.py ./results/ --repeats 3          # 3 independent evals per response
 ```
 
-The evaluator receives the full scenario context, the student message, and the tutor's response, then returns numeric scores per metric. The model stays alive across all evaluations.
+For statistical robustness, use `--repeats N` (or `repeats: N` in `evaluate.yaml`) to run N independent evaluations per response. The output includes per-metric mean, median, min, and max across all runs, plus the raw individual scores. The `scores` field contains the mean values for backward compatibility with the report generator.
+
+The evaluator model is initialized once and stays alive across all evaluations.
 
 **Output:** `evaluations.json` alongside `summary.json` in each run directory.
 
@@ -272,7 +276,7 @@ python scripts/generate_report.py ./results/
 python scripts/generate_report.py ./results/ -o ./my-report/
 ```
 
-Automatically detects `evaluations.json` and includes scoring plots if present.
+Automatically detects `evaluations.json` and includes scoring plots if present. When evaluations used `--repeats`, the report uses the mean scores for comparison tables and plots.
 
 **Output:** `results/report/report.md` with embedded images from `results/report/media/`.
 
