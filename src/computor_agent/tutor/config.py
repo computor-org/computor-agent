@@ -105,7 +105,7 @@ class ContextConfig(BaseModel):
         description="Include tutor/lecturer notes about the student",
     )
     include_reference_solution: bool = Field(
-        default=False,
+        default=True,
         description="Include example/reference solution in context",
     )
     max_code_lines: int = Field(
