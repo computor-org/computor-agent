@@ -335,12 +335,31 @@ async def evaluate_response(
     return parse_scores(response.content, metrics)
 
 
+def load_existing_evaluations(run_dir: Path) -> dict[str, dict]:
+    """Load existing evaluations.json and index by scenario_name/prompt_file."""
+    eval_path = run_dir / "evaluations.json"
+    if not eval_path.exists():
+        return {}
+    try:
+        data = json.loads(eval_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    index = {}
+    for sc in data.get("scenarios", []):
+        for p in sc.get("prompts", []):
+            if p.get("evaluated"):
+                key = f"{sc['name']}/{p['file']}"
+                index[key] = p
+    return index
+
+
 async def evaluate_run(
     run_dir: Path,
     scenarios_dir: Path,
     llm_provider,
     metrics: list[Metric],
     repeats: int = 1,
+    override: bool = False,
 ) -> dict:
     """Evaluate all responses in a single run directory."""
     summary_path = run_dir / "summary.json"
@@ -348,6 +367,11 @@ async def evaluate_run(
 
     system_prompt = build_system_prompt(metrics)
     metric_names = [m.name for m in metrics]
+
+    # Load existing evaluations for resume support
+    existing = {} if override else load_existing_evaluations(run_dir)
+    if existing:
+        logger.info(f"  Found {len(existing)} existing evaluation(s), will skip them")
 
     evaluations = {
         "model": summary["model"],
@@ -384,6 +408,14 @@ async def evaluate_run(
             prompt_file = prompt_data["file"]
             stem = Path(prompt_file).stem
             category = extract_category(prompt_file)
+
+            # Resume: reuse existing evaluation if available
+            existing_key = f"{scenario_name}/{prompt_file}"
+            if existing_key in existing:
+                logger.info(f"    Skipping (already evaluated): {prompt_file}")
+                scenario_eval["prompts"].append(existing[existing_key])
+                total_evaluated += 1
+                continue
 
             # Read original student message
             orig_prompt_path = scenario_dir / "prompts" / prompt_file
@@ -613,6 +645,7 @@ async def run_evaluation(args: argparse.Namespace) -> None:
             llm_provider=llm_provider,
             metrics=metrics,
             repeats=repeats,
+            override=args.override,
         )
 
         # Write evaluations.json alongside summary.json
@@ -675,6 +708,11 @@ def main():
         type=int,
         default=None,
         help="Number of independent evaluation runs per response (default: 1)",
+    )
+    parser.add_argument(
+        "--override",
+        action="store_true",
+        help="Force re-evaluation of all responses, ignoring existing evaluations",
     )
     parser.add_argument(
         "--verbose", "-v",

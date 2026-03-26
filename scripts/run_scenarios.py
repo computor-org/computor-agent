@@ -342,6 +342,7 @@ async def run_scenario(
     output_dir: Path,
     tutor_config,
     tutor_llm,
+    override: bool = False,
 ) -> ScenarioResult:
     """Run all prompts for a single scenario and write output files."""
     from computor_agent.tutor.scenario_loader import load_scenario
@@ -365,6 +366,21 @@ async def run_scenario(
     scenario_start = time.perf_counter()
 
     for prompt_file in prompt_files:
+        stem = prompt_file.stem
+        response_file = scenario_output / f"{stem}_response.md"
+
+        # Resume: skip prompts that already have a response file
+        if not override and response_file.exists():
+            content = response_file.read_text(encoding="utf-8")
+            logger.info(f"  Skipping (already done): {prompt_file.name}")
+            scenario_result.prompts.append(PromptResult(
+                file=prompt_file.name,
+                success=True,
+                response_chars=len(content),
+                response_content=content,
+            ))
+            continue
+
         logger.info(f"  Processing: {prompt_file.name}")
 
         prompt_result = await process_prompt(
@@ -374,7 +390,6 @@ async def run_scenario(
             tutor_llm=tutor_llm,
         )
 
-        stem = prompt_file.stem
         if prompt_result.success:
             out_file = scenario_output / f"{stem}_response.md"
             out_file.write_text(prompt_result.response_content or "", encoding="utf-8")
@@ -416,6 +431,19 @@ async def warmup_model(llm_provider) -> None:
     logger.info(f"Warmup done ({warmup_ms:.0f}ms)")
 
 
+def find_existing_run_dir(output_base: Path, model_slug: str) -> Optional[Path]:
+    """Find the most recent existing run directory for a model."""
+    if not output_base.is_dir():
+        return None
+    candidates = sorted(
+        [d for d in output_base.iterdir()
+         if d.is_dir() and d.name.endswith(f"_{model_slug}")
+         and (d / "summary.json").exists()],
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
 async def run_model(
     model_name: str,
     llm_settings,
@@ -423,6 +451,7 @@ async def run_model(
     scenario_dirs: list[Path],
     output_base: Path,
     timestamp: str,
+    override: bool = False,
 ) -> RunSummary:
     """Run all scenarios for a single model and return the summary."""
     from computor_agent.settings.config import LLMSettings
@@ -465,9 +494,16 @@ async def run_model(
     tutor_llm = TutorLLMAdapter(llm_provider)
 
     model_slug = model_name.replace(":", "-").replace("/", "-")
-    run_dir = output_base / f"run_{timestamp}_{model_slug}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Output: {run_dir}")
+
+    # Resume: reuse existing run directory if available
+    existing_run = None if override else find_existing_run_dir(output_base, model_slug)
+    if existing_run:
+        run_dir = existing_run
+        logger.info(f"Resuming existing run: {run_dir}")
+    else:
+        run_dir = output_base / f"run_{timestamp}_{model_slug}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Output: {run_dir}")
 
     summary = RunSummary(
         model=llm_config.model,
@@ -483,6 +519,7 @@ async def run_model(
             output_dir=run_dir,
             tutor_config=tutor_config,
             tutor_llm=tutor_llm,
+            override=override,
         )
         summary.scenarios.append(scenario_result)
 
@@ -629,6 +666,7 @@ async def run_all_scenarios(args: argparse.Namespace) -> None:
             scenario_dirs=scenario_dirs,
             output_base=output_base,
             timestamp=timestamp,
+            override=args.override,
         )
         if summary:
             summaries.append(summary)
@@ -675,6 +713,11 @@ def main():
         "--scenario", "-s",
         default=None,
         help="Filter: only run scenarios matching this name",
+    )
+    parser.add_argument(
+        "--override",
+        action="store_true",
+        help="Force re-run all prompts, ignoring existing response files",
     )
     parser.add_argument(
         "--verbose", "-v",
