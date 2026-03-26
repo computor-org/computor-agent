@@ -482,6 +482,17 @@ async def warmup_model(llm_provider) -> None:
     logger.info(f"Warmup done ({warmup_ms:.0f}ms)")
 
 
+def _is_run_dir(d: Path) -> bool:
+    """Check if a directory is a valid run directory (top-level or per-scenario summaries)."""
+    if (d / "summary.json").exists():
+        return True
+    return any(
+        (child / "summary.json").exists()
+        for child in d.iterdir()
+        if child.is_dir()
+    )
+
+
 def find_existing_run_dir(output_base: Path, model_slug: str) -> Optional[Path]:
     """Find the most recent existing run directory for a model."""
     if not output_base.is_dir():
@@ -489,26 +500,46 @@ def find_existing_run_dir(output_base: Path, model_slug: str) -> Optional[Path]:
     candidates = sorted(
         [d for d in output_base.iterdir()
          if d.is_dir() and d.name.endswith(f"_{model_slug}")
-         and (d / "summary.json").exists()],
+         and _is_run_dir(d)],
         reverse=True,
     )
     return candidates[0] if candidates else None
 
 
 def load_previous_prompt_data(run_dir: Path) -> dict[str, dict]:
-    """Load prompt-level data from a previous summary.json, keyed by 'scenario/file'."""
+    """Load prompt-level data from previous summaries, keyed by 'scenario/file'.
+
+    Reads the top-level summary.json first, then falls back to per-scenario
+    summary.json files inside subdirectories.
+    """
+    index: dict[str, dict] = {}
+
+    # Try top-level summary first
     summary_path = run_dir / "summary.json"
-    if not summary_path.exists():
-        return {}
-    try:
-        data = json.loads(summary_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    index = {}
-    for sc in data.get("scenarios", []):
-        for p in sc.get("prompts", []):
-            key = f"{sc['name']}/{p['file']}"
-            index[key] = p
+    if summary_path.exists():
+        try:
+            data = json.loads(summary_path.read_text(encoding="utf-8"))
+            for sc in data.get("scenarios", []):
+                for p in sc.get("prompts", []):
+                    key = f"{sc['name']}/{p['file']}"
+                    index[key] = p
+            return index
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Fall back to per-scenario summaries
+    for child in sorted(run_dir.iterdir()):
+        sc_summary = child / "summary.json"
+        if child.is_dir() and sc_summary.exists():
+            try:
+                sc_data = json.loads(sc_summary.read_text(encoding="utf-8"))
+                scenario_name = sc_data.get("scenario", child.name)
+                for p in sc_data.get("prompts", []):
+                    key = f"{scenario_name}/{p['file']}"
+                    index[key] = p
+            except (json.JSONDecodeError, OSError):
+                continue
+
     return index
 
 

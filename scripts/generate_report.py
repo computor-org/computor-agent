@@ -57,27 +57,98 @@ def setup_style():
 # Data loading
 # ---------------------------------------------------------------------------
 
+def _reconstruct_summary_from_scenarios(run_dir: Path) -> dict | None:
+    """Reconstruct a top-level summary from per-scenario summary.json files."""
+    scenario_summaries = []
+    for child in sorted(run_dir.iterdir()):
+        sc_summary_path = child / "summary.json"
+        if child.is_dir() and sc_summary_path.exists():
+            try:
+                sc_data = json.loads(sc_summary_path.read_text(encoding="utf-8"))
+                scenario_summaries.append(sc_data)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    if not scenario_summaries:
+        return None
+
+    first = scenario_summaries[0]
+    scenarios = []
+    for sc in scenario_summaries:
+        scenarios.append({
+            "name": sc.get("scenario", ""),
+            "assignment": sc.get("assignment", ""),
+            "total_time_s": sc.get("total_time_s", 0),
+            "prompts": sc.get("prompts", []),
+        })
+
+    all_prompts = [p for sc in scenarios for p in sc["prompts"]]
+    all_times = [p["processing_time_ms"] for p in all_prompts if p.get("success")]
+
+    return {
+        "model": first.get("model", "unknown"),
+        "provider": first.get("provider", "unknown"),
+        "timestamp": first.get("timestamp", ""),
+        "total_scenarios": len(scenarios),
+        "total_prompts": len(all_prompts),
+        "total_successes": sum(1 for p in all_prompts if p.get("success")),
+        "total_failures": sum(1 for p in all_prompts if not p.get("success")),
+        "total_time_s": round(sum(sc.get("total_time_s", 0) for sc in scenario_summaries), 2),
+        "avg_processing_time_ms": round(sum(all_times) / len(all_times), 1) if all_times else 0.0,
+        "scenarios": scenarios,
+    }
+
+
+def _is_run_dir(d: Path) -> bool:
+    """Check if a directory is a valid run directory."""
+    if (d / "summary.json").exists():
+        return True
+    return any(
+        (child / "summary.json").exists()
+        for child in d.iterdir()
+        if child.is_dir()
+    )
+
+
 def load_summaries(results_dir: Path) -> list[dict]:
     """Find and load all summary.json + evaluations.json files under results_dir."""
     summaries = []
 
-    def _load_run(run_path: Path) -> dict:
-        data = json.loads((run_path / "summary.json").read_text(encoding="utf-8"))
+    def _load_run(run_path: Path) -> dict | None:
+        top_level = run_path / "summary.json"
+        if top_level.exists():
+            try:
+                data = json.loads(top_level.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                data = _reconstruct_summary_from_scenarios(run_path)
+        else:
+            data = _reconstruct_summary_from_scenarios(run_path)
+
+        if not data:
+            return None
+
         data["_run_dir"] = str(run_path)
         eval_path = run_path / "evaluations.json"
         if eval_path.exists():
-            data["_evaluations"] = json.loads(eval_path.read_text(encoding="utf-8"))
+            try:
+                data["_evaluations"] = json.loads(eval_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
         return data
 
     # If pointed directly at a run directory
-    if (results_dir / "summary.json").exists():
-        summaries.append(_load_run(results_dir))
+    if _is_run_dir(results_dir):
+        run = _load_run(results_dir)
+        if run:
+            summaries.append(run)
         return summaries
 
     # Otherwise scan subdirectories
     for child in sorted(results_dir.iterdir()):
-        if child.is_dir() and (child / "summary.json").exists():
-            summaries.append(_load_run(child))
+        if child.is_dir() and _is_run_dir(child):
+            run = _load_run(child)
+            if run:
+                summaries.append(run)
 
     return summaries
 
