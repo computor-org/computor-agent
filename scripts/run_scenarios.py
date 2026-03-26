@@ -343,6 +343,8 @@ async def run_scenario(
     tutor_config,
     tutor_llm,
     override: bool = False,
+    previous_data: Optional[dict[str, dict]] = None,
+    model_info: Optional[dict] = None,
 ) -> ScenarioResult:
     """Run all prompts for a single scenario and write output files."""
     from computor_agent.tutor.scenario_loader import load_scenario
@@ -372,11 +374,16 @@ async def run_scenario(
         # Resume: skip prompts that already have a response file
         if not override and response_file.exists():
             content = response_file.read_text(encoding="utf-8")
+            # Carry forward timing from previous summary if available
+            prev_key = f"{scenario_name}/{prompt_file.name}"
+            prev = (previous_data or {}).get(prev_key, {})
             logger.info(f"  Skipping (already done): {prompt_file.name}")
             scenario_result.prompts.append(PromptResult(
                 file=prompt_file.name,
-                success=True,
+                success=prev.get("success", True),
+                processing_time_ms=prev.get("processing_time_ms", 0.0),
                 response_chars=len(content),
+                blocked=prev.get("blocked", False),
                 response_content=content,
             ))
             continue
@@ -409,8 +416,52 @@ async def run_scenario(
 
         scenario_result.prompts.append(prompt_result)
 
+        # Write summary.json after each prompt (crash-safe)
+        _write_scenario_summary(scenario_output, scenario_result, scenario_start, model_info)
+
     scenario_result.total_time_s = time.perf_counter() - scenario_start
+    _write_scenario_summary(scenario_output, scenario_result, scenario_start, model_info)
+
     return scenario_result
+
+
+def _write_scenario_summary(
+    scenario_output: Path,
+    scenario_result: ScenarioResult,
+    scenario_start: float,
+    model_info: Optional[dict],
+) -> None:
+    """Write per-scenario summary.json with current state."""
+    prompts_data = [
+        {
+            "file": p.file,
+            "success": p.success,
+            "processing_time_ms": round(p.processing_time_ms, 1),
+            "response_chars": p.response_chars,
+            "blocked": p.blocked,
+            "error": p.error,
+        }
+        for p in scenario_result.prompts
+    ]
+    all_times = [p.processing_time_ms for p in scenario_result.prompts if p.success]
+    elapsed = time.perf_counter() - scenario_start
+
+    scenario_summary = {
+        **(model_info or {}),
+        "scenario": scenario_result.name,
+        "assignment": scenario_result.assignment,
+        "total_prompts": len(scenario_result.prompts),
+        "total_successes": sum(1 for p in scenario_result.prompts if p.success),
+        "total_failures": sum(1 for p in scenario_result.prompts if not p.success),
+        "total_time_s": round(elapsed, 2),
+        "avg_processing_time_ms": round(sum(all_times) / len(all_times), 1) if all_times else 0.0,
+        "prompts": prompts_data,
+    }
+    summary_path = scenario_output / "summary.json"
+    summary_path.write_text(
+        json.dumps(scenario_summary, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +493,23 @@ def find_existing_run_dir(output_base: Path, model_slug: str) -> Optional[Path]:
         reverse=True,
     )
     return candidates[0] if candidates else None
+
+
+def load_previous_prompt_data(run_dir: Path) -> dict[str, dict]:
+    """Load prompt-level data from a previous summary.json, keyed by 'scenario/file'."""
+    summary_path = run_dir / "summary.json"
+    if not summary_path.exists():
+        return {}
+    try:
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    index = {}
+    for sc in data.get("scenarios", []):
+        for p in sc.get("prompts", []):
+            key = f"{sc['name']}/{p['file']}"
+            index[key] = p
+    return index
 
 
 async def run_model(
@@ -496,10 +564,12 @@ async def run_model(
     model_slug = model_name.replace(":", "-").replace("/", "-")
 
     # Resume: reuse existing run directory if available
+    previous_data = {}
     existing_run = None if override else find_existing_run_dir(output_base, model_slug)
     if existing_run:
         run_dir = existing_run
-        logger.info(f"Resuming existing run: {run_dir}")
+        previous_data = load_previous_prompt_data(run_dir)
+        logger.info(f"Resuming existing run: {run_dir} ({len(previous_data)} previous prompt(s))")
     else:
         run_dir = output_base / f"run_{timestamp}_{model_slug}"
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -513,6 +583,12 @@ async def run_model(
 
     run_start = time.perf_counter()
 
+    model_info = {
+        "model": llm_config.model,
+        "provider": llm_config.provider.value,
+        "timestamp": timestamp,
+    }
+
     for scenario_dir in scenario_dirs:
         scenario_result = await run_scenario(
             scenario_dir=scenario_dir,
@@ -520,6 +596,8 @@ async def run_model(
             tutor_config=tutor_config,
             tutor_llm=tutor_llm,
             override=override,
+            previous_data=previous_data,
+            model_info=model_info,
         )
         summary.scenarios.append(scenario_result)
 

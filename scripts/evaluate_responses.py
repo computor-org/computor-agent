@@ -306,6 +306,53 @@ def aggregate_scores(all_scores: list[dict], metrics: list[Metric]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Deterministic text metrics
+# ---------------------------------------------------------------------------
+
+_SENTENCE_RE = re.compile(r"[.!?]+(?:\s|$)")
+_CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```", re.MULTILINE)
+_QUESTION_RE = re.compile(r"\?(?:\s|$)")
+
+
+def compute_text_metrics(text: str) -> dict:
+    """Compute deterministic text metrics from a tutor response."""
+    if not text.strip():
+        return {
+            "response_length_words": 0,
+            "sentence_count": 0,
+            "avg_sentence_length": 0.0,
+            "code_block_count": 0,
+            "code_ratio": 0.0,
+            "question_count": 0,
+        }
+
+    words = text.split()
+    word_count = len(words)
+
+    sentences = _SENTENCE_RE.split(text.strip())
+    sentences = [s.strip() for s in sentences if s.strip()]
+    sentence_count = max(len(sentences), 1)
+
+    avg_sentence_length = round(word_count / sentence_count, 1)
+
+    code_blocks = _CODE_BLOCK_RE.findall(text)
+    code_block_count = len(code_blocks)
+    code_chars = sum(len(b) for b in code_blocks)
+    code_ratio = round(code_chars / len(text), 2) if text else 0.0
+
+    question_count = len(_QUESTION_RE.findall(text))
+
+    return {
+        "response_length_words": word_count,
+        "sentence_count": sentence_count,
+        "avg_sentence_length": avg_sentence_length,
+        "code_block_count": code_block_count,
+        "code_ratio": code_ratio,
+        "question_count": question_count,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Core evaluation
 # ---------------------------------------------------------------------------
 
@@ -412,8 +459,15 @@ async def evaluate_run(
             # Resume: reuse existing evaluation if available
             existing_key = f"{scenario_name}/{prompt_file}"
             if existing_key in existing:
+                existing_entry = existing[existing_key]
+                # Backfill text_metrics if missing from older evaluations
+                if "text_metrics" not in existing_entry:
+                    response_path = run_dir / scenario_name / f"{stem}_response.md"
+                    if response_path.exists():
+                        resp_text = response_path.read_text(encoding="utf-8").strip()
+                        existing_entry["text_metrics"] = compute_text_metrics(resp_text)
                 logger.info(f"    Skipping (already evaluated): {prompt_file}")
-                scenario_eval["prompts"].append(existing[existing_key])
+                scenario_eval["prompts"].append(existing_entry)
                 total_evaluated += 1
                 continue
 
@@ -448,6 +502,9 @@ async def evaluate_run(
                 }
                 scenario_eval["prompts"].append(prompt_eval)
                 continue
+
+            # Compute deterministic text metrics (always, no LLM needed)
+            text_metrics = compute_text_metrics(tutor_response)
 
             repeat_label = f" ({repeats} repeats)" if repeats > 1 else ""
             logger.info(f"    Evaluating: {prompt_file} [{category}]{repeat_label}")
@@ -502,6 +559,7 @@ async def evaluate_run(
                     ],
                     "comment": all_scores[0].get("comment", ""),
                     "eval_time_ms": round(eval_time_ms, 1),
+                    "text_metrics": text_metrics,
                 }
                 total_evaluated += 1
 
@@ -521,6 +579,7 @@ async def evaluate_run(
                     "repeats_succeeded": 0,
                     "reason": "all evaluation attempts failed",
                     "eval_time_ms": round(eval_time_ms, 1),
+                    "text_metrics": text_metrics,
                 }
                 total_failed += 1
                 logger.warning(f"      All {repeats} evaluation attempts failed")
