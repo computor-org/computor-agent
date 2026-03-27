@@ -119,6 +119,10 @@ def _reconstruct_summary_from_scenarios(run_dir: Path) -> Optional[dict]:
         if child.is_dir() and sc_summary_path.exists():
             try:
                 sc_data = json.loads(sc_summary_path.read_text(encoding="utf-8"))
+                # Skip files that look like top-level summaries (e.g. report/)
+                if "scenarios" in sc_data and isinstance(sc_data["scenarios"], list):
+                    continue
+                sc_data["_dir_name"] = child.name
                 scenario_summaries.append(sc_data)
             except (json.JSONDecodeError, OSError):
                 continue
@@ -129,8 +133,10 @@ def _reconstruct_summary_from_scenarios(run_dir: Path) -> Optional[dict]:
     first = scenario_summaries[0]
     scenarios = []
     for sc in scenario_summaries:
+        # Use "scenario" field, fall back to directory name
+        name = sc.get("scenario") or sc.get("_dir_name", "")
         scenarios.append({
-            "name": sc.get("scenario", ""),
+            "name": name,
             "assignment": sc.get("assignment", ""),
             "total_time_s": sc.get("total_time_s", 0),
             "prompts": sc.get("prompts", []),
@@ -154,11 +160,23 @@ def _reconstruct_summary_from_scenarios(run_dir: Path) -> Optional[dict]:
 
 
 def _load_run_summary(run_dir: Path) -> Optional[dict]:
-    """Load run summary, reconstructing from per-scenario summaries if needed."""
+    """Load run summary, reconstructing from per-scenario summaries if needed.
+
+    A top-level summary has a "scenarios" list.  A per-scenario summary has
+    a "scenario" string instead.  If the file at run_dir/summary.json is
+    actually a per-scenario summary we fall through to reconstruction.
+    """
     top_level = run_dir / "summary.json"
     if top_level.exists():
         try:
-            return json.loads(top_level.read_text(encoding="utf-8"))
+            data = json.loads(top_level.read_text(encoding="utf-8"))
+            # Only accept if it looks like a top-level summary (has "scenarios" list)
+            if "scenarios" in data and isinstance(data["scenarios"], list):
+                return data
+            logger.debug(
+                f"summary.json in {run_dir.name} is per-scenario format, "
+                f"reconstructing from subdirectories"
+            )
         except (json.JSONDecodeError, OSError):
             pass
     return _reconstruct_summary_from_scenarios(run_dir)
@@ -477,6 +495,12 @@ async def evaluate_run(
     if not summary:
         logger.error(f"  No summary data found in {run_dir}")
         return {"scenarios": [], "total_evaluated": 0, "total_failed": 0}
+
+    scenario_names = [s.get("name", "?") for s in summary.get("scenarios", [])]
+    logger.info(
+        f"  Model: {summary.get('model', '?')}, "
+        f"{len(scenario_names)} scenario(s): {', '.join(scenario_names) or '(none)'}"
+    )
 
     system_prompt = build_system_prompt(metrics)
     metric_names = [m.name for m in metrics]
