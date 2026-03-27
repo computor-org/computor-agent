@@ -702,12 +702,27 @@ async def evaluate_run(
 
             scenario_eval["prompts"].append(prompt_eval)
 
+            # Write after each evaluation (crash-safe)
+            evaluations["total_evaluated"] = total_evaluated
+            evaluations["total_failed"] = total_failed
+            _write_evaluations(run_dir, evaluations)
+
         evaluations["scenarios"].append(scenario_eval)
 
     evaluations["total_evaluated"] = total_evaluated
     evaluations["total_failed"] = total_failed
+    _write_evaluations(run_dir, evaluations)
 
     return evaluations
+
+
+def _write_evaluations(run_dir: Path, evaluations: dict) -> None:
+    """Write evaluations.json to disk."""
+    eval_path = run_dir / "evaluations.json"
+    eval_path.write_text(
+        json.dumps(evaluations, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -823,18 +838,11 @@ async def run_evaluation(args: argparse.Namespace) -> None:
             override=args.override,
         )
 
-        # Write evaluations.json alongside summary.json
-        eval_path = run_dir / "evaluations.json"
-        eval_path.write_text(
-            json.dumps(evaluations, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
         logger.info(
             f"  Done: {evaluations['total_evaluated']} evaluated, "
             f"{evaluations['total_failed']} failed"
         )
-        logger.info(f"  Written: {eval_path}")
+        logger.info(f"  Written: {run_dir / 'evaluations.json'}")
 
     await llm_provider.close()
     logger.info("\nAll evaluations complete.")

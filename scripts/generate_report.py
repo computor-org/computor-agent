@@ -64,6 +64,10 @@ def _reconstruct_summary_from_scenarios(run_dir: Path) -> dict | None:
         if child.is_dir() and sc_summary_path.exists():
             try:
                 sc_data = json.loads(sc_summary_path.read_text(encoding="utf-8"))
+                # Skip files that look like top-level summaries (e.g. report/)
+                if "scenarios" in sc_data and isinstance(sc_data["scenarios"], list):
+                    continue
+                sc_data["_dir_name"] = child.name
                 scenario_summaries.append(sc_data)
             except (json.JSONDecodeError, OSError):
                 continue
@@ -74,8 +78,9 @@ def _reconstruct_summary_from_scenarios(run_dir: Path) -> dict | None:
     first = scenario_summaries[0]
     scenarios = []
     for sc in scenario_summaries:
+        name = sc.get("scenario") or sc.get("_dir_name", "")
         scenarios.append({
-            "name": sc.get("scenario", ""),
+            "name": name,
             "assignment": sc.get("assignment", ""),
             "total_time_s": sc.get("total_time_s", 0),
             "prompts": sc.get("prompts", []),
@@ -99,55 +104,82 @@ def _reconstruct_summary_from_scenarios(run_dir: Path) -> dict | None:
 
 
 def _is_run_dir(d: Path) -> bool:
-    """Check if a directory is a valid run directory."""
-    if (d / "summary.json").exists():
-        return True
-    return any(
-        (child / "summary.json").exists()
-        for child in d.iterdir()
-        if child.is_dir()
-    )
+    """Check if a directory is a valid run directory.
+
+    A run directory either has:
+    - A top-level summary.json with a "scenarios" list, OR
+    - Subdirectories that contain per-scenario summary.json files (with "prompts" key)
+    """
+    top = d / "summary.json"
+    if top.exists():
+        try:
+            data = json.loads(top.read_text(encoding="utf-8"))
+            if "scenarios" in data and isinstance(data["scenarios"], list):
+                return True
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    for child in d.iterdir():
+        if child.is_dir():
+            sc_summary = child / "summary.json"
+            if sc_summary.exists():
+                try:
+                    data = json.loads(sc_summary.read_text(encoding="utf-8"))
+                    if "prompts" in data and "scenarios" not in data:
+                        return True
+                except (json.JSONDecodeError, OSError):
+                    pass
+    return False
+
+
+def _load_run(run_path: Path) -> dict | None:
+    """Load a run summary, reconstructing from per-scenario summaries if needed."""
+    top_level = run_path / "summary.json"
+    data = None
+    if top_level.exists():
+        try:
+            raw = json.loads(top_level.read_text(encoding="utf-8"))
+            # Only accept if it has the top-level structure
+            if "scenarios" in raw and isinstance(raw["scenarios"], list):
+                data = raw
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if not data:
+        data = _reconstruct_summary_from_scenarios(run_path)
+
+    if not data:
+        return None
+
+    data["_run_dir"] = str(run_path)
+    eval_path = run_path / "evaluations.json"
+    if eval_path.exists():
+        try:
+            data["_evaluations"] = json.loads(eval_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return data
 
 
 def load_summaries(results_dir: Path) -> list[dict]:
     """Find and load all summary.json + evaluations.json files under results_dir."""
     summaries = []
 
-    def _load_run(run_path: Path) -> dict | None:
-        top_level = run_path / "summary.json"
-        if top_level.exists():
-            try:
-                data = json.loads(top_level.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                data = _reconstruct_summary_from_scenarios(run_path)
-        else:
-            data = _reconstruct_summary_from_scenarios(run_path)
-
-        if not data:
-            return None
-
-        data["_run_dir"] = str(run_path)
-        eval_path = run_path / "evaluations.json"
-        if eval_path.exists():
-            try:
-                data["_evaluations"] = json.loads(eval_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
-        return data
-
-    # If pointed directly at a run directory
-    if _is_run_dir(results_dir):
-        run = _load_run(results_dir)
-        if run:
-            summaries.append(run)
-        return summaries
-
-    # Otherwise scan subdirectories
+    # Scan children first (the common case: results/ contains run_* dirs)
     for child in sorted(results_dir.iterdir()):
         if child.is_dir() and _is_run_dir(child):
             run = _load_run(child)
             if run:
                 summaries.append(run)
+
+    if summaries:
+        return summaries
+
+    # Fallback: results_dir itself is a run directory
+    if _is_run_dir(results_dir):
+        run = _load_run(results_dir)
+        if run:
+            summaries.append(run)
 
     return summaries
 
@@ -473,6 +505,109 @@ def plot_response_length(summaries: list[dict], out_dir: Path) -> str:
     return path.name
 
 
+def plot_time_by_category_box(summaries: list[dict], out_dir: Path) -> str:
+    """Box plot: response time distribution per category (across all models)."""
+    cat_times = defaultdict(list)
+
+    for s in summaries:
+        for sc in s["scenarios"]:
+            for p in sc["prompts"]:
+                if p["success"]:
+                    cat = extract_category(p["file"])
+                    cat_times[cat].append(p["processing_time_ms"] / 1000)
+
+    categories = sorted(cat_times.keys())
+    if len(categories) < 2:
+        return None
+
+    fig, ax = plt.subplots(figsize=(max(8, len(categories) * 1.2), 5))
+    data = [cat_times[c] for c in categories]
+    bp = ax.boxplot(data, labels=categories, patch_artist=True)
+
+    for i, patch in enumerate(bp["boxes"]):
+        patch.set_facecolor(COLORS[i % len(COLORS)])
+        patch.set_alpha(0.7)
+
+    ax.set_ylabel("Response time (s)")
+    ax.set_title("Response Time Distribution by Category")
+    ax.tick_params(axis="x", rotation=30)
+
+    fig.tight_layout()
+    path = out_dir / "time_by_category_box.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
+def plot_length_by_category(summaries: list[dict], out_dir: Path) -> str:
+    """Box plot: response length distribution per category."""
+    cat_lengths = defaultdict(list)
+
+    for s in summaries:
+        for sc in s["scenarios"]:
+            for p in sc["prompts"]:
+                if p["success"] and p["response_chars"] > 0:
+                    cat = extract_category(p["file"])
+                    cat_lengths[cat].append(p["response_chars"])
+
+    categories = sorted(cat_lengths.keys())
+    if len(categories) < 2:
+        return None
+
+    fig, ax = plt.subplots(figsize=(max(8, len(categories) * 1.2), 5))
+    data = [cat_lengths[c] for c in categories]
+    bp = ax.boxplot(data, labels=categories, patch_artist=True)
+
+    for i, patch in enumerate(bp["boxes"]):
+        patch.set_facecolor(COLORS[i % len(COLORS)])
+        patch.set_alpha(0.7)
+
+    ax.set_ylabel("Response length (chars)")
+    ax.set_title("Response Length Distribution by Category")
+    ax.tick_params(axis="x", rotation=30)
+
+    fig.tight_layout()
+    path = out_dir / "length_by_category.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
+def plot_prompt_count_by_category(summaries: list[dict], out_dir: Path) -> str:
+    """Bar chart: number of prompts per category (dataset overview)."""
+    cat_counts = defaultdict(int)
+
+    for s in summaries:
+        for sc in s["scenarios"]:
+            for p in sc["prompts"]:
+                cat = extract_category(p["file"])
+                cat_counts[cat] += 1
+
+    categories = sorted(cat_counts.keys())
+    if len(categories) < 2:
+        return None
+
+    counts = [cat_counts[c] for c in categories]
+
+    fig, ax = plt.subplots(figsize=(max(8, len(categories) * 1.2), 5))
+    bars = ax.bar(range(len(categories)), counts,
+                  color=[COLORS[i % len(COLORS)] for i in range(len(categories))])
+    ax.set_xticks(range(len(categories)))
+    ax.set_xticklabels(categories, rotation=30, ha="right")
+    ax.set_ylabel("Number of prompts")
+    ax.set_title("Prompt Count by Category")
+
+    for bar, c in zip(bars, counts):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                str(c), ha="center", va="bottom", fontsize=10)
+
+    fig.tight_layout()
+    path = out_dir / "prompt_count_by_category.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
 # ---------------------------------------------------------------------------
 # Evaluation plot generators
 # ---------------------------------------------------------------------------
@@ -642,14 +777,17 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
 
     # Generate all plots
     plot_funcs = [
+        ("prompt_counts", plot_prompt_count_by_category),
         ("avg_time", plot_avg_time_per_model),
         ("total_time", plot_total_time_per_model),
         ("success", plot_success_rate),
         ("time_dist", plot_time_distribution),
-        ("scenario_time", plot_time_per_scenario),
-        ("cat_success", plot_category_success),
+        ("time_by_cat_box", plot_time_by_category_box),
         ("cat_time", plot_category_time),
+        ("cat_success", plot_category_success),
         ("resp_length", plot_response_length),
+        ("length_by_cat", plot_length_by_category),
+        ("scenario_time", plot_time_per_scenario),
     ]
 
     if has_evals:
@@ -696,6 +834,36 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
             f"| {s['total_time_s']:.1f}s |"
         )
     lines.append("")
+
+    # --- Per-category summary table ---
+    cat_data = defaultdict(lambda: {"count": 0, "success": 0, "times": [], "lengths": []})
+    for s in summaries:
+        for sc in s["scenarios"]:
+            for p in sc["prompts"]:
+                cat = extract_category(p["file"])
+                cat_data[cat]["count"] += 1
+                if p["success"]:
+                    cat_data[cat]["success"] += 1
+                    cat_data[cat]["times"].append(p["processing_time_ms"] / 1000)
+                    if p["response_chars"] > 0:
+                        cat_data[cat]["lengths"].append(p["response_chars"])
+
+    if len(cat_data) >= 2:
+        lines.append("## Per-Category Statistics")
+        lines.append("")
+        lines.append("| Category | Prompts | Success | Avg Time (s) | Median Time (s) | Avg Length (chars) |")
+        lines.append("|----------|---------|---------|-------------|----------------|-------------------|")
+        for cat in sorted(cat_data.keys()):
+            d = cat_data[cat]
+            rate = (d["success"] / d["count"] * 100) if d["count"] > 0 else 0
+            avg_t = sum(d["times"]) / len(d["times"]) if d["times"] else 0
+            med_t = sorted(d["times"])[len(d["times"]) // 2] if d["times"] else 0
+            avg_l = sum(d["lengths"]) / len(d["lengths"]) if d["lengths"] else 0
+            lines.append(
+                f"| {cat} | {d['count']} | {d['success']} ({rate:.0f}%) "
+                f"| {avg_t:.1f} | {med_t:.1f} | {avg_l:.0f} |"
+            )
+        lines.append("")
 
     # --- Evaluation scores overview ---
     if has_evals:
@@ -748,14 +916,17 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
     media_rel = media_dir.name
 
     plot_sections = {
+        "prompt_counts": ("Dataset: Prompts by Category", "Number of prompts per intent category in the dataset."),
         "avg_time": ("Average Response Time", "Average time the model takes to respond to a single prompt."),
         "total_time": ("Total Run Time", "Wall-clock time for each model to complete all scenarios."),
         "success": ("Success / Failure Rate", "Number of successful vs failed prompts per model."),
         "time_dist": ("Response Time Distribution", "Spread of individual response times per model."),
-        "scenario_time": ("Time per Scenario", "How long each scenario takes across models."),
+        "time_by_cat_box": ("Response Time by Category", "How response time varies across intent categories (box plot showing median, quartiles, outliers)."),
+        "cat_time": ("Average Response Time by Category", "Average response time per category, compared across models."),
         "cat_success": ("Success Rate by Category", "Success rate broken down by prompt category (help, injection, etc.)."),
-        "cat_time": ("Response Time by Category", "Average response time broken down by prompt category."),
         "resp_length": ("Response Length", "Average character count of model responses."),
+        "length_by_cat": ("Response Length by Category", "How response length varies across intent categories (box plot)."),
+        "scenario_time": ("Time per Scenario", "How long each scenario takes across models."),
         "scores_model": ("Evaluation Scores per Model", "Average LLM-judged scores per metric for each model."),
         "scores_category": ("Scores by Category", "Heatmap of average overall score per model and prompt category."),
         "scores_dist": ("Score Distribution", "Spread of overall scores (averaged across metrics) per model."),
