@@ -483,14 +483,32 @@ async def warmup_model(llm_provider) -> None:
 
 
 def _is_run_dir(d: Path) -> bool:
-    """Check if a directory is a valid run directory (top-level or per-scenario summaries)."""
-    if (d / "summary.json").exists():
-        return True
-    return any(
-        (child / "summary.json").exists()
-        for child in d.iterdir()
-        if child.is_dir()
-    )
+    """Check if a directory is a valid run directory.
+
+    A run directory either has:
+    - A top-level summary.json with a "scenarios" list, OR
+    - Subdirectories that contain per-scenario summary.json files (with "prompts" key)
+    """
+    top = d / "summary.json"
+    if top.exists():
+        try:
+            data = json.loads(top.read_text(encoding="utf-8"))
+            if "scenarios" in data and isinstance(data["scenarios"], list):
+                return True
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    for child in d.iterdir():
+        if child.is_dir():
+            sc_summary = child / "summary.json"
+            if sc_summary.exists():
+                try:
+                    data = json.loads(sc_summary.read_text(encoding="utf-8"))
+                    if "prompts" in data and "scenarios" not in data:
+                        return True
+                except (json.JSONDecodeError, OSError):
+                    pass
+    return False
 
 
 def find_existing_run_dir(output_base: Path, model_slug: str) -> Optional[Path]:

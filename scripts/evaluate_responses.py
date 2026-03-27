@@ -101,14 +101,33 @@ class EvalConfig:
 # ---------------------------------------------------------------------------
 
 def _is_run_dir(d: Path) -> bool:
-    """Check if a directory is a valid run directory (top-level or per-scenario summaries)."""
-    if (d / "summary.json").exists():
-        return True
-    return any(
-        (child / "summary.json").exists()
-        for child in d.iterdir()
-        if child.is_dir()
-    )
+    """Check if a directory is a valid run directory.
+
+    A run directory either has:
+    - A top-level summary.json with a "scenarios" list, OR
+    - Subdirectories that contain per-scenario summary.json files (with "scenario" key)
+    """
+    top = d / "summary.json"
+    if top.exists():
+        try:
+            data = json.loads(top.read_text(encoding="utf-8"))
+            if "scenarios" in data and isinstance(data["scenarios"], list):
+                return True
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Check for per-scenario summaries (must have "scenario" or "prompts" key, not "scenarios")
+    for child in d.iterdir():
+        if child.is_dir():
+            sc_summary = child / "summary.json"
+            if sc_summary.exists():
+                try:
+                    data = json.loads(sc_summary.read_text(encoding="utf-8"))
+                    if "prompts" in data and "scenarios" not in data:
+                        return True
+                except (json.JSONDecodeError, OSError):
+                    pass
+    return False
 
 
 def _reconstruct_summary_from_scenarios(run_dir: Path) -> Optional[dict]:
@@ -183,20 +202,27 @@ def _load_run_summary(run_dir: Path) -> Optional[dict]:
 
 
 def discover_run_dirs(results_dir: Path, run_filter: Optional[str] = None) -> list[Path]:
-    """Find run directories containing summary data (top-level or per-scenario)."""
+    """Find run directories containing summary data (top-level or per-scenario).
+
+    Scans children first — if any child is a run dir, returns those.
+    Only treats results_dir itself as a run dir if no children qualify.
+    """
     runs = []
 
-    # Direct run directory
-    if _is_run_dir(results_dir):
-        if not run_filter or run_filter in results_dir.name:
-            runs.append(results_dir)
-        return runs
-
+    # Scan children first (the common case: results/ contains run_* dirs)
     for child in sorted(results_dir.iterdir()):
         if child.is_dir() and _is_run_dir(child):
             if run_filter and run_filter not in child.name:
                 continue
             runs.append(child)
+
+    if runs:
+        return runs
+
+    # Fallback: results_dir itself is a run directory
+    if _is_run_dir(results_dir):
+        if not run_filter or run_filter in results_dir.name:
+            runs.append(results_dir)
 
     return runs
 
