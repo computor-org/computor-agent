@@ -49,6 +49,8 @@ dev = [
 report = [
     "matplotlib>=3.7",
     "numpy>=1.24",
+    "seaborn>=0.13",
+    "pandas>=2.0",
 ]
 
 [project.scripts]

@@ -26,6 +26,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 
 logger = logging.getLogger(__name__)
 
@@ -33,24 +35,21 @@ logger = logging.getLogger(__name__)
 # Style
 # ---------------------------------------------------------------------------
 
-COLORS = [
-    "#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3",
-    "#937860", "#DA8BC3", "#8C8C8C", "#CCB974", "#64B5CD",
-]
+PALETTE = "deep"
 
 def setup_style():
-    """Configure matplotlib for clean report plots."""
-    plt.rcParams.update({
-        "figure.facecolor": "white",
-        "axes.facecolor": "white",
-        "axes.grid": True,
-        "axes.grid.axis": "y",
-        "grid.alpha": 0.3,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "font.size": 11,
-        "figure.dpi": 150,
-    })
+    """Configure seaborn + matplotlib for publication-quality plots."""
+    sns.set_theme(
+        style="whitegrid",
+        context="paper",
+        font_scale=1.3,
+        rc={
+            "figure.dpi": 150,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "grid.alpha": 0.3,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -235,21 +234,25 @@ def get_eval_repeats(summaries: list[dict]) -> int:
 # Plot generators
 # ---------------------------------------------------------------------------
 
+def _bar_labels(ax, fmt="{:.1f}"):
+    """Add value labels on top of bars."""
+    for container in ax.containers:
+        ax.bar_label(container, fmt=fmt, fontsize=9, padding=3)
+
+
 def plot_avg_time_per_model(summaries: list[dict], out_dir: Path) -> str:
     """Bar chart: average processing time per model."""
-    models = [s["model"] for s in summaries]
-    times = [s["avg_processing_time_ms"] / 1000 for s in summaries]
+    df = pd.DataFrame({
+        "Model": [s["model"] for s in summaries],
+        "Time (s)": [s["avg_processing_time_ms"] / 1000 for s in summaries],
+    })
 
-    fig, ax = plt.subplots(figsize=(max(8, len(models) * 1.5), 5))
-    bars = ax.bar(range(len(models)), times, color=COLORS[:len(models)])
-    ax.set_xticks(range(len(models)))
-    ax.set_xticklabels(models, rotation=30, ha="right")
-    ax.set_ylabel("Avg response time (s)")
+    fig, ax = plt.subplots(figsize=(max(8, len(df) * 1.5), 5))
+    sns.barplot(data=df, x="Model", y="Time (s)", palette=PALETTE, ax=ax)
     ax.set_title("Average Response Time per Model")
-
-    for bar, t in zip(bars, times):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1,
-                f"{t:.1f}s", ha="center", va="bottom", fontsize=10)
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=30)
+    _bar_labels(ax, fmt="{:.1f}s")
 
     fig.tight_layout()
     path = out_dir / "avg_time_per_model.png"
@@ -260,19 +263,17 @@ def plot_avg_time_per_model(summaries: list[dict], out_dir: Path) -> str:
 
 def plot_total_time_per_model(summaries: list[dict], out_dir: Path) -> str:
     """Bar chart: total run time per model."""
-    models = [s["model"] for s in summaries]
-    times = [s["total_time_s"] for s in summaries]
+    df = pd.DataFrame({
+        "Model": [s["model"] for s in summaries],
+        "Time (s)": [s["total_time_s"] for s in summaries],
+    })
 
-    fig, ax = plt.subplots(figsize=(max(8, len(models) * 1.5), 5))
-    bars = ax.bar(range(len(models)), times, color=COLORS[:len(models)])
-    ax.set_xticks(range(len(models)))
-    ax.set_xticklabels(models, rotation=30, ha="right")
-    ax.set_ylabel("Total time (s)")
+    fig, ax = plt.subplots(figsize=(max(8, len(df) * 1.5), 5))
+    sns.barplot(data=df, x="Model", y="Time (s)", palette=PALETTE, ax=ax)
     ax.set_title("Total Run Time per Model")
-
-    for bar, t in zip(bars, times):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2,
-                f"{t:.1f}s", ha="center", va="bottom", fontsize=10)
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=30)
+    _bar_labels(ax, fmt="{:.1f}s")
 
     fig.tight_layout()
     path = out_dir / "total_time_per_model.png"
@@ -286,11 +287,12 @@ def plot_success_rate(summaries: list[dict], out_dir: Path) -> str:
     models = [s["model"] for s in summaries]
     successes = [s["total_successes"] for s in summaries]
     failures = [s["total_failures"] for s in summaries]
+    palette = sns.color_palette(PALETTE, 2)
 
     fig, ax = plt.subplots(figsize=(max(8, len(models) * 1.5), 5))
     x = range(len(models))
-    ax.bar(x, successes, label="Success", color="#55A868")
-    ax.bar(x, failures, bottom=successes, label="Failure", color="#C44E52")
+    ax.bar(x, successes, label="Success", color=palette[0])
+    ax.bar(x, failures, bottom=successes, label="Failure", color=palette[1])
     ax.set_xticks(x)
     ax.set_xticklabels(models, rotation=30, ha="right")
     ax.set_ylabel("Prompts")
@@ -312,40 +314,23 @@ def plot_success_rate(summaries: list[dict], out_dir: Path) -> str:
 
 def plot_time_per_scenario(summaries: list[dict], out_dir: Path) -> str:
     """Grouped bar chart: time per scenario across models."""
-    # Collect all scenario names
-    all_scenarios = []
+    rows = []
     for s in summaries:
         for sc in s["scenarios"]:
-            if sc["name"] not in all_scenarios:
-                all_scenarios.append(sc["name"])
+            rows.append({"Model": s["model"], "Scenario": sc["name"], "Time (s)": sc["total_time_s"]})
 
-    if not all_scenarios:
+    if not rows:
         return None
 
-    models = [s["model"] for s in summaries]
-    n_models = len(models)
-    n_scenarios = len(all_scenarios)
-
-    # Build time matrix
-    times = {}
-    for s in summaries:
-        scenario_map = {sc["name"]: sc["total_time_s"] for sc in s["scenarios"]}
-        times[s["model"]] = [scenario_map.get(name, 0) for name in all_scenarios]
+    df = pd.DataFrame(rows)
+    n_scenarios = df["Scenario"].nunique()
 
     fig, ax = plt.subplots(figsize=(max(10, n_scenarios * 2), 5))
-    bar_width = 0.8 / n_models
-    x = np.arange(n_scenarios)
-
-    for i, model in enumerate(models):
-        offset = (i - n_models / 2 + 0.5) * bar_width
-        ax.bar(x + offset, times[model], bar_width,
-               label=model, color=COLORS[i % len(COLORS)])
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(all_scenarios, rotation=30, ha="right")
-    ax.set_ylabel("Time (s)")
+    sns.barplot(data=df, x="Scenario", y="Time (s)", hue="Model", palette=PALETTE, ax=ax)
     ax.set_title("Time per Scenario by Model")
-    ax.legend()
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=30)
+    sns.move_legend(ax, "upper right")
 
     fig.tight_layout()
     path = out_dir / "time_per_scenario.png"
@@ -356,31 +341,24 @@ def plot_time_per_scenario(summaries: list[dict], out_dir: Path) -> str:
 
 def plot_time_distribution(summaries: list[dict], out_dir: Path) -> str:
     """Box plot: response time distribution per model."""
-    models = []
-    all_times = []
+    rows = []
     for s in summaries:
-        prompt_times = []
         for sc in s["scenarios"]:
             for p in sc["prompts"]:
                 if p["success"]:
-                    prompt_times.append(p["processing_time_ms"] / 1000)
-        if prompt_times:
-            models.append(s["model"])
-            all_times.append(prompt_times)
+                    rows.append({"Model": s["model"], "Time (s)": p["processing_time_ms"] / 1000})
 
-    if not models:
+    if not rows:
         return None
 
-    fig, ax = plt.subplots(figsize=(max(8, len(models) * 1.5), 5))
-    bp = ax.boxplot(all_times, labels=models, patch_artist=True)
+    df = pd.DataFrame(rows)
+    n_models = df["Model"].nunique()
 
-    for i, patch in enumerate(bp["boxes"]):
-        patch.set_facecolor(COLORS[i % len(COLORS)])
-        patch.set_alpha(0.7)
-
-    ax.set_ylabel("Response time (s)")
+    fig, ax = plt.subplots(figsize=(max(8, n_models * 1.5), 5))
+    sns.boxplot(data=df, x="Model", y="Time (s)", palette=PALETTE, ax=ax)
     ax.set_title("Response Time Distribution per Model")
-    if len(models) > 3:
+    ax.set_xlabel("")
+    if n_models > 3:
         ax.tick_params(axis="x", rotation=30)
 
     fig.tight_layout()
@@ -392,10 +370,8 @@ def plot_time_distribution(summaries: list[dict], out_dir: Path) -> str:
 
 def plot_category_success(summaries: list[dict], out_dir: Path) -> str:
     """Grouped bar chart: success rate per prompt category across models."""
-    # Collect category stats
-    models = [s["model"] for s in summaries]
-    cat_stats = {}  # model -> category -> (successes, total)
-    all_categories = set()
+    cat_stats: dict[str, dict[str, list[int]]] = {}
+    all_categories: set[str] = set()
 
     for s in summaries:
         model = s["model"]
@@ -408,32 +384,26 @@ def plot_category_success(summaries: list[dict], out_dir: Path) -> str:
                 if p["success"]:
                     cat_stats[model][cat][0] += 1
 
-    all_categories = sorted(all_categories)
-    if not all_categories or len(all_categories) <= 1:
+    all_categories_sorted = sorted(all_categories)
+    if len(all_categories_sorted) <= 1:
         return None
 
-    n_models = len(models)
-    n_cats = len(all_categories)
+    rows = []
+    for model in cat_stats:
+        for cat in all_categories_sorted:
+            s, t = cat_stats[model].get(cat, [0, 0])
+            rows.append({"Model": model, "Category": cat, "Success Rate (%)": (s / t * 100) if t > 0 else 0})
+
+    df = pd.DataFrame(rows)
+    n_cats = len(all_categories_sorted)
 
     fig, ax = plt.subplots(figsize=(max(10, n_cats * 2), 5))
-    bar_width = 0.8 / n_models
-    x = np.arange(n_cats)
-
-    for i, model in enumerate(models):
-        rates = []
-        for cat in all_categories:
-            s, t = cat_stats[model].get(cat, [0, 0])
-            rates.append((s / t * 100) if t > 0 else 0)
-        offset = (i - n_models / 2 + 0.5) * bar_width
-        ax.bar(x + offset, rates, bar_width,
-               label=model, color=COLORS[i % len(COLORS)])
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(all_categories, rotation=30, ha="right")
-    ax.set_ylabel("Success rate (%)")
+    sns.barplot(data=df, x="Category", y="Success Rate (%)", hue="Model", palette=PALETTE, ax=ax)
     ax.set_ylim(0, 110)
     ax.set_title("Success Rate per Category by Model")
-    ax.legend()
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=30)
+    sns.move_legend(ax, "upper right")
 
     fig.tight_layout()
     path = out_dir / "category_success.png"
@@ -444,45 +414,29 @@ def plot_category_success(summaries: list[dict], out_dir: Path) -> str:
 
 def plot_category_time(summaries: list[dict], out_dir: Path) -> str:
     """Grouped bar chart: average response time per category across models."""
-    models = [s["model"] for s in summaries]
-    cat_times = {}  # model -> category -> list of times
-    all_categories = set()
-
+    rows = []
     for s in summaries:
-        model = s["model"]
-        cat_times[model] = defaultdict(list)
         for sc in s["scenarios"]:
             for p in sc["prompts"]:
                 if p["success"]:
                     cat = extract_category(p["file"])
-                    all_categories.add(cat)
-                    cat_times[model][cat].append(p["processing_time_ms"] / 1000)
+                    rows.append({"Model": s["model"], "Category": cat, "Time (s)": p["processing_time_ms"] / 1000})
 
-    all_categories = sorted(all_categories)
-    if not all_categories or len(all_categories) <= 1:
+    if not rows:
         return None
 
-    n_models = len(models)
-    n_cats = len(all_categories)
+    df = pd.DataFrame(rows)
+    if df["Category"].nunique() <= 1:
+        return None
+
+    n_cats = df["Category"].nunique()
 
     fig, ax = plt.subplots(figsize=(max(10, n_cats * 2), 5))
-    bar_width = 0.8 / n_models
-    x = np.arange(n_cats)
-
-    for i, model in enumerate(models):
-        avgs = []
-        for cat in all_categories:
-            times = cat_times[model].get(cat, [])
-            avgs.append(sum(times) / len(times) if times else 0)
-        offset = (i - n_models / 2 + 0.5) * bar_width
-        ax.bar(x + offset, avgs, bar_width,
-               label=model, color=COLORS[i % len(COLORS)])
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(all_categories, rotation=30, ha="right")
-    ax.set_ylabel("Avg response time (s)")
+    sns.barplot(data=df, x="Category", y="Time (s)", hue="Model", palette=PALETTE, estimator="mean", ax=ax)
     ax.set_title("Average Response Time per Category by Model")
-    ax.legend()
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=30)
+    sns.move_legend(ax, "upper right")
 
     fig.tight_layout()
     path = out_dir / "category_time.png"
@@ -493,29 +447,24 @@ def plot_category_time(summaries: list[dict], out_dir: Path) -> str:
 
 def plot_response_length(summaries: list[dict], out_dir: Path) -> str:
     """Bar chart: average response length (chars) per model."""
-    models = []
-    avg_chars = []
-
+    rows = []
     for s in summaries:
         chars = [p["response_chars"] for sc in s["scenarios"]
                  for p in sc["prompts"] if p["success"] and p["response_chars"] > 0]
         if chars:
-            models.append(s["model"])
-            avg_chars.append(sum(chars) / len(chars))
+            rows.append({"Model": s["model"], "Avg Length (chars)": sum(chars) / len(chars)})
 
-    if not models:
+    if not rows:
         return None
 
-    fig, ax = plt.subplots(figsize=(max(8, len(models) * 1.5), 5))
-    bars = ax.bar(range(len(models)), avg_chars, color=COLORS[:len(models)])
-    ax.set_xticks(range(len(models)))
-    ax.set_xticklabels(models, rotation=30, ha="right")
-    ax.set_ylabel("Avg response length (chars)")
-    ax.set_title("Average Response Length per Model")
+    df = pd.DataFrame(rows)
 
-    for bar, c in zip(bars, avg_chars):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 5,
-                f"{c:.0f}", ha="center", va="bottom", fontsize=10)
+    fig, ax = plt.subplots(figsize=(max(8, len(df) * 1.5), 5))
+    sns.barplot(data=df, x="Model", y="Avg Length (chars)", palette=PALETTE, ax=ax)
+    ax.set_title("Average Response Length per Model")
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=30)
+    _bar_labels(ax, fmt="{:.0f}")
 
     fig.tight_layout()
     path = out_dir / "response_length.png"
@@ -529,75 +478,38 @@ def plot_response_length(summaries: list[dict], out_dir: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def plot_scores_per_model(summaries: list[dict], out_dir: Path) -> str:
-    """Bar chart: average score per metric per model, with min/max error bars when repeats > 1."""
+    """Grouped bar chart: average score per metric per model."""
     metric_names = get_eval_metrics(summaries)
     if not metric_names:
         return None
 
-    has_repeats = get_eval_repeats(summaries) > 1
-    models = []
-    model_avgs = []
-    model_mins = []
-    model_maxs = []
-
+    rows = []
     for s in summaries:
         details = get_prompt_score_details(s)
         if not details:
             continue
-        models.append(s["model"])
-        avgs, mins, maxs = [], [], []
         for m in metric_names:
             vals = [d["scores"].get(m) for d in details if d["scores"].get(m) is not None]
-            avgs.append(sum(vals) / len(vals) if vals else 0)
-            if has_repeats:
-                # Aggregate min/max across all prompts from score_stats
-                m_mins = [d["score_stats"].get(m, {}).get("min")
-                          for d in details if d["score_stats"].get(m, {}).get("min") is not None]
-                m_maxs = [d["score_stats"].get(m, {}).get("max")
-                          for d in details if d["score_stats"].get(m, {}).get("max") is not None]
-                mins.append(sum(m_mins) / len(m_mins) if m_mins else avgs[-1])
-                maxs.append(sum(m_maxs) / len(m_maxs) if m_maxs else avgs[-1])
-        model_avgs.append(avgs)
-        if has_repeats:
-            model_mins.append(mins)
-            model_maxs.append(maxs)
+            if vals:
+                rows.append({"Model": s["model"], "Metric": m, "Score": sum(vals) / len(vals)})
 
-    if not models:
+    if not rows:
         return None
 
+    df = pd.DataFrame(rows)
     n_metrics = len(metric_names)
-    n_models = len(models)
 
     fig, ax = plt.subplots(figsize=(max(10, n_metrics * 1.5), 5))
-    bar_width = 0.8 / n_models
-    x = np.arange(n_metrics)
-
-    for i, model in enumerate(models):
-        avgs = model_avgs[i]
-        offset = (i - n_models / 2 + 0.5) * bar_width
-        if has_repeats:
-            yerr_lo = [a - mn for a, mn in zip(avgs, model_mins[i])]
-            yerr_hi = [mx - a for a, mx in zip(avgs, model_maxs[i])]
-            bars = ax.bar(x + offset, avgs, bar_width,
-                          label=model, color=COLORS[i % len(COLORS)],
-                          yerr=[yerr_lo, yerr_hi], capsize=3,
-                          error_kw={"elinewidth": 1, "capthick": 1})
-        else:
-            bars = ax.bar(x + offset, avgs, bar_width,
-                          label=model, color=COLORS[i % len(COLORS)])
-        for bar, val in zip(bars, avgs):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05,
-                    f"{val:.1f}", ha="center", va="bottom", fontsize=9)
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(metric_names, rotation=30, ha="right")
-    ax.set_ylabel("Score")
+    sns.barplot(data=df, x="Metric", y="Score", hue="Model", palette=PALETTE, ax=ax)
     ax.set_ylim(0, 5.5)
+    has_repeats = get_eval_repeats(summaries) > 1
     title = "Average Evaluation Scores per Model"
     if has_repeats:
-        title += f" (error bars: avg min/max across {get_eval_repeats(summaries)} repeats)"
+        title += f" ({get_eval_repeats(summaries)} repeats)"
     ax.set_title(title)
-    ax.legend()
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=30)
+    sns.move_legend(ax, "upper right")
 
     fig.tight_layout()
     path = out_dir / "scores_per_model.png"
@@ -613,8 +525,8 @@ def plot_scores_per_category(summaries: list[dict], out_dir: Path) -> str:
         return None
 
     models = []
-    all_categories = set()
-    model_cat_scores = {}
+    all_categories: set[str] = set()
+    model_cat_scores: dict[str, dict[str, list[float]]] = {}
 
     for s in summaries:
         scores = get_prompt_scores(s)
@@ -622,7 +534,7 @@ def plot_scores_per_category(summaries: list[dict], out_dir: Path) -> str:
             continue
         model = s["model"]
         models.append(model)
-        cat_scores = defaultdict(list)
+        cat_scores: dict[str, list[float]] = defaultdict(list)
         for sc in scores:
             cat = sc["category"]
             all_categories.add(cat)
@@ -631,40 +543,35 @@ def plot_scores_per_category(summaries: list[dict], out_dir: Path) -> str:
                 cat_scores[cat].append(sum(vals) / len(vals))
         model_cat_scores[model] = cat_scores
 
-    all_categories = sorted(all_categories)
-    if not models or not all_categories:
+    all_categories_sorted = sorted(all_categories)
+    if not models or not all_categories_sorted:
         return None
 
-    # Build matrix
-    matrix = []
+    # Build DataFrame for heatmap
+    matrix_data = {}
     for model in models:
-        row = []
-        for cat in all_categories:
+        row = {}
+        for cat in all_categories_sorted:
             vals = model_cat_scores[model].get(cat, [])
-            row.append(sum(vals) / len(vals) if vals else 0)
-        matrix.append(row)
+            row[cat] = sum(vals) / len(vals) if vals else 0
+        matrix_data[model] = row
 
-    matrix = np.array(matrix)
+    df = pd.DataFrame(matrix_data).T
+    df.columns.name = "Category"
 
-    fig, ax = plt.subplots(figsize=(max(8, len(all_categories) * 1.5),
+    fig, ax = plt.subplots(figsize=(max(8, len(all_categories_sorted) * 1.5),
                                      max(4, len(models) * 0.8 + 2)))
-    im = ax.imshow(matrix, cmap="RdYlGn", aspect="auto", vmin=0, vmax=5)
-
-    ax.set_xticks(range(len(all_categories)))
-    ax.set_xticklabels(all_categories, rotation=30, ha="right")
-    ax.set_yticks(range(len(models)))
-    ax.set_yticklabels(models)
+    sns.heatmap(
+        df, annot=True, fmt=".1f", cmap="RdYlGn",
+        vmin=0, vmax=5, linewidths=0.5, linecolor="white",
+        cbar_kws={"label": "Score (0-5)"},
+        annot_kws={"fontsize": 11, "fontweight": "bold"},
+        ax=ax,
+    )
     ax.set_title("Average Score per Model and Category")
+    ax.tick_params(axis="x", rotation=30)
+    ax.tick_params(axis="y", rotation=0)
 
-    # Annotate cells
-    for i in range(len(models)):
-        for j in range(len(all_categories)):
-            val = matrix[i, j]
-            color = "white" if val < 2.5 else "black"
-            ax.text(j, i, f"{val:.1f}", ha="center", va="center",
-                    fontsize=11, fontweight="bold", color=color)
-
-    fig.colorbar(im, ax=ax, label="Score (0-5)")
     fig.tight_layout()
     path = out_dir / "scores_per_category.png"
     fig.savefig(path)
@@ -673,60 +580,48 @@ def plot_scores_per_category(summaries: list[dict], out_dir: Path) -> str:
 
 
 def plot_score_distribution(summaries: list[dict], out_dir: Path) -> str:
-    """Box plot: distribution of overall scores per model.
-
-    When repeats > 1, uses individual repeat scores for richer data points
-    instead of just per-prompt mean scores.
-    """
+    """Box plot: distribution of overall scores per model."""
     metric_names = get_eval_metrics(summaries)
     if not metric_names:
         return None
 
     has_repeats = get_eval_repeats(summaries) > 1
-    models = []
-    all_scores = []
+    rows = []
 
     for s in summaries:
         details = get_prompt_score_details(s)
         if not details:
             continue
-        model_scores = []
         if has_repeats:
-            # Use individual repeat scores for more data points
             for d in details:
                 for repeat_scores in d.get("all_scores", []):
                     vals = [repeat_scores.get(m) for m in metric_names
                             if repeat_scores.get(m) is not None]
                     if vals:
-                        model_scores.append(sum(vals) / len(vals))
-        if not model_scores:
-            # Fallback to mean scores (no repeats or no all_scores data)
+                        rows.append({"Model": s["model"], "Score": sum(vals) / len(vals)})
+        if not any(r["Model"] == s["model"] for r in rows):
             scores = get_prompt_scores(s)
             for sc in scores:
                 vals = [sc[m] for m in metric_names if sc.get(m) is not None]
                 if vals:
-                    model_scores.append(sum(vals) / len(vals))
-        if model_scores:
-            models.append(s["model"])
-            all_scores.append(model_scores)
+                    rows.append({"Model": s["model"], "Score": sum(vals) / len(vals)})
 
-    if not models:
+    if not rows:
         return None
 
-    fig, ax = plt.subplots(figsize=(max(8, len(models) * 1.5), 5))
-    bp = ax.boxplot(all_scores, labels=models, patch_artist=True)
+    df = pd.DataFrame(rows)
+    n_models = df["Model"].nunique()
 
-    for i, patch in enumerate(bp["boxes"]):
-        patch.set_facecolor(COLORS[i % len(COLORS)])
-        patch.set_alpha(0.7)
-
-    ax.set_ylabel("Overall score (avg across metrics)")
+    fig, ax = plt.subplots(figsize=(max(8, n_models * 1.5), 5))
+    sns.boxplot(data=df, x="Model", y="Score", palette=PALETTE, ax=ax)
     ax.set_ylim(0, 5.5)
+    ax.set_ylabel("Overall score (avg across metrics)")
     title = "Score Distribution per Model"
     if has_repeats:
         title += f" (from {get_eval_repeats(summaries)} repeats per response)"
     ax.set_title(title)
-    if len(models) > 3:
+    ax.set_xlabel("")
+    if n_models > 3:
         ax.tick_params(axis="x", rotation=30)
 
     fig.tight_layout()
