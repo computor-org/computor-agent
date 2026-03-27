@@ -203,15 +203,13 @@ journalctl -u ollama -f
 
 ### Recommended Models for Tutoring
 
-For the Tutor AI Agent, we recommend these models based on your use case:
+The minimum recommended model for the Tutor AI Agent is `mistral:7b` (~4.4GB). Larger models generally produce better pedagogical guidance but require more resources. A formal benchmark of multiple models is ongoing — final recommendations will be updated once results are available.
 
-| Model | Size | RAM Needed | Best For |
-|-------|------|------------|----------|
-| `qwen2.5-coder:1.5b` | ~1GB | 4GB | Quick responses, basic code help |
-| `qwen2.5-coder:7b` | ~4GB | 8GB | Good code understanding, detailed explanations |
-| `llama3.1:8b` | ~5GB | 12GB | General tutoring, longer explanations |
-
-Start with a smaller model to test, then upgrade if you need better quality responses.
+| Model | Size | RAM Needed | Notes |
+|-------|------|------------|-------|
+| `mistral:7b` | ~4.4GB | 8GB | Minimum recommended; decent tutoring quality |
+| `qwen3.5:35b-a3b` | ~23GB | 16GB | MoE (3B active); good quality/speed trade-off |
+| `qwen3.5:122b-a10b` | ~81GB | 48GB | MoE (10B active); strong tutoring quality |
 
 ## Tutor AI Agent
 
