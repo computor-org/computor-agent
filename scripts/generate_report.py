@@ -252,6 +252,24 @@ def get_prompt_score_details(summary: dict) -> list[dict]:
     return results
 
 
+def get_text_metrics(summary: dict) -> list[dict]:
+    """Extract per-prompt text metrics from evaluations."""
+    evals = summary.get("_evaluations", {})
+    results = []
+    for sc in evals.get("scenarios", []):
+        for p in sc.get("prompts", []):
+            tm = p.get("text_metrics")
+            if tm:
+                entry = {
+                    "file": p["file"],
+                    "category": p.get("category", extract_category(p["file"])),
+                    "scenario": sc["name"],
+                }
+                entry.update(tm)
+                results.append(entry)
+    return results
+
+
 def get_eval_repeats(summaries: list[dict]) -> int:
     """Get the number of evaluation repeats (from the first summary that has it)."""
     for s in summaries:
@@ -766,6 +784,396 @@ def plot_score_distribution(summaries: list[dict], out_dir: Path) -> str:
     return path.name
 
 
+def plot_radar_chart(summaries: list[dict], out_dir: Path) -> str:
+    """Radar/spider chart: metric profile per model."""
+    metric_names = get_eval_metrics(summaries)
+    if not metric_names or len(metric_names) < 3:
+        return None
+
+    models = []
+    model_avgs = []
+    for s in summaries:
+        scores = get_prompt_scores(s)
+        if not scores:
+            continue
+        models.append(s["model"])
+        avgs = []
+        for m in metric_names:
+            vals = [sc[m] for sc in scores if sc.get(m) is not None]
+            avgs.append(sum(vals) / len(vals) if vals else 0)
+        model_avgs.append(avgs)
+
+    if not models:
+        return None
+
+    n = len(metric_names)
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False).tolist()
+    angles += angles[:1]  # close the polygon
+
+    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
+
+    for i, (model, avgs) in enumerate(zip(models, model_avgs)):
+        values = avgs + avgs[:1]
+        ax.plot(angles, values, linewidth=2, label=model,
+                color=COLORS[i % len(COLORS)])
+        ax.fill(angles, values, alpha=0.1, color=COLORS[i % len(COLORS)])
+
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(metric_names, fontsize=10)
+    ax.set_ylim(0, 5)
+    ax.set_yticks([1, 2, 3, 4, 5])
+    ax.set_title("Model Metric Profiles", y=1.08, fontsize=13)
+    ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), fontsize=9)
+
+    fig.tight_layout()
+    path = out_dir / "radar_chart.png"
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    return path.name
+
+
+def plot_time_vs_quality(summaries: list[dict], out_dir: Path) -> str:
+    """Scatter: average response time vs overall quality score per model."""
+    metric_names = get_eval_metrics(summaries)
+    if not metric_names:
+        return None
+
+    models, times, scores = [], [], []
+    for s in summaries:
+        prompt_scores = get_prompt_scores(s)
+        if not prompt_scores:
+            continue
+        avg_time = s["avg_processing_time_ms"] / 1000
+        avgs = []
+        for m in metric_names:
+            vals = [sc[m] for sc in prompt_scores if sc.get(m) is not None]
+            avgs.append(sum(vals) / len(vals) if vals else 0)
+        overall = sum(avgs) / len(avgs) if avgs else 0
+        models.append(s["model"])
+        times.append(avg_time)
+        scores.append(overall)
+
+    if len(models) < 2:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for i, (model, t, sc) in enumerate(zip(models, times, scores)):
+        ax.scatter(t, sc, s=120, color=COLORS[i % len(COLORS)], zorder=5)
+        ax.annotate(model, (t, sc), textcoords="offset points",
+                    xytext=(8, 5), fontsize=9)
+
+    ax.set_xlabel("Avg response time (s)")
+    ax.set_ylabel("Overall quality score (0-5)")
+    ax.set_ylim(0, 5.5)
+    ax.set_title("Response Time vs Quality")
+
+    fig.tight_layout()
+    path = out_dir / "time_vs_quality.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
+def plot_length_vs_quality(summaries: list[dict], out_dir: Path) -> str:
+    """Scatter: average response length vs overall quality score per model."""
+    metric_names = get_eval_metrics(summaries)
+    if not metric_names:
+        return None
+
+    models, lengths, scores = [], [], []
+    for s in summaries:
+        prompt_scores = get_prompt_scores(s)
+        if not prompt_scores:
+            continue
+        chars = [p["response_chars"] for sc in s["scenarios"]
+                 for p in sc["prompts"] if p["success"] and p["response_chars"] > 0]
+        if not chars:
+            continue
+        avg_len = sum(chars) / len(chars)
+        avgs = []
+        for m in metric_names:
+            vals = [sc[m] for sc in prompt_scores if sc.get(m) is not None]
+            avgs.append(sum(vals) / len(vals) if vals else 0)
+        overall = sum(avgs) / len(avgs) if avgs else 0
+        models.append(s["model"])
+        lengths.append(avg_len)
+        scores.append(overall)
+
+    if len(models) < 2:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for i, (model, l, sc) in enumerate(zip(models, lengths, scores)):
+        ax.scatter(l, sc, s=120, color=COLORS[i % len(COLORS)], zorder=5)
+        ax.annotate(model, (l, sc), textcoords="offset points",
+                    xytext=(8, 5), fontsize=9)
+
+    ax.set_xlabel("Avg response length (chars)")
+    ax.set_ylabel("Overall quality score (0-5)")
+    ax.set_ylim(0, 5.5)
+    ax.set_title("Response Length vs Quality")
+
+    fig.tight_layout()
+    path = out_dir / "length_vs_quality.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
+def plot_metric_heatmap(summaries: list[dict], out_dir: Path) -> str:
+    """Heatmap: model x metric score matrix."""
+    metric_names = get_eval_metrics(summaries)
+    if not metric_names:
+        return None
+
+    models = []
+    matrix = []
+    for s in summaries:
+        scores = get_prompt_scores(s)
+        if not scores:
+            continue
+        models.append(s["model"])
+        row = []
+        for m in metric_names:
+            vals = [sc[m] for sc in scores if sc.get(m) is not None]
+            row.append(sum(vals) / len(vals) if vals else 0)
+        matrix.append(row)
+
+    if len(models) < 1:
+        return None
+
+    matrix = np.array(matrix)
+
+    fig, ax = plt.subplots(figsize=(max(8, len(metric_names) * 1.5),
+                                     max(4, len(models) * 0.8 + 2)))
+    im = ax.imshow(matrix, cmap="RdYlGn", aspect="auto", vmin=0, vmax=5)
+
+    ax.set_xticks(range(len(metric_names)))
+    ax.set_xticklabels(metric_names, rotation=30, ha="right")
+    ax.set_yticks(range(len(models)))
+    ax.set_yticklabels(models)
+    ax.set_title("Score Matrix: Model x Metric")
+
+    for i in range(len(models)):
+        for j in range(len(metric_names)):
+            val = matrix[i, j]
+            color = "white" if val < 2.5 else "black"
+            ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                    fontsize=11, fontweight="bold", color=color)
+
+    fig.colorbar(im, ax=ax, label="Score (0-5)")
+    fig.tight_layout()
+    path = out_dir / "metric_heatmap.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
+def plot_metric_boxplots(summaries: list[dict], out_dir: Path) -> str:
+    """Box plots: per-metric score distribution, one subplot per metric."""
+    metric_names = get_eval_metrics(summaries)
+    if not metric_names:
+        return None
+
+    models = []
+    model_data = {}  # model -> metric -> list of scores
+    for s in summaries:
+        scores = get_prompt_scores(s)
+        if not scores:
+            continue
+        model = s["model"]
+        models.append(model)
+        model_data[model] = {}
+        for m in metric_names:
+            model_data[model][m] = [sc[m] for sc in scores if sc.get(m) is not None]
+
+    if len(models) < 1:
+        return None
+
+    n_metrics = len(metric_names)
+    fig, axes = plt.subplots(1, n_metrics, figsize=(n_metrics * 3.5, 5), sharey=True)
+    if n_metrics == 1:
+        axes = [axes]
+
+    for j, metric in enumerate(metric_names):
+        ax = axes[j]
+        data = [model_data[m].get(metric, []) for m in models]
+        bp = ax.boxplot(data, labels=models, patch_artist=True)
+        for i, patch in enumerate(bp["boxes"]):
+            patch.set_facecolor(COLORS[i % len(COLORS)])
+            patch.set_alpha(0.7)
+        ax.set_title(metric, fontsize=10)
+        ax.set_ylim(0, 5.5)
+        ax.tick_params(axis="x", rotation=45)
+        if j == 0:
+            ax.set_ylabel("Score")
+
+    fig.suptitle("Score Distribution per Metric", fontsize=13, y=1.02)
+    fig.tight_layout()
+    path = out_dir / "metric_boxplots.png"
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    return path.name
+
+
+def plot_boundary_vs_helpfulness(summaries: list[dict], out_dir: Path) -> str:
+    """Scatter: boundary_adherence (on adversarial) vs helpfulness (on help) per model."""
+    metric_names = get_eval_metrics(summaries)
+    if "boundary_adherence" not in metric_names or "helpfulness" not in metric_names:
+        return None
+
+    adversarial_cats = {"injection", "solution_request"}
+    help_cats = {"help", "debug", "conceptual"}
+
+    models, boundary_scores, help_scores = [], [], []
+    for s in summaries:
+        scores = get_prompt_scores(s)
+        if not scores:
+            continue
+        b_vals = [sc["boundary_adherence"] for sc in scores
+                  if sc["category"] in adversarial_cats
+                  and sc.get("boundary_adherence") is not None]
+        h_vals = [sc["helpfulness"] for sc in scores
+                  if sc["category"] in help_cats
+                  and sc.get("helpfulness") is not None]
+        if b_vals and h_vals:
+            models.append(s["model"])
+            boundary_scores.append(sum(b_vals) / len(b_vals))
+            help_scores.append(sum(h_vals) / len(h_vals))
+
+    if len(models) < 2:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for i, (model, b, h) in enumerate(zip(models, boundary_scores, help_scores)):
+        ax.scatter(h, b, s=120, color=COLORS[i % len(COLORS)], zorder=5)
+        ax.annotate(model, (h, b), textcoords="offset points",
+                    xytext=(8, 5), fontsize=9)
+
+    ax.set_xlabel("Helpfulness (on help/debug/conceptual prompts)")
+    ax.set_ylabel("Boundary Adherence (on injection/solution_request)")
+    ax.set_xlim(0, 5.5)
+    ax.set_ylim(0, 5.5)
+    ax.set_title("Safety vs Helpfulness Trade-off")
+    # Draw quadrant lines
+    ax.axhline(y=2.5, color="gray", linestyle="--", alpha=0.3)
+    ax.axvline(x=2.5, color="gray", linestyle="--", alpha=0.3)
+
+    fig.tight_layout()
+    path = out_dir / "boundary_vs_helpfulness.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
+def plot_text_style(summaries: list[dict], out_dir: Path) -> str:
+    """Grouped bar chart: text style metrics (questions, code blocks, avg sentence length) per model."""
+    style_metrics = ["question_count", "code_block_count", "avg_sentence_length"]
+    style_labels = ["Avg Questions\nper Response", "Avg Code Blocks\nper Response", "Avg Sentence\nLength (words)"]
+
+    models = []
+    model_avgs = []
+    for s in summaries:
+        tm = get_text_metrics(s)
+        if not tm:
+            continue
+        models.append(s["model"])
+        avgs = []
+        for metric in style_metrics:
+            vals = [t[metric] for t in tm if t.get(metric) is not None]
+            avgs.append(sum(vals) / len(vals) if vals else 0)
+        model_avgs.append(avgs)
+
+    if len(models) < 1:
+        return None
+
+    n_metrics = len(style_metrics)
+    n_models = len(models)
+
+    fig, ax = plt.subplots(figsize=(max(8, n_metrics * 2.5), 5))
+    bar_width = 0.8 / n_models
+    x = np.arange(n_metrics)
+
+    for i, (model, avgs) in enumerate(zip(models, model_avgs)):
+        offset = (i - n_models / 2 + 0.5) * bar_width
+        bars = ax.bar(x + offset, avgs, bar_width,
+                      label=model, color=COLORS[i % len(COLORS)])
+        for bar, val in zip(bars, avgs):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.05,
+                    f"{val:.1f}", ha="center", va="bottom", fontsize=8)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(style_labels)
+    ax.set_ylabel("Value")
+    ax.set_title("Response Style Comparison")
+    ax.legend(fontsize=8)
+
+    fig.tight_layout()
+    path = out_dir / "text_style.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
+def plot_category_score_comparison(summaries: list[dict], out_dir: Path) -> str:
+    """Grouped bar chart: overall score per category per model (side by side)."""
+    metric_names = get_eval_metrics(summaries)
+    if not metric_names:
+        return None
+
+    models = []
+    all_categories = set()
+    model_cat_scores = {}
+
+    for s in summaries:
+        scores = get_prompt_scores(s)
+        if not scores:
+            continue
+        model = s["model"]
+        models.append(model)
+        cat_scores = defaultdict(list)
+        for sc in scores:
+            cat = sc["category"]
+            all_categories.add(cat)
+            vals = [sc[m] for m in metric_names if sc.get(m) is not None]
+            if vals:
+                cat_scores[cat].append(sum(vals) / len(vals))
+        model_cat_scores[model] = cat_scores
+
+    all_categories = sorted(all_categories)
+    if not models or len(all_categories) < 2:
+        return None
+
+    n_models = len(models)
+    n_cats = len(all_categories)
+
+    fig, ax = plt.subplots(figsize=(max(10, n_cats * 2), 5))
+    bar_width = 0.8 / n_models
+    x = np.arange(n_cats)
+
+    for i, model in enumerate(models):
+        avgs = []
+        for cat in all_categories:
+            vals = model_cat_scores[model].get(cat, [])
+            avgs.append(sum(vals) / len(vals) if vals else 0)
+        offset = (i - n_models / 2 + 0.5) * bar_width
+        ax.bar(x + offset, avgs, bar_width,
+               label=model, color=COLORS[i % len(COLORS)])
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(all_categories, rotation=30, ha="right")
+    ax.set_ylabel("Overall score (0-5)")
+    ax.set_ylim(0, 5.5)
+    ax.set_title("Overall Score per Category by Model")
+    ax.legend(fontsize=8)
+
+    fig.tight_layout()
+    path = out_dir / "category_score_comparison.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return path.name
+
+
 # ---------------------------------------------------------------------------
 # Markdown generation
 # ---------------------------------------------------------------------------
@@ -793,8 +1201,16 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
     if has_evals:
         plot_funcs.extend([
             ("scores_model", plot_scores_per_model),
+            ("metric_heatmap", plot_metric_heatmap),
+            ("radar", plot_radar_chart),
+            ("metric_boxplots", plot_metric_boxplots),
             ("scores_category", plot_scores_per_category),
+            ("cat_score_compare", plot_category_score_comparison),
             ("scores_dist", plot_score_distribution),
+            ("time_vs_quality", plot_time_vs_quality),
+            ("length_vs_quality", plot_length_vs_quality),
+            ("boundary_vs_help", plot_boundary_vs_helpfulness),
+            ("text_style", plot_text_style),
         ])
 
     for name, func in plot_funcs:
@@ -928,8 +1344,16 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
         "length_by_cat": ("Response Length by Category", "How response length varies across intent categories (box plot)."),
         "scenario_time": ("Time per Scenario", "How long each scenario takes across models."),
         "scores_model": ("Evaluation Scores per Model", "Average LLM-judged scores per metric for each model."),
-        "scores_category": ("Scores by Category", "Heatmap of average overall score per model and prompt category."),
-        "scores_dist": ("Score Distribution", "Spread of overall scores (averaged across metrics) per model."),
+        "metric_heatmap": ("Score Matrix", "Full model x metric score matrix at a glance."),
+        "radar": ("Model Metric Profiles", "Radar chart showing each model's strengths and weaknesses across all metrics."),
+        "metric_boxplots": ("Per-Metric Score Distribution", "Score spread per metric per model — how consistent is each model?"),
+        "scores_category": ("Scores by Prompt Category", "Heatmap of average overall score per model and prompt category."),
+        "cat_score_compare": ("Category Score Comparison", "Overall quality score per category, compared across models."),
+        "scores_dist": ("Overall Score Distribution", "Spread of overall scores (averaged across metrics) per model."),
+        "time_vs_quality": ("Response Time vs Quality", "Are slower models better? Each point is one model."),
+        "length_vs_quality": ("Response Length vs Quality", "Do more verbose models score higher?"),
+        "boundary_vs_help": ("Safety vs Helpfulness", "Trade-off: boundary adherence on adversarial prompts vs helpfulness on legitimate ones."),
+        "text_style": ("Response Style", "How models differ in writing style: questions asked, code blocks used, sentence length."),
     }
 
     for name, filename in plots:

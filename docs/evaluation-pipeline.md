@@ -277,7 +277,7 @@ python scripts/generate_report.py ./results/
 python scripts/generate_report.py ./results/ -o ./my-report/
 ```
 
-Automatically detects `evaluations.json` and includes scoring plots if present. When evaluations used `--repeats`, the report uses the mean scores for comparison tables and plots.
+Automatically detects `evaluations.json` and includes scoring plots if present. When evaluations used `--repeats`, the report uses the mean scores for comparison tables and plots. Generates up to 22 plots covering performance (timing, success rates, response length) and evaluation quality (score matrices, radar charts, scatter plots for time-vs-quality and safety-vs-helpfulness trade-offs, response style comparison).
 
 **Output:** `results/report/report.md` with embedded images from `results/report/media/`.
 

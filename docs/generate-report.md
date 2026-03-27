@@ -30,39 +30,63 @@ python scripts/generate_report.py ./results/ -v
 results/report/
 ├── report.md
 └── media/
+    ├── prompt_count_by_category.png
     ├── avg_time_per_model.png
     ├── total_time_per_model.png
     ├── success_rate.png
     ├── time_distribution.png
-    ├── time_per_scenario.png
-    ├── category_success.png
+    ├── time_by_category_box.png
     ├── category_time.png
+    ├── category_success.png
     ├── response_length.png
-    ├── scores_per_model.png       # if evaluations.json present
-    ├── scores_per_category.png    # if evaluations.json present
-    └── score_distribution.png     # if evaluations.json present
+    ├── length_by_category.png
+    ├── time_per_scenario.png
+    ├── scores_per_model.png         # if evaluations.json present
+    ├── metric_heatmap.png           #
+    ├── radar_chart.png              #
+    ├── metric_boxplots.png          #
+    ├── scores_per_category.png      #
+    ├── category_score_comparison.png #
+    ├── score_distribution.png       #
+    ├── time_vs_quality.png          #
+    ├── length_vs_quality.png        #
+    ├── boundary_vs_helpfulness.png  #
+    └── text_style.png               #
 ```
 
 ## Plots
 
-| Plot | Description |
-|------|-------------|
-| Average Response Time | Bar chart of mean response time per model |
-| Total Run Time | Bar chart of wall-clock time per model |
-| Success / Failure Rate | Stacked bar chart of success vs failure counts |
-| Response Time Distribution | Box plot showing time spread per model |
-| Time per Scenario | Grouped bars comparing scenario times across models |
-| Success Rate by Category | Success rate per prompt category (help, injection, etc.) |
-| Response Time by Category | Average time per prompt category |
-| Response Length | Average character count of responses |
+### Performance plots (always generated)
 
-If `evaluations.json` files are present (from [evaluate_responses.py](evaluate-responses.md)):
+| Plot | Type | Description |
+|------|------|-------------|
+| Dataset: Prompts by Category | Bar | Number of prompts per intent category |
+| Average Response Time | Bar | Mean response time per model |
+| Total Run Time | Bar | Wall-clock time per model |
+| Success / Failure Rate | Stacked bar | Success vs failure counts per model |
+| Response Time Distribution | Box | Time spread per model |
+| Response Time by Category | Box | Time distribution per intent category |
+| Avg Response Time by Category | Grouped bar | Average time per category across models |
+| Success Rate by Category | Grouped bar | Success rate per category across models |
+| Response Length | Bar | Average character count per model |
+| Response Length by Category | Box | Length distribution per intent category |
+| Time per Scenario | Grouped bar | Per-scenario timing across models |
 
-| Plot | Description |
-|------|-------------|
-| Evaluation Scores per Model | Grouped bars of average score per metric. When `repeats > 1`, includes min/max error bars showing score variance across independent evaluations. |
-| Scores by Category | Heatmap of overall score per model x category |
-| Score Distribution | Box plot of overall scores per model. When `repeats > 1`, uses individual repeat scores as data points for richer distributions. |
+### Evaluation plots (when `evaluations.json` present)
+
+| Plot | Type | Description |
+|------|------|-------------|
+| Scores per Model | Grouped bar | Per-metric averages with error bars (when `repeats > 1`) |
+| Score Matrix | Heatmap | Full model x metric score matrix at a glance |
+| Model Metric Profiles | Radar/spider | Each model's strengths and weaknesses across all metrics |
+| Per-Metric Score Distribution | Box (subplots) | Score consistency per metric per model |
+| Scores by Prompt Category | Heatmap | Overall score per model x prompt category |
+| Category Score Comparison | Grouped bar | Quality per intent type across models |
+| Overall Score Distribution | Box | Score spread per model |
+| Response Time vs Quality | Scatter | Are slower models better? Each point is one model |
+| Response Length vs Quality | Scatter | Do more verbose models score higher? |
+| Safety vs Helpfulness | Scatter | Boundary adherence (adversarial) vs helpfulness (legitimate) |
+| Response Style | Grouped bar | Questions asked, code blocks, sentence length per model |
 
 When evaluations used `--repeats N`, the report automatically detects this and:
 - Displays the number of repeats in the evaluation scores table header
@@ -76,9 +100,10 @@ Category breakdowns use the `<index>_<category>.md` naming convention from [gene
 The markdown report includes:
 
 1. **Overview table** — model, prompt count, success rate, avg/total time
-2. **Evaluation scores table** — average per-metric scores per model, with evaluator model and repeat count (if evaluations present)
-3. **Plots** — all charts embedded via `![](media/...)`
-3. **Per-scenario details** — breakdown table per scenario with a collapsible per-prompt detail view showing timing across models
+2. **Per-category statistics table** — prompts, success rate, avg/median time, avg length per category
+3. **Evaluation scores table** — average per-metric scores per model, with evaluator model and repeat count (if evaluations present)
+4. **Plots** — all charts embedded via `![](media/...)`
+5. **Per-scenario details** — breakdown table per scenario with a collapsible per-prompt detail view showing timing and scores across models
 
 ## Workflow
 
