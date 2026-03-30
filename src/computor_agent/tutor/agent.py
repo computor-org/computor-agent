@@ -260,10 +260,17 @@ class TutorAgent:
                 created_message = await self.client.messages.create(data=message_data)
                 message_sent = True
                 response_message_id = created_message.id
+            elif send_response:
+                logger.warning(
+                    f"LLM returned empty response for message {message.get('id')} "
+                    f"in submission group {submission_group_id} — not sending a reply"
+                )
 
-            # Mark the original message as read to prevent re-processing
+            # Only mark the original message as read if a response was sent
+            # (or if sending was disabled). If the LLM returned empty content,
+            # leave the message unread so it can be retried on next catch-up.
             message_id = message.get("id")
-            if message_id:
+            if message_id and (message_sent or not send_response):
                 try:
                     await self.client.messages.reads(id=message_id)
                 except Exception as e:
@@ -271,8 +278,12 @@ class TutorAgent:
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
+            # If we were supposed to send a response but couldn't (empty LLM output),
+            # report as failure so the scheduler doesn't mark the message as read.
+            success = message_sent or not send_response
             return ProcessingResult(
-                success=True,
+                success=success,
+                error="LLM returned empty response" if (send_response and not message_sent) else None,
                 message_sent=message_sent,
                 response=response,
                 security_result=security_result,
