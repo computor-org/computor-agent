@@ -116,6 +116,8 @@ class WebSocketScheduler:
         self._reconnect_count = 0
         self._consecutive_auth_failures = 0
         self._event_task: Optional[asyncio.Task] = None
+        self._periodic_catchup_task: Optional[asyncio.Task] = None
+        self._periodic_catchup_interval = 60  # seconds
 
     @property
     def typing_manager(self) -> TypingManager:
@@ -160,11 +162,12 @@ class WebSocketScheduler:
             # This runs after WebSocket is connected so typing indicators work
             await self._process_unread_messages()
 
-            # 5. Start event loop
+            # 5. Start event loop and periodic catch-up
             self._event_task = asyncio.create_task(self._event_loop())
+            self._periodic_catchup_task = asyncio.create_task(self._periodic_catchup_loop())
             logger.info("WebSocket scheduler started")
 
-            # Wait for the event loop to complete (or be cancelled)
+            # Wait for both tasks (event loop is the primary one)
             await self._event_task
 
         except asyncio.CancelledError:
@@ -199,6 +202,15 @@ class WebSocketScheduler:
 
         # Stop all typing indicators
         await self._typing_manager.stop_all()
+
+        # Cancel periodic catch-up
+        if self._periodic_catchup_task:
+            self._periodic_catchup_task.cancel()
+            try:
+                await self._periodic_catchup_task
+            except asyncio.CancelledError:
+                pass
+            self._periodic_catchup_task = None
 
         # Cancel event loop
         if self._event_task:
@@ -392,6 +404,25 @@ class WebSocketScheduler:
                 if not reconnected:
                     logger.error("Failed to reconnect after maximum attempts")
                     break
+
+    async def _periodic_catchup_loop(self) -> None:
+        """Periodically check for unread messages as a safety net.
+
+        WebSocket events may be missed during brief disconnects or race
+        conditions. This loop runs alongside the event loop, polling for
+        unread messages every `_periodic_catchup_interval` seconds.
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(self._periodic_catchup_interval)
+                if not self._running:
+                    break
+                logger.debug("Periodic catch-up: checking for unread messages")
+                await self._process_unread_messages()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"Error in periodic catch-up: {e}")
 
     async def _reconnect(self) -> bool:
         """

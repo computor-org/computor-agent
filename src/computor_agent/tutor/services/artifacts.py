@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from computor_client.exceptions import NotFoundError
 from computor_types.artifacts import SubmissionArtifactGet
 
 logger = logging.getLogger(__name__)
@@ -494,6 +495,8 @@ class ArtifactsService:
                             buffer = response
                     else:
                         logger.warning("artifacts_download returned None/empty response")
+                except NotFoundError:
+                    logger.info("No submission artifact exists yet for the given parameters")
                 except Exception as e:
                     logger.error(f"submissions.artifacts_download failed: {e}", exc_info=True)
 
