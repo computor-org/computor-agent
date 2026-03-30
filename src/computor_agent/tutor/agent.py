@@ -263,12 +263,30 @@ class TutorAgent:
             elif send_response:
                 logger.warning(
                     f"LLM returned empty response for message {message.get('id')} "
-                    f"in submission group {submission_group_id} — not sending a reply"
+                    f"in submission group {submission_group_id} — sending fallback reply"
                 )
+                # Send a fallback message so the student isn't left waiting
+                formatted_title = self._format_response_title(None)
+                parent_id = reply_to_message_id or message.get("id")
+                fallback_content = (
+                    "I'm sorry, I wasn't able to generate a response right now. "
+                    "Please try again in a moment, or rephrase your question."
+                )
+                message_data: dict[str, Any] = {
+                    "content": fallback_content,
+                    "title": formatted_title,
+                }
+                if parent_id:
+                    message_data["parent_id"] = parent_id
+                else:
+                    message_data["submission_group_id"] = submission_group_id
 
-            # Only mark the original message as read if a response was sent
-            # (or if sending was disabled). If the LLM returned empty content,
-            # leave the message unread so it can be retried on next catch-up.
+                logger.info(f"Creating fallback message with data: {message_data}")
+                created_message = await self.client.messages.create(data=message_data)
+                message_sent = True
+                response_message_id = created_message.id
+
+            # Mark the original message as read after sending a response
             message_id = message.get("id")
             if message_id and (message_sent or not send_response):
                 try:
