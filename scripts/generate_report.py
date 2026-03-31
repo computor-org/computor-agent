@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 PALETTE = "deep"
+COLORS = ["#4c72b0", "#dd8452", "#55a868", "#c44e52", "#8172b3",
+          "#937860", "#da8bc3", "#8c8c8c", "#ccb974", "#64b5cd"]
+MARKERS = ["o", "s", "D", "^", "v", "P", "X", "*", "h", "<"]
 
 def setup_style():
     """Configure seaborn + matplotlib for publication-quality plots."""
@@ -312,18 +315,25 @@ def plot_avg_time_per_model(summaries: list[dict], out_dir: Path) -> str:
 
 
 def plot_total_time_per_model(summaries: list[dict], out_dir: Path) -> str:
-    """Bar chart: total run time per model."""
-    df = pd.DataFrame({
-        "Model": [s["model"] for s in summaries],
-        "Time (s)": [s["total_time_s"] for s in summaries],
-    })
+    """Bar chart: total run time per model (summed from individual prompt times)."""
+    rows = []
+    for s in summaries:
+        total_ms = sum(
+            p["processing_time_ms"]
+            for sc in s["scenarios"]
+            for p in sc["prompts"]
+            if p.get("success")
+        )
+        rows.append({"Model": s["model"], "Time (s)": total_ms / 1000})
+
+    df = pd.DataFrame(rows)
 
     fig, ax = plt.subplots(figsize=(max(8, len(df) * 1.5), 5))
     sns.barplot(data=df, x="Model", y="Time (s)", palette=PALETTE, ax=ax)
-    ax.set_title("Total Run Time per Model")
+    ax.set_title("Total Processing Time per Model")
     ax.set_xlabel("")
     ax.tick_params(axis="x", rotation=30)
-    _bar_labels(ax, fmt="{:.1f}s")
+    _bar_labels(ax, fmt="{:.0f}s")
 
     fig.tight_layout()
     path = out_dir / "total_time_per_model.png"
@@ -362,29 +372,206 @@ def plot_success_rate(summaries: list[dict], out_dir: Path) -> str:
     return path.name
 
 
-def plot_time_per_scenario(summaries: list[dict], out_dir: Path) -> str:
-    """Grouped bar chart: time per scenario across models."""
-    rows = []
-    for s in summaries:
-        for sc in s["scenarios"]:
-            rows.append({"Model": s["model"], "Scenario": sc["name"], "Time (s)": sc["total_time_s"]})
+def _extract_assignment(scenario_name: str) -> str:
+    """Extract assignment name from scenario like 'course__assignment__042' -> 'assignment'."""
+    parts = scenario_name.split("__")
+    if len(parts) >= 2:
+        return parts[1]
+    return scenario_name
 
-    if not rows:
+
+def plot_time_per_scenario(summaries: list[dict], out_dir: Path) -> list[str]:
+    """Per-model horizontal bar charts of *assignment* times (aggregated).
+
+    Scenarios are grouped by assignment (stripping the trailing numeric ID),
+    producing one manageable chart per model instead of 170+ bars.
+    """
+    scenarios_dir = out_dir / "scenarios"
+    scenarios_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+
+    for s in summaries:
+        # Aggregate times by assignment
+        assignment_times: dict[str, list[float]] = defaultdict(list)
+        for sc in s["scenarios"]:
+            assignment = _extract_assignment(sc["name"])
+            for p in sc["prompts"]:
+                if p.get("success"):
+                    assignment_times[assignment].append(p["processing_time_ms"] / 1000)
+
+        if not assignment_times:
+            continue
+
+        rows = []
+        for assignment, times in assignment_times.items():
+            rows.append({
+                "Assignment": assignment,
+                "Avg Time (s)": sum(times) / len(times),
+                "Total Time (s)": sum(times),
+                "Count": len(times),
+            })
+
+        df = pd.DataFrame(rows).sort_values("Avg Time (s)", ascending=True)
+        n = len(df)
+        fig_height = max(4, n * 0.35 + 1.5)
+
+        fig, ax = plt.subplots(figsize=(10, fig_height))
+        bars = ax.barh(range(n), df["Avg Time (s)"].values,
+                       color=sns.color_palette(PALETTE, n))
+        ax.set_yticks(range(n))
+        ax.set_yticklabels(df["Assignment"].values, fontsize=8)
+        ax.set_xlabel("Avg response time (s)")
+        ax.set_title(f"Avg Response Time per Assignment — {s['model']}")
+
+        # Label bars with count
+        for bar, count in zip(bars, df["Count"].values):
+            ax.text(bar.get_width() + 0.1, bar.get_y() + bar.get_height() / 2,
+                    f"n={count}", va="center", fontsize=7, color="gray")
+
+        fig.tight_layout()
+        slug = s["model"].replace(":", "-").replace("/", "-")
+        filename = f"scenario_time_{slug}.png"
+        fig.savefig(scenarios_dir / filename, dpi=120)
+        plt.close(fig)
+        paths.append(f"scenarios/{filename}")
+
+    return paths if paths else None
+
+
+def plot_assignment_comparison(summaries: list[dict], out_dir: Path,
+                               n_assignments: int = 5) -> str:
+    """Cleveland dot plot: top-N assignments by variance, all models on one chart.
+
+    Y-axis: assignment names, X-axis: avg response time (s).
+    Each model is a line+marker series with legend.
+    """
+    # Gather per-model, per-assignment avg times
+    model_assignment_times: dict[str, dict[str, list[float]]] = {}
+    for s in summaries:
+        model = s["model"]
+        agg: dict[str, list[float]] = defaultdict(list)
+        for sc in s["scenarios"]:
+            assignment = _extract_assignment(sc["name"])
+            for p in sc["prompts"]:
+                if p.get("success"):
+                    agg[assignment].append(p["processing_time_ms"] / 1000)
+        model_assignment_times[model] = {a: sum(t) / len(t) for a, t in agg.items() if t}
+
+    if len(model_assignment_times) < 2:
         return None
 
-    df = pd.DataFrame(rows)
-    n_scenarios = df["Scenario"].nunique()
+    # Find assignments present in all models
+    all_assignments = set.intersection(
+        *(set(d.keys()) for d in model_assignment_times.values())
+    )
+    if len(all_assignments) < 2:
+        return None
 
-    fig, ax = plt.subplots(figsize=(max(10, n_scenarios * 2), 5))
-    sns.barplot(data=df, x="Scenario", y="Time (s)", hue="Model", palette=PALETTE, ax=ax)
-    ax.set_title("Time per Scenario by Model")
-    ax.set_xlabel("")
-    ax.tick_params(axis="x", rotation=30)
-    sns.move_legend(ax, "upper right")
+    # Pick assignments with highest cross-model variance (most interesting)
+    variances = {}
+    for a in all_assignments:
+        vals = [model_assignment_times[m][a] for m in model_assignment_times]
+        variances[a] = np.var(vals)
+
+    selected = sorted(variances, key=variances.get, reverse=True)[:n_assignments]
+
+    models = list(model_assignment_times.keys())
+
+    fig, ax = plt.subplots(figsize=(max(8, len(selected) * 1.5 + 1), 6))
+    x_pos = np.arange(len(selected))
+
+    for i, model in enumerate(models):
+        times = [model_assignment_times[model][a] for a in selected]
+        ax.plot(x_pos, times, marker=MARKERS[i % len(MARKERS)],
+                color=COLORS[i % len(COLORS)], linewidth=1.5, markersize=8,
+                label=model, linestyle="--", alpha=0.85)
+
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(selected, fontsize=9, rotation=30, ha="right")
+    ax.set_ylabel("Avg response time (s)")
+    ax.set_title("Response Time Comparison — Selected Assignments")
+    ax.legend(loc="best", fontsize=8, framealpha=0.9)
+    ax.grid(axis="y", alpha=0.3)
 
     fig.tight_layout()
-    path = out_dir / "time_per_scenario.png"
-    fig.savefig(path)
+    path = out_dir / "assignment_comparison.png"
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    return path.name
+
+
+def plot_assignment_quality_comparison(summaries: list[dict], out_dir: Path,
+                                       n_assignments: int = 5) -> str:
+    """Cleveland dot plot: top-N assignments by quality variance, all models on one chart.
+
+    X-axis: assignment names, Y-axis: avg overall quality score (0-5).
+    Each model is a line+marker series with legend.
+    """
+    metric_names = get_eval_metrics(summaries)
+    if not metric_names:
+        return None
+
+    # Gather per-model, per-assignment avg quality scores
+    model_assignment_scores: dict[str, dict[str, list[float]]] = {}
+    for s in summaries:
+        scores = get_prompt_scores(s)
+        if not scores:
+            continue
+        model = s["model"]
+        agg: dict[str, list[float]] = defaultdict(list)
+        for sc in scores:
+            assignment = _extract_assignment(sc["scenario"])
+            vals = [sc[m] for m in metric_names if sc.get(m) is not None]
+            if vals:
+                agg[assignment].append(sum(vals) / len(vals))
+        model_assignment_scores[model] = {a: sum(v) / len(v) for a, v in agg.items() if v}
+
+    if len(model_assignment_scores) < 2:
+        return None
+
+    # Find assignments present in all models
+    all_assignments = set.intersection(
+        *(set(d.keys()) for d in model_assignment_scores.values())
+    )
+    if len(all_assignments) < 2:
+        return None
+
+    # Pick assignments with highest cross-model variance
+    variances = {}
+    for a in all_assignments:
+        vals = [model_assignment_scores[m][a] for m in model_assignment_scores]
+        variances[a] = np.var(vals)
+
+    selected = sorted(variances, key=variances.get, reverse=True)[:n_assignments]
+
+    models = list(model_assignment_scores.keys())
+
+    fig, ax = plt.subplots(figsize=(max(8, len(selected) * 1.5 + 1), 6))
+    x_pos = np.arange(len(selected))
+
+    for i, model in enumerate(models):
+        scores = [model_assignment_scores[model][a] for a in selected]
+        ax.plot(x_pos, scores, marker=MARKERS[i % len(MARKERS)],
+                color=COLORS[i % len(COLORS)], linewidth=1.5, markersize=8,
+                label=model, linestyle="--", alpha=0.85)
+
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(selected, fontsize=9, rotation=30, ha="right")
+    ax.set_ylabel("Avg quality score")
+    ax.set_title("Quality Score Comparison — Selected Assignments")
+    ax.legend(loc="best", fontsize=8, framealpha=0.9)
+    ax.grid(axis="y", alpha=0.3)
+
+    # Zoom Y-axis to data range in 0.5 steps, clamped to [0, 5.5]
+    all_vals = [model_assignment_scores[m][a] for m in models for a in selected]
+    y_min = max(0, np.floor(min(all_vals) * 2) / 2 - 0.5)
+    y_max = min(5.5, np.ceil(max(all_vals) * 2) / 2 + 0.5)
+    ax.set_ylim(y_min, y_max)
+    ax.set_yticks(np.arange(y_min, y_max + 0.01, 0.5))
+
+    fig.tight_layout()
+    path = out_dir / "assignment_quality_comparison.png"
+    fig.savefig(path, dpi=120)
     plt.close(fig)
     return path.name
 
@@ -910,7 +1097,13 @@ def plot_length_vs_quality(summaries: list[dict], out_dir: Path) -> str:
 
     ax.set_xlabel("Avg response length (chars)")
     ax.set_ylabel("Overall quality score (0-5)")
-    ax.set_ylim(0, 5.5)
+
+    # Dynamic Y-axis zoom based on actual data (0.5 steps)
+    y_min = max(0, np.floor(min(scores) * 2) / 2 - 0.5)
+    y_max = min(5.5, np.ceil(max(scores) * 2) / 2 + 0.5)
+    ax.set_ylim(y_min, y_max)
+    ax.set_yticks(np.arange(y_min, y_max + 0.01, 0.5))
+
     ax.set_title("Response Length vs Quality")
 
     fig.tight_layout()
@@ -1195,7 +1388,7 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
         ("cat_success", plot_category_success),
         ("resp_length", plot_response_length),
         ("length_by_cat", plot_length_by_category),
-        ("scenario_time", plot_time_per_scenario),
+        ("assignment_compare", plot_assignment_comparison),
     ]
 
     if has_evals:
@@ -1211,6 +1404,7 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
             ("length_vs_quality", plot_length_vs_quality),
             ("boundary_vs_help", plot_boundary_vs_helpfulness),
             ("text_style", plot_text_style),
+            ("assignment_quality", plot_assignment_quality_comparison),
         ])
 
     for name, func in plot_funcs:
@@ -1220,6 +1414,15 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
                 plots.append((name, result))
         except Exception as e:
             logger.warning(f"Failed to generate plot '{name}': {e}")
+
+    # Scenario time plots (returns a list of paths, one per model)
+    scenario_time_plots = []
+    try:
+        result = plot_time_per_scenario(summaries, media_dir)
+        if result:
+            scenario_time_plots = result
+    except Exception as e:
+        logger.warning(f"Failed to generate scenario time plots: {e}")
 
     # Build markdown
     lines = []
@@ -1241,13 +1444,20 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
     for s in summaries:
         total = s["total_prompts"]
         rate = (s["total_successes"] / total * 100) if total > 0 else 0
+        # Sum individual prompt times (more reliable than summary total_time_s)
+        total_processing_ms = sum(
+            p["processing_time_ms"]
+            for sc in s["scenarios"]
+            for p in sc["prompts"]
+            if p.get("success")
+        )
         lines.append(
             f"| `{s['model']}` "
             f"| {total} "
             f"| {s['total_successes']} ({rate:.0f}%) "
             f"| {s['total_failures']} "
             f"| {s['avg_processing_time_ms'] / 1000:.1f}s "
-            f"| {s['total_time_s']:.1f}s |"
+            f"| {total_processing_ms / 1000:.1f}s |"
         )
     lines.append("")
 
@@ -1342,7 +1552,9 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
         "cat_success": ("Success Rate by Category", "Success rate broken down by prompt category (help, injection, etc.)."),
         "resp_length": ("Response Length", "Average character count of model responses."),
         "length_by_cat": ("Response Length by Category", "How response length varies across intent categories (box plot)."),
-        "scenario_time": ("Time per Scenario", "How long each scenario takes across models."),
+        "assignment_compare": ("Assignment Time Comparison", "Top-5 most variable assignments compared across all models (Cleveland dot plot)."),
+        "assignment_quality": ("Assignment Quality Comparison", "Top-5 most variable assignments by quality score across all models (Cleveland dot plot)."),
+        "scenario_time": ("Time per Scenario", "Processing time per scenario (one chart per model)."),
         "scores_model": ("Evaluation Scores per Model", "Average LLM-judged scores per metric for each model."),
         "metric_heatmap": ("Score Matrix", "Full model x metric score matrix at a glance."),
         "radar": ("Model Metric Profiles", "Radar chart showing each model's strengths and weaknesses across all metrics."),
@@ -1364,6 +1576,17 @@ def generate_report(summaries: list[dict], output_dir: Path, media_dir: Path) ->
         lines.append("")
         lines.append(f"![{title}]({media_rel}/{filename})")
         lines.append("")
+
+    # --- Scenario time plots (one per model) ---
+    if scenario_time_plots:
+        title, desc = plot_sections["scenario_time"]
+        lines.append(f"## {title}")
+        lines.append("")
+        lines.append(desc)
+        lines.append("")
+        for rel_path in scenario_time_plots:
+            lines.append(f"![{title}]({media_rel}/{rel_path})")
+            lines.append("")
 
     # --- Per-scenario details ---
     lines.append("## Per-Scenario Details")
