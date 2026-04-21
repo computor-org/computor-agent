@@ -306,21 +306,34 @@ class WebSocketScheduler:
         request_tags_with_hash = [f"#{t}" for t in self.trigger_config.request_tag_strings]
 
         try:
-            # 1. Fetch tagged unread messages (direct triggers)
+            # 1. Fetch tagged unread messages (direct triggers).
+            #    scope=submission_group: the agent needs a submission to help with,
+            #    so we ignore #ai-tagged messages posted to course/course_content/etc.
             tagged_messages = await self.client.messages.list(
                 course_id=course_id,
                 tags=self.trigger_config.request_tag_strings,
                 tags_match_all=self.trigger_config.require_all_tags,
                 unread=True,
+                scope="submission_group",
             )
 
-            trigger_messages = [
-                m for m in (tagged_messages or [])
-                if response_tag not in (getattr(m, "title", "") or "")
-                and not getattr(m, "is_deleted", False)
-            ]
+            # Each entry: (msg, submission_group_id, thread_or_None)
+            trigger_entries: list[tuple] = []
+            for m in (tagged_messages or []):
+                if response_tag in (getattr(m, "title", "") or ""):
+                    continue
+                if getattr(m, "is_deleted", False):
+                    continue
+                sg = getattr(m, "submission_group_id", None)
+                if not sg:
+                    # Defensive: scope filter should guarantee this.
+                    continue
+                trigger_entries.append((m, sg, None))
 
-            # 2. Fetch untagged follow-up replies in AI threads
+            # 2. Fetch untagged follow-up replies in AI threads.
+            #    No scope filter here — replies created before the server-side
+            #    inheritance hardener may have submission_group_id=NULL on their
+            #    DB row; we derive scope from the thread instead.
             all_unread = await self.client.messages.list(
                 course_id=course_id,
                 unread=True,
@@ -339,55 +352,42 @@ class WebSocketScheduler:
 
                 try:
                     thread = await self.client.messages.thread(msg.id)
-                    has_ai = any(
-                        response_tag in (getattr(m, "title", "") or "")
-                        for m in thread.messages
-                    )
-                    if has_ai:
-                        trigger_messages.append(msg)
                 except Exception:
                     continue
 
-            if not trigger_messages:
+                has_ai = any(
+                    response_tag in (getattr(m, "title", "") or "")
+                    for m in thread.messages
+                )
+                if not has_ai:
+                    continue
+
+                sg = getattr(msg, "submission_group_id", None)
+                if not sg:
+                    for m in thread.messages:
+                        msg_sg = getattr(m, "submission_group_id", None)
+                        if msg_sg:
+                            sg = msg_sg
+                            break
+                if not sg:
+                    # Cannot determine submission-group scope — not actionable.
+                    continue
+
+                trigger_entries.append((msg, sg, thread))
+
+            if not trigger_entries:
                 return 0
 
-            logger.info(f"Found {len(trigger_messages)} unread message(s) to process in course {course_id}")
+            logger.info(f"Found {len(trigger_entries)} unread message(s) to process in course {course_id}")
 
             # 3. Process each message with per-submission-group locking
-            for msg in trigger_messages:
+            for msg, submission_group_id, thread in trigger_entries:
                 message_id = getattr(msg, "id", "")
                 title = getattr(msg, "title", "") or ""
                 is_follow_up = bool(
                     not any(tag in title for tag in request_tags_with_hash)
                     and msg.parent_id
                 )
-
-                # Fetch thread once for follow-ups; reused for sg fallback and thread_root_id
-                thread = None
-                if is_follow_up:
-                    try:
-                        thread = await self.client.messages.thread(msg.id)
-                    except Exception as e:
-                        logger.info(
-                            f"Skipping follow-up {message_id}: failed to fetch thread: {e}"
-                        )
-                        continue
-
-                # Replies without their own submission_group_id (e.g. created before
-                # the server-side inheritance hardener) need it derived from the thread.
-                submission_group_id = getattr(msg, "submission_group_id", None)
-                if not submission_group_id and thread:
-                    for m in thread.messages:
-                        sg = getattr(m, "submission_group_id", None)
-                        if sg:
-                            submission_group_id = sg
-                            break
-
-                if not submission_group_id:
-                    logger.info(
-                        f"Skipping message {message_id}: no submission_group_id on message or thread"
-                    )
-                    continue
 
                 state = self._get_or_create_state(submission_group_id)
 
