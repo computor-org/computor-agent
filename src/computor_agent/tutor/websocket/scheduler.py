@@ -317,6 +317,7 @@ class WebSocketScheduler:
             trigger_messages = [
                 m for m in (tagged_messages or [])
                 if response_tag not in (getattr(m, "title", "") or "")
+                and not getattr(m, "is_deleted", False)
             ]
 
             # 2. Fetch untagged follow-up replies in AI threads
@@ -326,6 +327,10 @@ class WebSocketScheduler:
             )
 
             for msg in (all_unread or []):
+                # Deleted messages 400 on the thread endpoint — skip them early.
+                if getattr(msg, "is_deleted", False):
+                    continue
+
                 title = getattr(msg, "title", "") or ""
                 has_request_tag = any(tag in title for tag in request_tags_with_hash)
                 has_response_tag = response_tag in title
