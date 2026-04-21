@@ -310,6 +310,11 @@ class WebSocketScheduler:
         response_tag = f"#{self.trigger_config.response_tag_string}"
         request_tags_with_hash = [f"#{t}" for t in self.trigger_config.request_tag_strings]
 
+        # Raise the per-page limit far above the backend default of 100 so a
+        # reply sitting past position 100 in a course with a large backlog of
+        # unread #ai requests doesn't get clipped out of view.
+        MESSAGES_LIMIT = 1000
+
         try:
             # 1. Fetch tagged unread messages (direct triggers).
             tagged_messages = await self.client.messages.list(
@@ -317,6 +322,7 @@ class WebSocketScheduler:
                 tags=self.trigger_config.request_tag_strings,
                 tags_match_all=self.trigger_config.require_all_tags,
                 unread=True,
+                limit=MESSAGES_LIMIT,
             )
 
             # Each entry: (msg, submission_group_id, thread_or_None).
@@ -339,10 +345,15 @@ class WebSocketScheduler:
             all_unread = await self.client.messages.list(
                 course_id=course_id,
                 unread=True,
+                limit=MESSAGES_LIMIT,
             )
 
-            # Per-candidate diagnostics for follow-up detection
-            followup_trace: list[str] = []
+            # Aggregate rejection reasons instead of listing every message —
+            # a course with a big backlog of #ai requests would otherwise
+            # spam the log with hundreds of no-parent entries each poll.
+            reject_counts: dict[str, int] = {}
+            thread_errors: list[str] = []
+            accepted_ids: list[str] = []
 
             for msg in (all_unread or []):
                 msg_id = getattr(msg, "id", "?")
@@ -350,25 +361,25 @@ class WebSocketScheduler:
                 parent_id = getattr(msg, "parent_id", None)
 
                 if getattr(msg, "is_deleted", False):
-                    followup_trace.append(f"{msg_id}:deleted")
+                    reject_counts["deleted"] = reject_counts.get("deleted", 0) + 1
                     continue
 
                 has_request_tag = any(tag in title for tag in request_tags_with_hash)
                 has_response_tag = response_tag in title
                 if has_request_tag:
-                    followup_trace.append(f"{msg_id}:has-request-tag")
+                    reject_counts["has-request-tag"] = reject_counts.get("has-request-tag", 0) + 1
                     continue
                 if has_response_tag:
-                    followup_trace.append(f"{msg_id}:has-response-tag")
+                    reject_counts["has-response-tag"] = reject_counts.get("has-response-tag", 0) + 1
                     continue
                 if not parent_id:
-                    followup_trace.append(f"{msg_id}:no-parent")
+                    reject_counts["no-parent"] = reject_counts.get("no-parent", 0) + 1
                     continue
 
                 try:
                     thread = await self.client.messages.thread(msg.id)
                 except Exception as e:
-                    followup_trace.append(f"{msg_id}:thread-err:{type(e).__name__}")
+                    thread_errors.append(f"{msg_id}:{type(e).__name__}")
                     continue
 
                 has_ai = any(
@@ -376,7 +387,7 @@ class WebSocketScheduler:
                     for m in thread.messages
                 )
                 if not has_ai:
-                    followup_trace.append(f"{msg_id}:no-ai-in-thread(n={len(thread.messages)})")
+                    reject_counts["no-ai-in-thread"] = reject_counts.get("no-ai-in-thread", 0) + 1
                     continue
 
                 sg = getattr(msg, "submission_group_id", None)
@@ -387,20 +398,32 @@ class WebSocketScheduler:
                             sg = msg_sg
                             break
                 if not sg:
-                    followup_trace.append(f"{msg_id}:no-sg-in-thread")
+                    reject_counts["no-sg-in-thread"] = reject_counts.get("no-sg-in-thread", 0) + 1
                     continue
 
-                followup_trace.append(f"{msg_id}:ACCEPTED")
+                accepted_ids.append(msg_id)
                 trigger_entries.append((msg, sg, thread))
 
-            logger.info(
-                f"Unread scan course {course_id}: "
-                f"tagged={len(tagged_messages or [])}, "
-                f"all_unread={len(all_unread or [])}, "
-                f"dropped_no_sg={dropped_no_sg}, "
-                f"triggers={len(trigger_entries)}, "
-                f"followup_trace={followup_trace}"
-            )
+            log_parts = [
+                f"tagged={len(tagged_messages or [])}",
+                f"all_unread={len(all_unread or [])}",
+                f"dropped_no_sg={dropped_no_sg}",
+                f"triggers={len(trigger_entries)}",
+            ]
+            if reject_counts:
+                log_parts.append(f"rejected={reject_counts}")
+            if thread_errors:
+                log_parts.append(f"thread_errors={thread_errors}")
+            if accepted_ids:
+                log_parts.append(f"accepted={accepted_ids}")
+            logger.info(f"Unread scan course {course_id}: " + ", ".join(log_parts))
+
+            if len(all_unread or []) >= MESSAGES_LIMIT:
+                logger.warning(
+                    f"Unread message list hit the per-page limit ({MESSAGES_LIMIT}) "
+                    f"for course {course_id} — follow-ups past this page are invisible "
+                    f"until the tutor's unread backlog is reduced."
+                )
 
             if not trigger_entries:
                 return 0
