@@ -341,20 +341,34 @@ class WebSocketScheduler:
                 unread=True,
             )
 
+            # Per-candidate diagnostics for follow-up detection
+            followup_trace: list[str] = []
+
             for msg in (all_unread or []):
-                # Deleted messages 400 on the thread endpoint — skip them early.
+                msg_id = getattr(msg, "id", "?")
+                title = getattr(msg, "title", "") or ""
+                parent_id = getattr(msg, "parent_id", None)
+
                 if getattr(msg, "is_deleted", False):
+                    followup_trace.append(f"{msg_id}:deleted")
                     continue
 
-                title = getattr(msg, "title", "") or ""
                 has_request_tag = any(tag in title for tag in request_tags_with_hash)
                 has_response_tag = response_tag in title
-                if has_request_tag or has_response_tag or not msg.parent_id:
+                if has_request_tag:
+                    followup_trace.append(f"{msg_id}:has-request-tag")
+                    continue
+                if has_response_tag:
+                    followup_trace.append(f"{msg_id}:has-response-tag")
+                    continue
+                if not parent_id:
+                    followup_trace.append(f"{msg_id}:no-parent")
                     continue
 
                 try:
                     thread = await self.client.messages.thread(msg.id)
-                except Exception:
+                except Exception as e:
+                    followup_trace.append(f"{msg_id}:thread-err:{type(e).__name__}")
                     continue
 
                 has_ai = any(
@@ -362,6 +376,7 @@ class WebSocketScheduler:
                     for m in thread.messages
                 )
                 if not has_ai:
+                    followup_trace.append(f"{msg_id}:no-ai-in-thread(n={len(thread.messages)})")
                     continue
 
                 sg = getattr(msg, "submission_group_id", None)
@@ -372,9 +387,10 @@ class WebSocketScheduler:
                             sg = msg_sg
                             break
                 if not sg:
-                    # Cannot determine submission-group scope — not actionable.
+                    followup_trace.append(f"{msg_id}:no-sg-in-thread")
                     continue
 
+                followup_trace.append(f"{msg_id}:ACCEPTED")
                 trigger_entries.append((msg, sg, thread))
 
             logger.info(
@@ -382,7 +398,8 @@ class WebSocketScheduler:
                 f"tagged={len(tagged_messages or [])}, "
                 f"all_unread={len(all_unread or [])}, "
                 f"dropped_no_sg={dropped_no_sg}, "
-                f"triggers={len(trigger_entries)}"
+                f"triggers={len(trigger_entries)}, "
+                f"followup_trace={followup_trace}"
             )
 
             if not trigger_entries:
