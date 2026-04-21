@@ -351,10 +351,36 @@ class WebSocketScheduler:
             # 3. Process each message with per-submission-group locking
             for msg in trigger_messages:
                 message_id = getattr(msg, "id", "")
+                title = getattr(msg, "title", "") or ""
+                is_follow_up = bool(
+                    not any(tag in title for tag in request_tags_with_hash)
+                    and msg.parent_id
+                )
+
+                # Fetch thread once for follow-ups; reused for sg fallback and thread_root_id
+                thread = None
+                if is_follow_up:
+                    try:
+                        thread = await self.client.messages.thread(msg.id)
+                    except Exception as e:
+                        logger.info(
+                            f"Skipping follow-up {message_id}: failed to fetch thread: {e}"
+                        )
+                        continue
+
+                # Replies without their own submission_group_id (e.g. created before
+                # the server-side inheritance hardener) need it derived from the thread.
                 submission_group_id = getattr(msg, "submission_group_id", None)
+                if not submission_group_id and thread:
+                    for m in thread.messages:
+                        sg = getattr(m, "submission_group_id", None)
+                        if sg:
+                            submission_group_id = sg
+                            break
+
                 if not submission_group_id:
                     logger.info(
-                        f"Skipping message {message_id}: no submission_group_id on message"
+                        f"Skipping message {message_id}: no submission_group_id on message or thread"
                     )
                     continue
 
@@ -383,16 +409,7 @@ class WebSocketScheduler:
                     )
                     continue
 
-                # Determine if follow-up
-                title = getattr(msg, "title", "") or ""
-                is_follow_up = not any(tag in title for tag in request_tags_with_hash) and msg.parent_id
-                thread_root_id = None
-                if is_follow_up:
-                    try:
-                        thread = await self.client.messages.thread(msg.id)
-                        thread_root_id = thread.root_message_id
-                    except Exception:
-                        pass
+                thread_root_id = thread.root_message_id if thread else None
 
                 trigger_type = "follow-up" if is_follow_up else "direct"
                 logger.info(f"Processing unread {trigger_type} message: {message_id}")
