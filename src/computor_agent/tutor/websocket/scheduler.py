@@ -350,24 +350,37 @@ class WebSocketScheduler:
 
             # 3. Process each message with per-submission-group locking
             for msg in trigger_messages:
+                message_id = getattr(msg, "id", "")
                 submission_group_id = getattr(msg, "submission_group_id", None)
                 if not submission_group_id:
+                    logger.info(
+                        f"Skipping message {message_id}: no submission_group_id on message"
+                    )
                     continue
 
-                message_id = getattr(msg, "id", "")
                 state = self._get_or_create_state(submission_group_id)
 
                 if state.last_message_id == message_id:
+                    logger.info(
+                        f"Skipping message {message_id}: already recorded as last "
+                        f"processed for submission_group {submission_group_id}"
+                    )
                     continue
 
                 # Skip if already being processed or in cooldown
                 lock = self._get_or_create_lock(submission_group_id)
                 if lock.locked():
-                    logger.debug(f"Skipping {submission_group_id} - already being processed")
+                    logger.info(
+                        f"Skipping message {message_id}: submission_group "
+                        f"{submission_group_id} already being processed"
+                    )
                     continue
 
                 if self._should_skip(submission_group_id):
-                    logger.debug(f"Skipping {submission_group_id} due to cooldown")
+                    logger.info(
+                        f"Skipping message {message_id}: submission_group "
+                        f"{submission_group_id} in cooldown"
+                    )
                     continue
 
                 # Determine if follow-up
@@ -402,6 +415,10 @@ class WebSocketScheduler:
                 async with lock:
                     # Re-check after acquiring lock
                     if state.last_message_id == message_id:
+                        logger.info(
+                            f"Skipping message {message_id}: processed by another "
+                            f"task while waiting for lock"
+                        )
                         continue
 
                     async with self._semaphore:
