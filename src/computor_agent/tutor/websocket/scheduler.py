@@ -250,8 +250,13 @@ class WebSocketScheduler:
 
     async def _check_all_courses(self) -> None:
         """Check all courses for unread messages (triggered by WebSocket event)."""
-        for course_id in self._course_ids:
-            await self._process_course_unread(course_id)
+        # This runs as a fire-and-forget task from _handle_message_new, so any
+        # exception here would be lost without this explicit log.
+        try:
+            for course_id in self._course_ids:
+                await self._process_course_unread(course_id)
+        except Exception as e:
+            logger.exception(f"Error in WebSocket-triggered unread check: {e}")
 
     async def _process_unread_messages(self) -> None:
         """
@@ -307,18 +312,18 @@ class WebSocketScheduler:
 
         try:
             # 1. Fetch tagged unread messages (direct triggers).
-            #    scope=submission_group: the agent needs a submission to help with,
-            #    so we ignore #ai-tagged messages posted to course/course_content/etc.
             tagged_messages = await self.client.messages.list(
                 course_id=course_id,
                 tags=self.trigger_config.request_tag_strings,
                 tags_match_all=self.trigger_config.require_all_tags,
                 unread=True,
-                scope="submission_group",
             )
 
-            # Each entry: (msg, submission_group_id, thread_or_None)
+            # Each entry: (msg, submission_group_id, thread_or_None).
+            # Messages without a resolvable submission_group_id are dropped silently
+            # here so they don't show up in "Found N" and spam skip-logs each poll.
             trigger_entries: list[tuple] = []
+            dropped_no_sg = 0
             for m in (tagged_messages or []):
                 if response_tag in (getattr(m, "title", "") or ""):
                     continue
@@ -326,14 +331,11 @@ class WebSocketScheduler:
                     continue
                 sg = getattr(m, "submission_group_id", None)
                 if not sg:
-                    # Defensive: scope filter should guarantee this.
+                    dropped_no_sg += 1
                     continue
                 trigger_entries.append((m, sg, None))
 
             # 2. Fetch untagged follow-up replies in AI threads.
-            #    No scope filter here — replies created before the server-side
-            #    inheritance hardener may have submission_group_id=NULL on their
-            #    DB row; we derive scope from the thread instead.
             all_unread = await self.client.messages.list(
                 course_id=course_id,
                 unread=True,
@@ -375,10 +377,16 @@ class WebSocketScheduler:
 
                 trigger_entries.append((msg, sg, thread))
 
+            logger.info(
+                f"Unread scan course {course_id}: "
+                f"tagged={len(tagged_messages or [])}, "
+                f"all_unread={len(all_unread or [])}, "
+                f"dropped_no_sg={dropped_no_sg}, "
+                f"triggers={len(trigger_entries)}"
+            )
+
             if not trigger_entries:
                 return 0
-
-            logger.info(f"Found {len(trigger_entries)} unread message(s) to process in course {course_id}")
 
             # 3. Process each message with per-submission-group locking
             for msg, submission_group_id, thread in trigger_entries:
