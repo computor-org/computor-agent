@@ -582,6 +582,7 @@ def messaging(
     if config is not None:
         config_path = Path(config)
         if not config_path.exists():
+            logger.error(f"Config file '{config}' does not exist")
             console.print(f"[bold red]Error:[/bold red] Config file '{config}' does not exist.")
             sys.exit(1)
     else:
@@ -592,6 +593,7 @@ def messaging(
         elif dev:
             config_path = None  # type: ignore[assignment]
         else:
+            logger.error("No config file found in current directory")
             console.print(
                 "[bold red]Error:[/bold red] No config file found. "
                 "Create a config.yaml or pass one with -c."
@@ -626,9 +628,11 @@ def messaging(
         logger.info(f"Git credentials: {len(git_credentials)} mapping(s)")
 
     except FileNotFoundError as e:
+        logger.error(f"Config file not found: {e}", exc_info=True)
         console.print(f"[bold red]Error:[/bold red] {e}")
         sys.exit(1)
     except Exception as e:
+        logger.error(f"Configuration error: {e}", exc_info=True)
         console.print(f"[bold red]Configuration error:[/bold red] {e}")
         sys.exit(1)
 
@@ -779,6 +783,7 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
 
     # Create LLM provider
     if not computor_config.llm:
+        logger.error("LLM configuration is missing from config")
         console.print("[bold red]Error:[/bold red] LLM configuration is required")
         sys.exit(1)
 
@@ -792,11 +797,21 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
     llm_provider = get_provider(llm_config)
 
     # Verify the LLM model is reachable and working before accepting student messages
+    logger.info(
+        f"Checking LLM connectivity ({llm_config.provider.value}/{llm_config.model}) "
+        f"at {llm_config.base_url}"
+    )
     console.print(f"[dim]Checking LLM connectivity ({llm_config.provider.value}/{llm_config.model})...[/dim]")
     try:
         await llm_provider.check_health()
+        logger.info(f"LLM health check passed ({llm_config.provider.value}/{llm_config.model})")
         console.print("[green]LLM is ready.[/green]")
     except Exception as e:
+        logger.error(
+            f"LLM health check failed ({llm_config.provider.value}/{llm_config.model} "
+            f"at {llm_config.base_url}): {e}",
+            exc_info=True,
+        )
         console.print(f"[bold red]Error:[/bold red] LLM health check failed: {e}")
         console.print("[dim]Make sure your LLM server is running and the model is available.[/dim]")
         sys.exit(1)
@@ -823,6 +838,7 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
                 )
                 logger.info("Authenticated with username/password")
             except Exception as e:
+                logger.error(f"Authentication failed: {e}", exc_info=True)
                 console.print(f"[bold red]Authentication failed:[/bold red] {e}")
                 sys.exit(1)
 
