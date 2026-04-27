@@ -793,6 +793,7 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
         base_url=computor_config.llm.base_url,
         api_key=computor_config.llm.get_api_key(),
         temperature=computor_config.llm.temperature,
+        busy_retry_delay_seconds=computor_config.llm.busy_retry_delay_seconds,
     )
     llm_provider = get_provider(llm_config)
 

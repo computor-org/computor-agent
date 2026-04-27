@@ -228,15 +228,23 @@ class OpenAIProvider(LLMProvider):
             except LLMRateLimitError as e:
                 last_error = e
                 if attempt < self.config.max_retries:
-                    delay = e.retry_after if e.retry_after else 2 ** attempt
-                    logger.warning(f"Rate limited, retrying in {delay:.1f}s (attempt {attempt + 1}/{self.config.max_retries})")
+                    delay = e.retry_after if e.retry_after else self.config.busy_retry_delay_seconds
+                    logger.warning(
+                        f"Provider busy (rate limited), waiting {delay:.1f}s before retry "
+                        f"(attempt {attempt + 1}/{self.config.max_retries})"
+                    )
                     await asyncio.sleep(delay)
                     continue
                 raise
             except httpx.TimeoutException as e:
                 last_error = e
                 if attempt < self.config.max_retries:
-                    logger.warning(f"Request timed out, retrying (attempt {attempt + 1}/{self.config.max_retries})")
+                    delay = self.config.busy_retry_delay_seconds
+                    logger.warning(
+                        f"Provider busy (timeout), waiting {delay:.1f}s before retry "
+                        f"(attempt {attempt + 1}/{self.config.max_retries})"
+                    )
+                    await asyncio.sleep(delay)
                     continue
                 raise LLMTimeoutError(
                     f"Request timed out after {self.config.timeout}s: {e}",
@@ -246,15 +254,33 @@ class OpenAIProvider(LLMProvider):
             except httpx.ConnectError as e:
                 last_error = e
                 if attempt < self.config.max_retries:
-                    logger.warning(f"Connection failed, retrying (attempt {attempt + 1}/{self.config.max_retries})")
-                    await asyncio.sleep(2 ** attempt)
+                    delay = self.config.busy_retry_delay_seconds
+                    logger.warning(
+                        f"Provider busy (connection refused), waiting {delay:.1f}s before retry "
+                        f"(attempt {attempt + 1}/{self.config.max_retries})"
+                    )
+                    await asyncio.sleep(delay)
                     continue
                 raise LLMConnectionError(
                     f"Failed to connect to {self.config.base_url}: {e}",
                     provider=self.provider_name,
                     model=self.model_name,
                 )
-            except (LLMResponseError, LLMTimeoutError):
+            except LLMResponseError as e:
+                # Treat 5xx as transient ("provider busy"); other LLMResponseErrors
+                # (4xx other than the ones above) are not retryable.
+                last_error = e
+                status = getattr(e, "status_code", None)
+                if status is not None and status >= 500 and attempt < self.config.max_retries:
+                    delay = self.config.busy_retry_delay_seconds
+                    logger.warning(
+                        f"Provider busy (HTTP {status}), waiting {delay:.1f}s before retry "
+                        f"(attempt {attempt + 1}/{self.config.max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+            except LLMTimeoutError:
                 raise
             except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError) as e:
                 last_error = e

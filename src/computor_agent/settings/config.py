@@ -181,6 +181,14 @@ class LLMSettings(BaseModel):
         default=None,
         description="Maximum tokens to generate"
     )
+    busy_retry_delay_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description=(
+            "Seconds to wait between retries when the provider is busy "
+            "(rate-limited, timed out, connection refused, or 5xx)."
+        ),
+    )
 
     def get_api_key(self) -> Optional[str]:
         """Get the API key as a plain string. Internal use only."""

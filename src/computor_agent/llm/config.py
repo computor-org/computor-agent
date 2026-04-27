@@ -155,6 +155,15 @@ class LLMConfig(BaseModel):
         ge=0,
         description="Maximum number of retry attempts",
     )
+    busy_retry_delay_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description=(
+            "Seconds to wait between retries when the provider is busy "
+            "(rate-limited, timed out, connection refused, or 5xx). "
+            "Overridden by the server's Retry-After header on 429 if present."
+        ),
+    )
 
     # System prompt
     system_prompt: Optional[str] = Field(
