@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Optional, Protocol
 
+from computor_types.messages import MessageThread
+
 from computor_agent.tutor.config import TriggerConfig
 from computor_agent.tutor.websocket.client import ComputorWebSocket, WebSocketError
 from computor_agent.tutor.websocket.typing_manager import TypingManager
@@ -377,7 +379,8 @@ class WebSocketScheduler:
                     continue
 
                 try:
-                    thread = await self.client.messages.thread(msg.id)
+                    thread_raw = await self.client.messages.thread(msg.id)
+                    thread = MessageThread.model_validate(thread_raw)
                 except Exception as e:
                     thread_errors.append(f"{msg_id}:{type(e).__name__}")
                     continue

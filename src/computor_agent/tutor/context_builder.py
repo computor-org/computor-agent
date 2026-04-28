@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from computor_types.messages import MessageThread
 from computor_types.student_course_contents import CourseContentStudentGet
 
 from computor_agent.tutor.context import (
@@ -431,7 +432,8 @@ class ContextBuilder:
         context for follow-up messages.
         """
         try:
-            thread = await self.client.messages.thread(thread_root_id)
+            thread_raw = await self.client.messages.thread(thread_root_id)
+            thread = MessageThread.model_validate(thread_raw)
 
             result = []
             for msg in thread.messages:
