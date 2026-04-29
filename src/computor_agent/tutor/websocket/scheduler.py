@@ -1,8 +1,9 @@
 """
 WebSocket-based scheduler for the Tutor AI Agent.
 
-Event-driven alternative to HTTP polling. Connects to the backend WebSocket,
-subscribes to course channels, and processes messages in real-time.
+Event-driven alternative to HTTP polling. Connects to the backend WebSocket
+and relies on the auto-subscribed user inbox channel (`user:<own_id>`) to
+receive every message the agent has read access to, across every scope.
 """
 
 import asyncio
@@ -149,21 +150,21 @@ class WebSocketScheduler:
             if not self._course_ids:
                 logger.warning("No courses found - scheduler will not receive events")
 
-            # 2. Connect WebSocket
+            # 2. Connect WebSocket. The server auto-subscribes us to
+            # `user:<own_id>` and `global` on handshake; that user inbox
+            # carries every message we have read access to, across every
+            # scope, so no per-course subscription is needed.
             await self._ws.connect()
+            logger.info(
+                f"Listening on auto-subscribed user inbox "
+                f"(user:{self._ws.user_id})"
+            )
 
-            # 3. Subscribe to course channels
-            if self._course_ids:
-                channels = [f"course:{cid}" for cid in self._course_ids]
-                await self._ws.subscribe(channels)
-                self._subscribed_channels.update(channels)
-                logger.info(f"Subscribed to {len(channels)} course channel(s)")
-
-            # 4. Process unread messages (catch-up for messages received while offline)
+            # 3. Process unread messages (catch-up for messages received while offline)
             # This runs after WebSocket is connected so typing indicators work
             await self._process_unread_messages()
 
-            # 5. Start event loop and periodic catch-up
+            # 4. Start event loop and periodic catch-up
             self._event_task = asyncio.create_task(self._event_loop())
             self._periodic_catchup_task = asyncio.create_task(self._periodic_catchup_loop())
             logger.info("WebSocket scheduler started")
@@ -686,9 +687,10 @@ class WebSocketScheduler:
         This gives us a single processing path shared with catch-up polling,
         eliminating race conditions between the two.
 
-        Note: message:new events arrive on submission_group channels (not course
-        channels), so we check all courses for unread messages rather than
-        trying to map back to a specific course.
+        Note: message:new events arrive on the user inbox channel
+        (`user:<own_id>`) regardless of the message's scope, so we check
+        all courses for unread messages rather than trying to map back to
+        a specific course.
         """
         event_channel = event.get("channel", "")
         event_data = event.get("data", {})
