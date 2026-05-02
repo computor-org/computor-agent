@@ -47,6 +47,8 @@ logger = logging.getLogger(__name__)
 class CacheConfig(BaseModel):
     """Configuration for data caching."""
 
+    model_config = {"extra": "forbid"}
+
     enabled: bool = Field(
         default=True,
         description="Enable caching of course member data",
@@ -81,6 +83,8 @@ class CacheConfig(BaseModel):
 
 class SchedulerConfig(BaseModel):
     """Configuration for the tutor scheduler."""
+
+    model_config = {"extra": "forbid"}
 
     enabled: bool = Field(
         default=True,
