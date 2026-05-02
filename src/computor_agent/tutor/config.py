@@ -31,6 +31,8 @@ class PersonalityConfig(BaseModel):
     Defines how the tutor presents itself and communicates.
     """
 
+    model_config = {"extra": "forbid"}
+
     name: str = Field(
         default="Tutor AI",
         description="Display name of the tutor",
@@ -60,6 +62,8 @@ class SecurityConfig(BaseModel):
     The security gate checks both student messages and repository code
     for malicious content (prompt injection, manipulation attempts, etc.).
     """
+
+    model_config = {"extra": "forbid"}
 
     enabled: bool = Field(
         default=True,
@@ -93,6 +97,8 @@ class ContextConfig(BaseModel):
 
     Controls what information is gathered before processing.
     """
+
+    model_config = {"extra": "forbid"}
 
     include_previous_messages: int = Field(
         default=3,
@@ -171,6 +177,8 @@ class StrategyConfig(BaseModel):
     Each strategy can be enabled/disabled and configured separately.
     """
 
+    model_config = {"extra": "forbid"}
+
     enabled: bool = Field(
         default=True,
         description="Enable this strategy",
@@ -194,6 +202,8 @@ class StrategyConfig(BaseModel):
 
 class StrategiesConfig(BaseModel):
     """Configuration for all strategies."""
+
+    model_config = {"extra": "forbid"}
 
     question_example: StrategyConfig = Field(
         default_factory=StrategyConfig,
@@ -273,6 +283,8 @@ class TriggerConfig(BaseModel):
     Legacy scope::value format (e.g., "ai::request") still works — it's just
     a string containing "::". No special handling needed.
     """
+
+    model_config = {"extra": "forbid"}
 
     enabled: Optional[bool] = Field(
         default=None,
@@ -377,6 +389,8 @@ class NotesConfig(BaseModel):
         ```
     """
 
+    model_config = {"extra": "forbid"}
+
     enabled: bool = Field(
         default=True,
         description="Enable AI note-taking (memory across sessions)",
@@ -441,6 +455,8 @@ class TutorConfig(BaseModel):
             temperature: 0.5
         ```
     """
+
+    model_config = {"extra": "forbid"}
 
     personality: PersonalityConfig = Field(
         default_factory=PersonalityConfig,

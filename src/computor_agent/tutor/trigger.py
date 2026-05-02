@@ -336,7 +336,8 @@ class TriggerChecker:
         response_tag = f"#{self.config.response_tag_string}"  # e.g., "#ai-response"
         for msg in candidates:
             try:
-                thread = await self.messages.thread(msg.id)
+                thread_raw = await self.messages.thread(msg.id)
+                thread = MessageThread.model_validate(thread_raw)
             except Exception as e:
                 logger.warning(f"Failed to fetch thread for message {msg.id}: {e}")
                 continue
