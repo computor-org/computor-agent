@@ -8,6 +8,7 @@ from typing import Optional
 import uvicorn
 from fastapi import FastAPI
 
+from computor_agent.api.log_buffer import LogBuffer
 from computor_agent.api.metrics import MetricsCollector
 from computor_agent.api.routes import build_router
 
@@ -18,6 +19,7 @@ def create_app(
     *,
     metrics: MetricsCollector,
     scheduler,
+    log_buffer: LogBuffer,
     log_file: Optional[str] = None,
 ) -> FastAPI:
     app = FastAPI(
@@ -26,7 +28,12 @@ def create_app(
         redoc_url=None,
     )
     app.include_router(
-        build_router(metrics=metrics, scheduler=scheduler, log_file=log_file)
+        build_router(
+            metrics=metrics,
+            scheduler=scheduler,
+            log_buffer=log_buffer,
+            log_file=log_file,
+        )
     )
     return app
 

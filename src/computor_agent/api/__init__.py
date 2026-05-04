@@ -5,6 +5,7 @@ Runs in the same asyncio event loop as the scheduler, so metrics and
 scheduler state are read directly without IPC.
 """
 
+from computor_agent.api.log_buffer import LogBuffer, get_log_buffer
 from computor_agent.api.metrics import MetricsCollector
 
-__all__ = ["MetricsCollector"]
+__all__ = ["LogBuffer", "MetricsCollector", "get_log_buffer"]

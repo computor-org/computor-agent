@@ -100,13 +100,9 @@
   </section>
 
   <section>
-    <h2>Logs {% if log_file %}<span class="muted" style="text-transform: none; letter-spacing: 0; font-weight: 400;">— {{ log_file }} (last <span id="log-line-count">{{ log_lines | length }}</span> lines)</span>{% endif %}</h2>
-    {% if log_file %}
+    <h2>Logs <span class="muted" style="text-transform: none; letter-spacing: 0; font-weight: 400;">— last <span id="log-line-count">{{ log_lines | length }}</span> lines{% if log_file %} · also writing to {{ log_file }}{% endif %}</span></h2>
 <pre class="log" id="log-pane">{% for line in log_lines %}{{ line }}
 {% endfor %}</pre>
-    {% else %}
-      <p class="muted">No log file configured. Pass <code>-l logfile.txt</code> to <code>tutor messaging</code> to enable log tailing.</p>
-    {% endif %}
   </section>
 </main>
 
@@ -124,7 +120,6 @@
   var logPane = document.getElementById("log-pane");
   var logLineCount = document.getElementById("log-line-count");
   var pollStatus = document.getElementById("poll-status");
-  var hasLogFile = !!logPane;
   var lastOkAt = Date.now();
 
   // On first load, anchor the log pane at the bottom — that's where the
@@ -203,7 +198,7 @@
   }
 
   function applyLogs(payload) {
-    if (!hasLogFile) return;
+    if (!logPane) return;
     var lines = payload.lines || [];
 
     // Anchor strategy: stick to the bottom only if the user is already at
@@ -237,15 +232,12 @@
 
   async function tick() {
     try {
-      var requests = [fetch("/metrics", { cache: "no-store" })];
-      if (hasLogFile) requests.push(fetch("/logs?tail=200", { cache: "no-store" }));
-      var responses = await Promise.all(requests);
-      var metrics = await responses[0].json();
-      applyMetrics(metrics);
-      if (hasLogFile) {
-        var logs = await responses[1].json();
-        applyLogs(logs);
-      }
+      var responses = await Promise.all([
+        fetch("/metrics", { cache: "no-store" }),
+        fetch("/logs?tail=200", { cache: "no-store" }),
+      ]);
+      applyMetrics(await responses[0].json());
+      applyLogs(await responses[1].json());
       lastOkAt = Date.now();
     } catch (e) {
       // Swallow transient failures; markPollStatus surfaces persistent ones.

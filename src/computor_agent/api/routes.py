@@ -9,6 +9,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from computor_agent.api.log_buffer import LogBuffer
 from computor_agent.api.metrics import MetricsCollector
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -19,7 +20,8 @@ def build_router(
     *,
     metrics: MetricsCollector,
     scheduler,
-    log_file: Optional[str],
+    log_buffer: LogBuffer,
+    log_file: Optional[str] = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -56,12 +58,11 @@ def build_router(
 
     @router.get("/logs")
     def logs(tail: int = Query(200, ge=1, le=5000)) -> dict:
-        if not log_file:
-            return {"log_file": None, "lines": []}
-        try:
-            return {"log_file": log_file, "lines": _tail_file(log_file, tail)}
-        except FileNotFoundError:
-            return {"log_file": log_file, "lines": [], "error": "file not found"}
+        return {
+            "log_file": log_file,
+            "lines": log_buffer.tail(tail),
+            "buffer_size": len(log_buffer),
+        }
 
     @router.get("/", response_class=HTMLResponse)
     def dashboard(request: Request) -> HTMLResponse:
@@ -72,23 +73,8 @@ def build_router(
                 "scheduler": _scheduler_stats(),
                 "agent": metrics.snapshot(),
                 "log_file": log_file,
-                "log_lines": _tail_file(log_file, 200) if log_file else [],
+                "log_lines": log_buffer.tail(200),
             },
         )
 
     return router
-
-
-def _tail_file(path: str, n: int) -> list[str]:
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(path)
-    chunk = 64 * 1024
-    with p.open("rb") as f:
-        f.seek(0, 2)
-        size = f.tell()
-        f.seek(max(0, size - chunk))
-        data = f.read()
-    text = data.decode("utf-8", errors="replace")
-    lines = text.splitlines()
-    return lines[-n:]

@@ -58,6 +58,15 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None) -> None
         file_handler.setLevel(level)
         handlers.append(file_handler)
 
+    # In-memory ring buffer feeds the dashboard so the UI never tails the
+    # log file from disk — keeps the two views in lockstep even without
+    # `--log-file`.
+    from computor_agent.api.log_buffer import get_log_buffer
+
+    buffer = get_log_buffer()
+    buffer.setLevel(level)
+    handlers.append(buffer)
+
     logging.basicConfig(
         level=level,
         format="%(message)s",
@@ -1066,9 +1075,15 @@ async def _run_tutor_messaging(
         api_task = None
         if api_port:
             try:
+                from computor_agent.api.log_buffer import get_log_buffer
                 from computor_agent.api.server import APIServer, create_app
 
-                app = create_app(metrics=metrics, scheduler=scheduler, log_file=log_file)
+                app = create_app(
+                    metrics=metrics,
+                    scheduler=scheduler,
+                    log_buffer=get_log_buffer(),
+                    log_file=log_file,
+                )
                 api_server = APIServer(app, host=api_host, port=api_port)
                 api_task = asyncio.create_task(api_server.serve())
             except ImportError as e:
