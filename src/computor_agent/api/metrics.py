@@ -8,7 +8,7 @@ trivial.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -28,6 +28,19 @@ class CourseMetrics:
     last_failed_at: Optional[str] = None
 
 
+@dataclass
+class LLMHealth:
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    base_url: Optional[str] = None
+    available: Optional[bool] = None
+    last_check_at: Optional[str] = None
+    last_success_at: Optional[str] = None
+    last_error: Optional[str] = None
+    latency_ms: Optional[int] = None
+    consecutive_failures: int = 0
+
+
 class MetricsCollector:
     """Lightweight in-memory counters for the dashboard."""
 
@@ -44,6 +57,7 @@ class MetricsCollector:
         self.last_succeeded_at: Optional[str] = None
         self.last_failed_at: Optional[str] = None
         self._per_course: dict[str, CourseMetrics] = defaultdict(CourseMetrics)
+        self.llm: LLMHealth = LLMHealth()
 
     @property
     def started_at(self) -> str:
@@ -88,6 +102,37 @@ class MetricsCollector:
         if course_id:
             self._per_course[course_id].skipped += 1
 
+    def llm_metadata(
+        self,
+        *,
+        provider: Optional[str],
+        model: Optional[str],
+        base_url: Optional[str],
+    ) -> None:
+        self.llm.provider = provider
+        self.llm.model = model
+        self.llm.base_url = base_url
+
+    def llm_probed(
+        self,
+        *,
+        ok: bool,
+        latency_ms: int,
+        error: Optional[str] = None,
+    ) -> None:
+        ts = _now()
+        self.llm.last_check_at = ts
+        self.llm.latency_ms = latency_ms
+        if ok:
+            self.llm.available = True
+            self.llm.last_success_at = ts
+            self.llm.last_error = None
+            self.llm.consecutive_failures = 0
+        else:
+            self.llm.available = False
+            self.llm.last_error = error
+            self.llm.consecutive_failures += 1
+
     def snapshot(self) -> dict:
         return {
             "started_at": self._started_at,
@@ -113,4 +158,5 @@ class MetricsCollector:
                 }
                 for cid, cm in self._per_course.items()
             },
+            "llm": asdict(self.llm),
         }

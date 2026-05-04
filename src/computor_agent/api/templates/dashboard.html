@@ -43,6 +43,26 @@
       <div class="sub">WS <span id="ws-state">{{ "connected" if scheduler.connected else "disconnected" }}</span></div>
     </div>
     <div class="card">
+      <h2>LLM</h2>
+      {% set llm = agent.llm %}
+      {% if llm.available is none %}
+        {% set llm_state_text = "Unknown" %}
+        {% set llm_state_cls = "muted" %}
+      {% elif llm.available %}
+        {% set llm_state_text = "Online" %}
+        {% set llm_state_cls = "ok" %}
+      {% else %}
+        {% set llm_state_text = "Offline" %}
+        {% set llm_state_cls = "bad" %}
+      {% endif %}
+      <div class="v {{ llm_state_cls }}" id="llm-state">{{ llm_state_text }}</div>
+      <div class="sub">
+        <span id="llm-target">{{ (llm.provider or "?") }}/{{ (llm.model or "?") }}</span>
+        · <span id="llm-latency">{% if llm.latency_ms is not none %}{{ llm.latency_ms }} ms{% else %}—{% endif %}</span>
+      </div>
+      <div class="sub">last: <span id="llm-last">{{ llm.last_check_at or "—" }}</span><span id="llm-error" class="bad" style="display: {% if llm.last_error %}block{% else %}none{% endif %};">{{ llm.last_error or "" }}</span></div>
+    </div>
+    <div class="card">
       <h2>Courses tracked</h2>
       <div class="v" id="courses-count">{{ scheduler.courses }}</div>
       <div class="sub"><span id="groups-count">{{ scheduler.tracked_groups }}</span> submission group(s) · <span id="typing-count">{{ scheduler.active_typing }}</span> typing</div>
@@ -155,6 +175,26 @@
     setText("courses-count", s.courses != null ? s.courses : 0);
     setText("groups-count", s.tracked_groups != null ? s.tracked_groups : 0);
     setText("typing-count", s.active_typing != null ? s.active_typing : 0);
+
+    var llm = a.llm || {};
+    var llmState = document.getElementById("llm-state");
+    if (llmState) {
+      var label, cls;
+      if (llm.available === true) { label = "Online"; cls = "ok"; }
+      else if (llm.available === false) { label = "Offline"; cls = "bad"; }
+      else { label = "Unknown"; cls = "muted"; }
+      llmState.textContent = label;
+      llmState.classList.remove("ok", "bad", "muted");
+      llmState.classList.add(cls);
+    }
+    setText("llm-target", (llm.provider || "?") + "/" + (llm.model || "?"));
+    setText("llm-latency", (llm.latency_ms != null) ? (llm.latency_ms + " ms") : "—");
+    setText("llm-last", llm.last_check_at || "—");
+    var llmError = document.getElementById("llm-error");
+    if (llmError) {
+      llmError.textContent = llm.last_error || "";
+      llmError.style.display = llm.last_error ? "block" : "none";
+    }
 
     setText("succeeded", a.messages_succeeded || 0);
     setText("last-succeeded", a.last_succeeded_at || "—");

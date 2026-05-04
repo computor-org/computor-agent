@@ -564,6 +564,13 @@ def tutor():
     show_default=True,
     help="Bind address for the dashboard. Use 0.0.0.0 to expose externally.",
 )
+@click.option(
+    "--llm-probe-interval",
+    type=float,
+    default=30.0,
+    show_default=True,
+    help="Seconds between LLM liveness probes. Set 0 to disable.",
+)
 def messaging(
     config: Optional[str],
     verbose: bool,
@@ -576,6 +583,7 @@ def messaging(
     prompt: Optional[str],
     api_port: Optional[int],
     api_host: str,
+    llm_probe_interval: float,
 ):
     """
     Start the messaging tutor agent.
@@ -678,6 +686,7 @@ def messaging(
     asyncio.run(_run_tutor_messaging(
         computor_config, tutor_config, git_credentials, dry_run, prompts_path,
         api_port=api_port, api_host=api_host, log_file=log_file,
+        llm_probe_interval=llm_probe_interval,
     ))
 
 
@@ -789,6 +798,7 @@ async def _run_tutor_messaging(
     api_port: Optional[int] = None,
     api_host: str = "127.0.0.1",
     log_file: Optional[str] = None,
+    llm_probe_interval: float = 30.0,
 ):
     """Run the tutor messaging agent."""
     from computor_client import ComputorClient
@@ -980,6 +990,13 @@ async def _run_tutor_messaging(
         # Shared metrics — passed to the scheduler and read by the optional
         # dashboard. Cheap to keep around even if the dashboard is disabled.
         metrics = MetricsCollector()
+        metrics.llm_metadata(
+            provider=llm_config.provider.value,
+            model=llm_config.model,
+            base_url=llm_config.base_url,
+        )
+        # Record the startup health check we already performed above.
+        metrics.llm_probed(ok=True, latency_ms=0)
 
         # Try WebSocket first, fall back to HTTP polling
         scheduler = None
@@ -1070,6 +1087,19 @@ async def _run_tutor_messaging(
         # Start scheduler in background task
         scheduler_task = asyncio.create_task(_run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket))
 
+        # Periodic LLM liveness probe. Off when interval == 0.
+        llm_monitor = None
+        if llm_probe_interval > 0:
+            from computor_agent.api.llm_health import LLMHealthMonitor
+
+            llm_monitor = LLMHealthMonitor(
+                provider=llm_provider,
+                metrics=metrics,
+                interval_seconds=llm_probe_interval,
+            )
+            await llm_monitor.start()
+            logger.info(f"LLM probe enabled (every {llm_probe_interval:g}s)")
+
         # Optionally start the dashboard API alongside the scheduler.
         api_server = None
         api_task = None
@@ -1101,7 +1131,12 @@ async def _run_tutor_messaging(
             return_when=asyncio.FIRST_COMPLETED,
         )
 
-        # Stop the API server first so its socket releases before we tear down the loop
+        # Stop the LLM probe first; it may be mid-request and we want to
+        # avoid trailing log lines after "stopped".
+        if llm_monitor is not None:
+            await llm_monitor.stop()
+
+        # Stop the API server next so its socket releases before we tear down the loop
         if api_server is not None:
             await api_server.stop()
         if api_task is not None and not api_task.done():

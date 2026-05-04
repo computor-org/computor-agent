@@ -42,10 +42,15 @@ def build_router(
         s = _scheduler_stats()
         running = bool(s.get("running"))
         connected = bool(s.get("connected"))
+        llm_available = metrics.llm.available  # None | True | False
+        llm_ok = llm_available is not False  # treat unknown (None) as not-yet-failed
         return {
-            "status": "ok" if running and connected else "degraded",
+            "status": "ok" if (running and connected and llm_ok) else "degraded",
             "scheduler_running": running,
             "ws_connected": connected,
+            "llm_available": llm_available,
+            "llm_provider": metrics.llm.provider,
+            "llm_model": metrics.llm.model,
             "started_at": metrics.started_at,
         }
 
