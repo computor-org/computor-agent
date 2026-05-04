@@ -2,7 +2,6 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="refresh" content="5">
   <title>Computor Tutor Agent</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f6f7f9; color: #222; }
@@ -27,64 +26,65 @@
     section { margin-top: 24px; }
     section > h2 { font-size: 12px; text-transform: uppercase; color: #6b7280; letter-spacing: .06em; font-weight: 600; margin: 0 0 10px; }
     pre.log { background: #0f172a; color: #cbd5e1; padding: 12px 16px; border-radius: 8px; overflow: auto; max-height: 500px; font-size: 12px; line-height: 1.5; margin: 0; white-space: pre-wrap; word-break: break-all; }
+    #poll-status { font-size: 11px; color: #9ca3af; }
+    #poll-status.stale { color: #dc2626; }
   </style>
 </head>
 <body>
 <header>
   <h1>Computor Tutor Agent</h1>
-  <span class="meta">started {{ agent.started_at }} · auto-refresh 5s</span>
+  <span class="meta">started {{ agent.started_at }} · <span id="poll-status">live</span></span>
 </header>
 <main>
   <div class="grid">
     <div class="card">
       <h2>Scheduler</h2>
-      <div class="v {{ 'ok' if scheduler.running else 'bad' }}">{{ "Running" if scheduler.running else "Stopped" }}</div>
-      <div class="sub">WS {{ "connected" if scheduler.connected else "disconnected" }}</div>
+      <div class="v {{ 'ok' if scheduler.running else 'bad' }}" id="scheduler-state">{{ "Running" if scheduler.running else "Stopped" }}</div>
+      <div class="sub">WS <span id="ws-state">{{ "connected" if scheduler.connected else "disconnected" }}</span></div>
     </div>
     <div class="card">
       <h2>Courses tracked</h2>
-      <div class="v">{{ scheduler.courses }}</div>
-      <div class="sub">{{ scheduler.tracked_groups }} submission group(s) · {{ scheduler.active_typing }} typing</div>
+      <div class="v" id="courses-count">{{ scheduler.courses }}</div>
+      <div class="sub"><span id="groups-count">{{ scheduler.tracked_groups }}</span> submission group(s) · <span id="typing-count">{{ scheduler.active_typing }}</span> typing</div>
     </div>
     <div class="card">
       <h2>Succeeded</h2>
-      <div class="v ok">{{ agent.messages_succeeded }}</div>
-      <div class="sub">last: {{ agent.last_succeeded_at or "—" }}</div>
+      <div class="v ok" id="succeeded">{{ agent.messages_succeeded }}</div>
+      <div class="sub">last: <span id="last-succeeded">{{ agent.last_succeeded_at or "—" }}</span></div>
     </div>
     <div class="card">
       <h2>Failed</h2>
-      <div class="v {{ 'bad' if agent.messages_failed else 'muted' }}">{{ agent.messages_failed }}</div>
-      <div class="sub">last: {{ agent.last_failed_at or "—" }}</div>
+      <div class="v {{ 'bad' if agent.messages_failed else 'muted' }}" id="failed">{{ agent.messages_failed }}</div>
+      <div class="sub">last: <span id="last-failed">{{ agent.last_failed_at or "—" }}</span></div>
     </div>
     <div class="card">
       <h2>Skipped</h2>
-      <div class="v">{{ agent.messages_skipped }}</div>
+      <div class="v" id="skipped">{{ agent.messages_skipped }}</div>
       <div class="sub">cooldown / dup / locked</div>
     </div>
     <div class="card">
       <h2>Seen</h2>
-      <div class="v">{{ agent.messages_seen }}</div>
-      <div class="sub">last: {{ agent.last_seen_at or "—" }}</div>
+      <div class="v" id="seen">{{ agent.messages_seen }}</div>
+      <div class="sub">last: <span id="last-seen">{{ agent.last_seen_at or "—" }}</span></div>
     </div>
     <div class="card">
       <h2>WS events</h2>
-      <div class="v">{{ agent.events_received }}</div>
-      <div class="sub">last: {{ agent.last_event_at or "—" }}</div>
+      <div class="v" id="events">{{ agent.events_received }}</div>
+      <div class="sub">last: <span id="last-event">{{ agent.last_event_at or "—" }}</span></div>
     </div>
     <div class="card">
       <h2>Last catch-up</h2>
-      <div class="vsm">{{ agent.last_catchup_at or "—" }}</div>
+      <div class="vsm" id="last-catchup">{{ agent.last_catchup_at or "—" }}</div>
     </div>
   </div>
 
-  {% if agent.per_course %}
-  <section>
+  <section id="per-course-section" {% if not agent.per_course %}style="display: none;"{% endif %}>
     <h2>Per-course</h2>
     <table>
       <thead>
         <tr><th>Course</th><th>Seen</th><th>Succeeded</th><th>Failed</th><th>Skipped</th><th>Last activity</th></tr>
       </thead>
-      <tbody>
+      <tbody id="per-course-body">
         {% for cid, c in agent.per_course.items() %}
         <tr>
           <td><code>{{ cid }}</code></td>
@@ -98,21 +98,164 @@
       </tbody>
     </table>
   </section>
-  {% endif %}
 
   <section>
-    <h2>Logs {% if log_file %}<span class="muted" style="text-transform: none; letter-spacing: 0; font-weight: 400;">— {{ log_file }} (last {{ log_lines | length }} lines)</span>{% endif %}</h2>
+    <h2>Logs {% if log_file %}<span class="muted" style="text-transform: none; letter-spacing: 0; font-weight: 400;">— {{ log_file }} (last <span id="log-line-count">{{ log_lines | length }}</span> lines)</span>{% endif %}</h2>
     {% if log_file %}
-      {% if log_lines %}
-<pre class="log">{% for line in log_lines %}{{ line }}
+<pre class="log" id="log-pane">{% for line in log_lines %}{{ line }}
 {% endfor %}</pre>
-      {% else %}
-        <p class="muted">Log file is empty or not yet written.</p>
-      {% endif %}
     {% else %}
       <p class="muted">No log file configured. Pass <code>-l logfile.txt</code> to <code>tutor messaging</code> to enable log tailing.</p>
     {% endif %}
   </section>
 </main>
+
+<script>
+(function () {
+  "use strict";
+
+  // Polling cadence — 3s feels live without hammering the agent.
+  var POLL_MS = 3000;
+  // "At bottom" tolerance in pixels — accounts for sub-pixel rounding.
+  var BOTTOM_SLACK = 6;
+  // Mark the page stale if no successful poll within this window.
+  var STALE_AFTER_MS = 12000;
+
+  var logPane = document.getElementById("log-pane");
+  var logLineCount = document.getElementById("log-line-count");
+  var pollStatus = document.getElementById("poll-status");
+  var hasLogFile = !!logPane;
+  var lastOkAt = Date.now();
+
+  // On first load, anchor the log pane at the bottom — that's where the
+  // freshest output is, and matches `tail -f` muscle memory.
+  if (logPane) {
+    logPane.scrollTop = logPane.scrollHeight;
+  }
+
+  function setText(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = (value === null || value === undefined) ? "" : String(value);
+  }
+
+  function toggleCls(id, cls, on) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle(cls, !!on);
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  function applyMetrics(payload) {
+    var s = payload.scheduler || {};
+    var a = payload.agent || {};
+    setText("scheduler-state", s.running ? "Running" : "Stopped");
+    toggleCls("scheduler-state", "ok", !!s.running);
+    toggleCls("scheduler-state", "bad", !s.running);
+    setText("ws-state", s.connected ? "connected" : "disconnected");
+    setText("courses-count", s.courses != null ? s.courses : 0);
+    setText("groups-count", s.tracked_groups != null ? s.tracked_groups : 0);
+    setText("typing-count", s.active_typing != null ? s.active_typing : 0);
+
+    setText("succeeded", a.messages_succeeded || 0);
+    setText("last-succeeded", a.last_succeeded_at || "—");
+    setText("failed", a.messages_failed || 0);
+    toggleCls("failed", "bad", (a.messages_failed || 0) > 0);
+    toggleCls("failed", "muted", (a.messages_failed || 0) === 0);
+    setText("last-failed", a.last_failed_at || "—");
+    setText("skipped", a.messages_skipped || 0);
+    setText("seen", a.messages_seen || 0);
+    setText("last-seen", a.last_seen_at || "—");
+    setText("events", a.events_received || 0);
+    setText("last-event", a.last_event_at || "—");
+    setText("last-catchup", a.last_catchup_at || "—");
+    applyPerCourse(a.per_course || {});
+  }
+
+  function applyPerCourse(courses) {
+    var section = document.getElementById("per-course-section");
+    var body = document.getElementById("per-course-body");
+    if (!section || !body) return;
+    var ids = Object.keys(courses);
+    if (ids.length === 0) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "";
+    var rows = ids.map(function (cid) {
+      var c = courses[cid];
+      var failedCls = (c.failed || 0) > 0 ? "bad" : "muted";
+      var last = c.last_succeeded_at || c.last_failed_at || c.last_seen_at || "—";
+      return "<tr>" +
+        "<td><code>" + esc(cid) + "</code></td>" +
+        "<td>" + (c.seen || 0) + "</td>" +
+        '<td class="ok">' + (c.succeeded || 0) + "</td>" +
+        '<td class="' + failedCls + '">' + (c.failed || 0) + "</td>" +
+        "<td>" + (c.skipped || 0) + "</td>" +
+        '<td class="muted">' + esc(last) + "</td>" +
+        "</tr>";
+    }).join("");
+    body.innerHTML = rows;
+  }
+
+  function applyLogs(payload) {
+    if (!hasLogFile) return;
+    var lines = payload.lines || [];
+
+    // Anchor strategy: stick to the bottom only if the user is already at
+    // the bottom. If they've scrolled up to read something, keep the same
+    // distance-from-bottom so their viewport doesn't jump.
+    var distanceFromBottom = logPane.scrollHeight - logPane.scrollTop - logPane.clientHeight;
+    var wasAtBottom = distanceFromBottom <= BOTTOM_SLACK;
+
+    logPane.textContent = lines.join("\n");
+    if (logLineCount) logLineCount.textContent = lines.length;
+
+    if (wasAtBottom) {
+      logPane.scrollTop = logPane.scrollHeight;
+    } else {
+      var newScrollTop = logPane.scrollHeight - logPane.clientHeight - distanceFromBottom;
+      if (newScrollTop < 0) newScrollTop = 0;
+      logPane.scrollTop = newScrollTop;
+    }
+  }
+
+  function markPollStatus() {
+    if (!pollStatus) return;
+    if (Date.now() - lastOkAt > STALE_AFTER_MS) {
+      pollStatus.textContent = "stale (poll failing)";
+      pollStatus.classList.add("stale");
+    } else {
+      pollStatus.textContent = "live";
+      pollStatus.classList.remove("stale");
+    }
+  }
+
+  async function tick() {
+    try {
+      var requests = [fetch("/metrics", { cache: "no-store" })];
+      if (hasLogFile) requests.push(fetch("/logs?tail=200", { cache: "no-store" }));
+      var responses = await Promise.all(requests);
+      var metrics = await responses[0].json();
+      applyMetrics(metrics);
+      if (hasLogFile) {
+        var logs = await responses[1].json();
+        applyLogs(logs);
+      }
+      lastOkAt = Date.now();
+    } catch (e) {
+      // Swallow transient failures; markPollStatus surfaces persistent ones.
+    }
+    markPollStatus();
+  }
+
+  tick();
+  setInterval(tick, POLL_MS);
+})();
+</script>
 </body>
 </html>
