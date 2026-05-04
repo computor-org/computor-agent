@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="5">
+  <title>Computor Tutor Agent</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f6f7f9; color: #222; }
+    header { background: #1f2937; color: #f9fafb; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+    header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+    header .meta { font-size: 12px; color: #9ca3af; }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px 16px; }
+    .card h2 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #6b7280; font-weight: 600; }
+    .card .v { font-size: 22px; font-weight: 600; }
+    .card .vsm { font-size: 13px; font-weight: 500; word-break: break-all; }
+    .card .sub { font-size: 12px; color: #6b7280; margin-top: 4px; }
+    .ok { color: #059669; }
+    .bad { color: #dc2626; }
+    .muted { color: #9ca3af; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+    th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }
+    th { background: #f9fafb; color: #6b7280; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    tr:last-child td { border-bottom: none; }
+    code { background: #f3f4f6; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+    section { margin-top: 24px; }
+    section > h2 { font-size: 12px; text-transform: uppercase; color: #6b7280; letter-spacing: .06em; font-weight: 600; margin: 0 0 10px; }
+    pre.log { background: #0f172a; color: #cbd5e1; padding: 12px 16px; border-radius: 8px; overflow: auto; max-height: 500px; font-size: 12px; line-height: 1.5; margin: 0; white-space: pre-wrap; word-break: break-all; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Computor Tutor Agent</h1>
+  <span class="meta">started {{ agent.started_at }} · auto-refresh 5s</span>
+</header>
+<main>
+  <div class="grid">
+    <div class="card">
+      <h2>Scheduler</h2>
+      <div class="v {{ 'ok' if scheduler.running else 'bad' }}">{{ "Running" if scheduler.running else "Stopped" }}</div>
+      <div class="sub">WS {{ "connected" if scheduler.connected else "disconnected" }}</div>
+    </div>
+    <div class="card">
+      <h2>Courses tracked</h2>
+      <div class="v">{{ scheduler.courses }}</div>
+      <div class="sub">{{ scheduler.tracked_groups }} submission group(s) · {{ scheduler.active_typing }} typing</div>
+    </div>
+    <div class="card">
+      <h2>Succeeded</h2>
+      <div class="v ok">{{ agent.messages_succeeded }}</div>
+      <div class="sub">last: {{ agent.last_succeeded_at or "—" }}</div>
+    </div>
+    <div class="card">
+      <h2>Failed</h2>
+      <div class="v {{ 'bad' if agent.messages_failed else 'muted' }}">{{ agent.messages_failed }}</div>
+      <div class="sub">last: {{ agent.last_failed_at or "—" }}</div>
+    </div>
+    <div class="card">
+      <h2>Skipped</h2>
+      <div class="v">{{ agent.messages_skipped }}</div>
+      <div class="sub">cooldown / dup / locked</div>
+    </div>
+    <div class="card">
+      <h2>Seen</h2>
+      <div class="v">{{ agent.messages_seen }}</div>
+      <div class="sub">last: {{ agent.last_seen_at or "—" }}</div>
+    </div>
+    <div class="card">
+      <h2>WS events</h2>
+      <div class="v">{{ agent.events_received }}</div>
+      <div class="sub">last: {{ agent.last_event_at or "—" }}</div>
+    </div>
+    <div class="card">
+      <h2>Last catch-up</h2>
+      <div class="vsm">{{ agent.last_catchup_at or "—" }}</div>
+    </div>
+  </div>
+
+  {% if agent.per_course %}
+  <section>
+    <h2>Per-course</h2>
+    <table>
+      <thead>
+        <tr><th>Course</th><th>Seen</th><th>Succeeded</th><th>Failed</th><th>Skipped</th><th>Last activity</th></tr>
+      </thead>
+      <tbody>
+        {% for cid, c in agent.per_course.items() %}
+        <tr>
+          <td><code>{{ cid }}</code></td>
+          <td>{{ c.seen }}</td>
+          <td class="ok">{{ c.succeeded }}</td>
+          <td class="{{ 'bad' if c.failed else 'muted' }}">{{ c.failed }}</td>
+          <td>{{ c.skipped }}</td>
+          <td class="muted">{{ c.last_succeeded_at or c.last_failed_at or c.last_seen_at or "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <section>
+    <h2>Logs {% if log_file %}<span class="muted" style="text-transform: none; letter-spacing: 0; font-weight: 400;">— {{ log_file }} (last {{ log_lines | length }} lines)</span>{% endif %}</h2>
+    {% if log_file %}
+      {% if log_lines %}
+<pre class="log">{% for line in log_lines %}{{ line }}
+{% endfor %}</pre>
+      {% else %}
+        <p class="muted">Log file is empty or not yet written.</p>
+      {% endif %}
+    {% else %}
+      <p class="muted">No log file configured. Pass <code>-l logfile.txt</code> to <code>tutor messaging</code> to enable log tailing.</p>
+    {% endif %}
+  </section>
+</main>
+</body>
+</html>

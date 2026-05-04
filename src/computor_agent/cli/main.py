@@ -542,6 +542,19 @@ def tutor():
     default=None,
     help="[Dev mode] Process a single message and exit (no interactive loop).",
 )
+@click.option(
+    "--api-port",
+    type=int,
+    default=None,
+    help="Enable HTTP dashboard on this port (e.g. 8080). Off by default.",
+)
+@click.option(
+    "--api-host",
+    type=str,
+    default="127.0.0.1",
+    show_default=True,
+    help="Bind address for the dashboard. Use 0.0.0.0 to expose externally.",
+)
 def messaging(
     config: Optional[str],
     verbose: bool,
@@ -552,6 +565,8 @@ def messaging(
     scenario: Optional[str],
     log_file: Optional[str],
     prompt: Optional[str],
+    api_port: Optional[int],
+    api_host: str,
 ):
     """
     Start the messaging tutor agent.
@@ -651,7 +666,10 @@ def messaging(
     )
 
     prompts_path = Path(prompts_dir) if prompts_dir else None
-    asyncio.run(_run_tutor_messaging(computor_config, tutor_config, git_credentials, dry_run, prompts_path))
+    asyncio.run(_run_tutor_messaging(
+        computor_config, tutor_config, git_credentials, dry_run, prompts_path,
+        api_port=api_port, api_host=api_host, log_file=log_file,
+    ))
 
 
 @tutor.command()
@@ -752,10 +770,21 @@ def grading(
     console.print("  computor-agent tutor grading --dev --reference ./assignment --student ./submission")
 
 
-async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, dry_run: bool, prompts_dir: Optional[Path] = None):
+async def _run_tutor_messaging(
+    computor_config,
+    tutor_config,
+    git_credentials,
+    dry_run: bool,
+    prompts_dir: Optional[Path] = None,
+    *,
+    api_port: Optional[int] = None,
+    api_host: str = "127.0.0.1",
+    log_file: Optional[str] = None,
+):
     """Run the tutor messaging agent."""
     from computor_client import ComputorClient
 
+    from computor_agent.api.metrics import MetricsCollector
     from computor_agent.llm.config import LLMConfig, ProviderType
     from computor_agent.llm.factory import get_provider
     from computor_agent.tutor import TutorAgent, TutorScheduler, SchedulerConfig, TutorLLMAdapter
@@ -939,6 +968,10 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
                     f"Message processing failed: {processing_result.error}"
                 )
 
+        # Shared metrics — passed to the scheduler and read by the optional
+        # dashboard. Cheap to keep around even if the dashboard is disabled.
+        metrics = MetricsCollector()
+
         # Try WebSocket first, fall back to HTTP polling
         scheduler = None
         use_websocket = False
@@ -992,6 +1025,7 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
                     cooldown_seconds=scheduler_config.cooldown_seconds,
                     max_concurrent_processing=scheduler_config.max_concurrent_processing,
                     token_provider=_provide_fresh_token,
+                    metrics=metrics,
                 )
                 use_websocket = True
                 logger.info("Using WebSocket for real-time events")
@@ -1027,11 +1061,39 @@ async def _run_tutor_messaging(computor_config, tutor_config, git_credentials, d
         # Start scheduler in background task
         scheduler_task = asyncio.create_task(_run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket))
 
+        # Optionally start the dashboard API alongside the scheduler.
+        api_server = None
+        api_task = None
+        if api_port:
+            try:
+                from computor_agent.api.server import APIServer, create_app
+
+                app = create_app(metrics=metrics, scheduler=scheduler, log_file=log_file)
+                api_server = APIServer(app, host=api_host, port=api_port)
+                api_task = asyncio.create_task(api_server.serve())
+            except ImportError as e:
+                logger.warning(f"Dashboard API requested but dependencies missing ({e}); skipping")
+            except Exception as e:
+                logger.warning(f"Failed to start dashboard API: {e}")
+
+        wait_tasks = [scheduler_task, asyncio.create_task(shutdown_event.wait())]
+        if api_task is not None:
+            wait_tasks.append(api_task)
+
         # Wait for shutdown signal or scheduler completion
         done, pending = await asyncio.wait(
-            [scheduler_task, asyncio.create_task(shutdown_event.wait())],
+            wait_tasks,
             return_when=asyncio.FIRST_COMPLETED,
         )
+
+        # Stop the API server first so its socket releases before we tear down the loop
+        if api_server is not None:
+            await api_server.stop()
+        if api_task is not None and not api_task.done():
+            try:
+                await asyncio.wait_for(api_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                api_task.cancel()
 
         # Cancel pending tasks
         for task in pending:

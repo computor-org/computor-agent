@@ -15,6 +15,7 @@ from typing import Awaitable, Callable, Optional, Protocol
 
 from computor_types.messages import MessageThread
 
+from computor_agent.api.metrics import MetricsCollector
 from computor_agent.tutor.config import TriggerConfig
 from computor_agent.tutor.websocket.client import ComputorWebSocket, WebSocketError
 from computor_agent.tutor.websocket.typing_manager import TypingManager
@@ -79,6 +80,7 @@ class WebSocketScheduler:
         reconnect_delay_seconds: float = 30.0,
         max_reconnect_attempts: int = 0,  # 0 = unlimited
         token_provider: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
+        metrics: Optional[MetricsCollector] = None,
     ) -> None:
         """
         Initialize the WebSocket scheduler.
@@ -101,6 +103,7 @@ class WebSocketScheduler:
         self._token_provider = token_provider
         self.trigger_config = trigger_config or TriggerConfig()
         self.on_message_trigger = on_message_trigger
+        self._metrics = metrics or MetricsCollector()
         self._cooldown_seconds = cooldown_seconds
         self._reconnect_delay = reconnect_delay_seconds
         self._max_reconnect_attempts = max_reconnect_attempts
@@ -281,6 +284,7 @@ class WebSocketScheduler:
             total += await self._process_course_unread(course_id)
 
         logger.info(f"Catch-up complete: processed {total} unread message(s)")
+        self._metrics.catchup_complete()
 
     async def _process_course_unread(self, course_id: str) -> int:
         """
@@ -448,6 +452,7 @@ class WebSocketScheduler:
                         f"Skipping message {message_id}: already recorded as last "
                         f"processed for submission_group {submission_group_id}"
                     )
+                    self._metrics.message_skipped(course_id)
                     continue
 
                 # Skip if already being processed or in cooldown
@@ -457,6 +462,7 @@ class WebSocketScheduler:
                         f"Skipping message {message_id}: submission_group "
                         f"{submission_group_id} already being processed"
                     )
+                    self._metrics.message_skipped(course_id)
                     continue
 
                 if self._should_skip(submission_group_id):
@@ -464,12 +470,14 @@ class WebSocketScheduler:
                         f"Skipping message {message_id}: submission_group "
                         f"{submission_group_id} in cooldown"
                     )
+                    self._metrics.message_skipped(course_id)
                     continue
 
                 thread_root_id = thread.root_message_id if thread else None
 
                 trigger_type = "follow-up" if is_follow_up else "direct"
                 logger.info(f"Processing unread {trigger_type} message: {message_id}")
+                self._metrics.message_seen(course_id)
 
                 message_data = {
                     "id": message_id,
@@ -493,6 +501,7 @@ class WebSocketScheduler:
                             f"Skipping message {message_id}: processed by another "
                             f"task while waiting for lock"
                         )
+                        self._metrics.message_skipped(course_id)
                         continue
 
                     async with self._semaphore:
@@ -505,6 +514,7 @@ class WebSocketScheduler:
                                 )
                         except Exception as e:
                             logger.error(f"Failed to process message {message_id}: {e}")
+                            self._metrics.message_failed(course_id)
                             continue
 
                     await self._ws.mark_read(typing_channel, message_id)
@@ -512,6 +522,7 @@ class WebSocketScheduler:
                     state.last_processed = datetime.now()
 
                 processed_count += 1
+                self._metrics.message_succeeded(course_id)
 
         except Exception as e:
             logger.warning(f"Error processing unread messages for course {course_id}: {e}")
@@ -666,6 +677,7 @@ class WebSocketScheduler:
             logger.debug(f"WebSocket event: {event_type}")
         else:
             logger.info(f"WebSocket event received: type={event_type}")
+            self._metrics.event_received()
 
         if event_type == "message:new":
             await self._handle_message_new(event)
