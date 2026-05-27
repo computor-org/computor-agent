@@ -788,6 +788,30 @@ def grading(
     console.print("  computor-agent tutor grading --dev --reference ./assignment --student ./submission")
 
 
+class _LateBoundSchedulerStats:
+    """Lets the dashboard start before the scheduler exists.
+
+    The dashboard captures one stats source at construction time. When that
+    source is None, routes still need to render — so this holder returns a
+    "scheduler not yet running" snapshot until ``target`` is attached.
+    """
+
+    def __init__(self) -> None:
+        self.target = None
+
+    def get_stats(self) -> dict:
+        target = self.target
+        if target is None:
+            return {
+                "running": False,
+                "connected": False,
+                "courses": 0,
+                "tracked_groups": 0,
+                "active_typing": 0,
+            }
+        return target.get_stats()
+
+
 async def _run_tutor_messaging(
     computor_config,
     tutor_config,
@@ -845,7 +869,46 @@ async def _run_tutor_messaging(
     )
     llm_provider = get_provider(llm_config)
 
-    # Verify the LLM model is reachable and working before accepting student messages
+    # Bring up shared metrics and the optional dashboard *before* any blocking
+    # I/O (LLM health check, backend connect). That way --api-port is reachable
+    # immediately and the dashboard is the place users go to see why the LLM
+    # or backend isn't ready, rather than the dashboard being held hostage to
+    # the very thing they want to debug.
+    metrics = MetricsCollector()
+    metrics.llm_metadata(
+        provider=llm_config.provider.value,
+        model=llm_config.model,
+        base_url=llm_config.base_url,
+    )
+
+    scheduler_stats = _LateBoundSchedulerStats()
+
+    api_server = None
+    api_task = None
+    if api_port:
+        try:
+            from computor_agent.api.log_buffer import get_log_buffer
+            from computor_agent.api.server import APIServer, create_app
+
+            app = create_app(
+                metrics=metrics,
+                scheduler=scheduler_stats,
+                log_buffer=get_log_buffer(),
+                log_file=log_file,
+            )
+            api_server = APIServer(app, host=api_host, port=api_port)
+            api_task = asyncio.create_task(api_server.serve())
+        except ImportError as e:
+            logger.warning(
+                f"Dashboard API requested but the 'api' extra is not installed "
+                f"({e}); install it with: pip install -e \".[api]\""
+            )
+        except Exception as e:
+            logger.warning(f"Failed to start dashboard API: {e}")
+
+    # Verify the LLM model is reachable. Non-fatal: the periodic LLM probe and
+    # the dashboard already track availability, and we'd rather have the agent
+    # idle-but-running (dashboard up) than dead so users can diagnose.
     logger.info(
         f"Checking LLM connectivity ({llm_config.provider.value}/{llm_config.model}) "
         f"at {llm_config.base_url}"
@@ -855,15 +918,16 @@ async def _run_tutor_messaging(
         await llm_provider.check_health()
         logger.info(f"LLM health check passed ({llm_config.provider.value}/{llm_config.model})")
         console.print("[green]LLM is ready.[/green]")
+        metrics.llm_probed(ok=True, latency_ms=0)
     except Exception as e:
-        logger.error(
+        logger.warning(
             f"LLM health check failed ({llm_config.provider.value}/{llm_config.model} "
-            f"at {llm_config.base_url}): {e}",
+            f"at {llm_config.base_url}): {e} — continuing; periodic probe will retry",
             exc_info=True,
         )
-        console.print(f"[bold red]Error:[/bold red] LLM health check failed: {e}")
-        console.print("[dim]Make sure your LLM server is running and the model is available.[/dim]")
-        sys.exit(1)
+        console.print(f"[yellow]Warning:[/yellow] LLM health check failed: {e}")
+        console.print("[dim]Continuing anyway — the periodic probe will retry and the dashboard reports state.[/dim]")
+        metrics.llm_probed(ok=False, latency_ms=0, error=str(e))
 
     tutor_llm = TutorLLMAdapter(llm_provider)
 
@@ -987,17 +1051,6 @@ async def _run_tutor_messaging(
                     f"Message processing failed: {processing_result.error}"
                 )
 
-        # Shared metrics — passed to the scheduler and read by the optional
-        # dashboard. Cheap to keep around even if the dashboard is disabled.
-        metrics = MetricsCollector()
-        metrics.llm_metadata(
-            provider=llm_config.provider.value,
-            model=llm_config.model,
-            base_url=llm_config.base_url,
-        )
-        # Record the startup health check we already performed above.
-        metrics.llm_probed(ok=True, latency_ms=0)
-
         # Try WebSocket first, fall back to HTTP polling
         scheduler = None
         use_websocket = False
@@ -1073,6 +1126,11 @@ async def _run_tutor_messaging(
             )
             logger.info("Using HTTP polling for message detection")
 
+        # The dashboard (if started above) was holding a placeholder until
+        # the scheduler existed. Wire the real one in now so /metrics, /,
+        # and /health start showing live numbers.
+        scheduler_stats.target = scheduler
+
         # Handle shutdown gracefully
         shutdown_event = asyncio.Event()
 
@@ -1100,27 +1158,8 @@ async def _run_tutor_messaging(
             await llm_monitor.start()
             logger.info(f"LLM probe enabled (every {llm_probe_interval:g}s)")
 
-        # Optionally start the dashboard API alongside the scheduler.
-        api_server = None
-        api_task = None
-        if api_port:
-            try:
-                from computor_agent.api.log_buffer import get_log_buffer
-                from computor_agent.api.server import APIServer, create_app
-
-                app = create_app(
-                    metrics=metrics,
-                    scheduler=scheduler,
-                    log_buffer=get_log_buffer(),
-                    log_file=log_file,
-                )
-                api_server = APIServer(app, host=api_host, port=api_port)
-                api_task = asyncio.create_task(api_server.serve())
-            except ImportError as e:
-                logger.warning(f"Dashboard API requested but dependencies missing ({e}); skipping")
-            except Exception as e:
-                logger.warning(f"Failed to start dashboard API: {e}")
-
+        # The dashboard (if --api-port was set) was already started before the
+        # LLM health check; api_server/api_task are bound in the outer scope.
         wait_tasks = [scheduler_task, asyncio.create_task(shutdown_event.wait())]
         if api_task is not None:
             wait_tasks.append(api_task)

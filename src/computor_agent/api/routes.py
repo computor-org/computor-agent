@@ -71,10 +71,13 @@ def build_router(
 
     @router.get("/", response_class=HTMLResponse)
     def dashboard(request: Request) -> HTMLResponse:
+        # Starlette ≥0.28 expects (request, name, context); the old
+        # (name, context-with-request) form raises "unhashable type: 'dict'"
+        # because Jinja2 tries to use the context dict as a template lookup key.
         return templates.TemplateResponse(
+            request,
             "dashboard.html",
             {
-                "request": request,
                 "scheduler": _scheduler_stats(),
                 "agent": metrics.snapshot(),
                 "log_file": log_file,

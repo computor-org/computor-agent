@@ -9,6 +9,7 @@ receive every message the agent has read access to, across every scope.
 import asyncio
 import logging
 import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Optional, Protocol
@@ -123,6 +124,13 @@ class WebSocketScheduler:
         self._event_task: Optional[asyncio.Task] = None
         self._periodic_catchup_task: Optional[asyncio.Task] = None
         self._periodic_catchup_interval = 60  # seconds
+
+        # Reply-classification cache: avoid re-fetching /messages/{id}/thread for
+        # the same untagged unread reply on every poll. Keyed by message_id; we
+        # populate every message in a fetched thread so siblings hit the cache
+        # too. Bounded LRU to keep memory finite on long-lived agents.
+        self._reply_decisions: OrderedDict[str, dict] = OrderedDict()
+        self._reply_cache_max = 10000
 
     @property
     def typing_manager(self) -> TypingManager:
@@ -290,30 +298,39 @@ class WebSocketScheduler:
         """
         Fetch and process unread messages for a single course.
 
-        This is the single processing path used by both WebSocket notifications
-        and periodic catch-up. Uses a per-course lock to prevent concurrent
-        fetches for the same course.
+        Two phases, with the per-course lock held only across the first:
 
-        Returns:
-            Number of messages processed.
+          1. Scan + classify under the lock so concurrent WebSocket events
+             don't kick off duplicate API list calls for the same course.
+          2. Process each trigger entry with the lock released, so a new
+             event arriving during a long LLM call can immediately run a
+             fresh scan for this course instead of waiting for the current
+             message to finish.
+
+        Per-submission-group locks still prevent the same message from being
+        processed twice; cooldown and last_message_id checks handle the case
+        where two concurrent scans surface the same entry.
         """
         course_lock = self._get_or_create_course_lock(course_id)
         if course_lock.locked():
-            logger.debug(f"Already checking unread for course {course_id}, skipping")
+            logger.debug(f"Already classifying course {course_id}, skipping")
             return 0
 
         async with course_lock:
-            return await self._fetch_and_process_unread(course_id)
+            trigger_entries = await self._classify_unread_for_course(course_id)
 
-    async def _fetch_and_process_unread(self, course_id: str) -> int:
-        """
-        Core processing: fetch unread messages for a course and process them.
+        if not trigger_entries:
+            return 0
 
-        1. Fetch tagged unread messages (direct triggers)
-        2. Fetch untagged follow-up replies in AI threads
-        3. Process each with per-submission-group locking
+        return await self._process_trigger_entries(course_id, trigger_entries)
+
+    async def _classify_unread_for_course(self, course_id: str) -> list[tuple]:
         """
-        processed_count = 0
+        Phase 1: list unread messages and classify them into trigger entries.
+
+        Returns a list of (msg, submission_group_id, root_message_id_or_None)
+        tuples. On error returns [] so the scheduler keeps running.
+        """
         response_tag = f"#{self.trigger_config.response_tag_string}"
         request_tags_with_hash = [f"#{t}" for t in self.trigger_config.request_tag_strings]
 
@@ -321,6 +338,8 @@ class WebSocketScheduler:
         # reply sitting past position 100 in a course with a large backlog of
         # unread #ai requests doesn't get clipped out of view.
         MESSAGES_LIMIT = 1000
+
+        trigger_entries: list[tuple] = []
 
         try:
             # 1. Fetch tagged unread messages (direct triggers).
@@ -332,13 +351,15 @@ class WebSocketScheduler:
                 limit=MESSAGES_LIMIT,
             )
 
-            # Each entry: (msg, submission_group_id, thread_or_None).
-            # Messages without a resolvable submission_group_id are dropped silently
-            # here so they don't show up in "Found N" and spam skip-logs each poll.
-            trigger_entries: list[tuple] = []
+            # Each entry: (msg, submission_group_id, root_message_id_or_None).
+            # For direct triggers root_id stays None — _process_message uses the
+            # message_id itself as root in that case.
+            # Messages without a resolvable submission_group_id are dropped
+            # silently here so they don't show up in "Found N" and spam
+            # skip-logs each poll.
             dropped_no_sg = 0
             for m in (tagged_messages or []):
-                if response_tag in (getattr(m, "title", "") or ""):
+                if self._match_tag(response_tag, getattr(m, "title", "") or ""):
                     continue
                 if getattr(m, "is_deleted", False):
                     continue
@@ -361,7 +382,9 @@ class WebSocketScheduler:
             reject_counts: dict[str, int] = {}
             thread_errors: list[str] = []
             accepted_ids: list[str] = []
+            to_ack: list[str] = []  # non-actionable msg_ids — flushed below
 
+            cache_hits = 0
             for msg in (all_unread or []):
                 msg_id = getattr(msg, "id", "?")
                 title = getattr(msg, "title", "") or ""
@@ -369,19 +392,50 @@ class WebSocketScheduler:
 
                 if getattr(msg, "is_deleted", False):
                     reject_counts["deleted"] = reject_counts.get("deleted", 0) + 1
+                    to_ack.append(msg_id)
                     continue
 
-                has_request_tag = any(tag in title for tag in request_tags_with_hash)
-                has_response_tag = response_tag in title
+                # Use the regex helper, not substring `in`, so "#ai" doesn't
+                # match "#ai-response" (which would mis-bucket the agent's
+                # own replies as request-tag matches).
+                has_request_tag = any(self._match_tag(tag, title) for tag in request_tags_with_hash)
+                has_response_tag = self._match_tag(response_tag, title)
                 if has_request_tag:
+                    # Don't ack — these are real triggers being processed via
+                    # the tagged_messages loop; the processing path marks read.
                     reject_counts["has-request-tag"] = reject_counts.get("has-request-tag", 0) + 1
                     continue
                 if has_response_tag:
+                    # The agent's own past replies. Drain from unread so they
+                    # don't push new triggers past the per-page cap.
                     reject_counts["has-response-tag"] = reject_counts.get("has-response-tag", 0) + 1
+                    to_ack.append(msg_id)
                     continue
                 if not parent_id:
+                    # Parentless untagged messages are never follow-ups;
+                    # remember so we don't re-evaluate them on every poll,
+                    # and ack so they leave the unread list.
+                    self._set_reply_decision(msg_id, has_ai=False)
                     reject_counts["no-parent"] = reject_counts.get("no-parent", 0) + 1
+                    to_ack.append(msg_id)
                     continue
+
+                # Fast-path: skip the thread API call if we already classified
+                # this reply (or any sibling already pulled its thread).
+                cached = self._get_reply_decision(msg_id)
+                if cached is not None:
+                    cache_hits += 1
+                    if not cached["has_ai"]:
+                        reject_counts["cached:no-ai"] = reject_counts.get("cached:no-ai", 0) + 1
+                        continue
+                    sg = getattr(msg, "submission_group_id", None) or cached.get("sg")
+                    root_id = cached.get("root_id")
+                    if sg and root_id:
+                        accepted_ids.append(msg_id)
+                        trigger_entries.append((msg, sg, root_id))
+                        continue
+                    # Cache lacks sg or root — drop and refetch below.
+                    self._reply_decisions.pop(msg_id, None)
 
                 try:
                     thread_raw = await self.client.messages.thread(msg.id)
@@ -391,11 +445,29 @@ class WebSocketScheduler:
                     continue
 
                 has_ai = any(
-                    response_tag in (getattr(m, "title", "") or "")
+                    self._match_tag(response_tag, getattr(m, "title", "") or "")
                     for m in thread.messages
                 )
+                root_id = getattr(thread, "root_message_id", None)
+
+                # Populate cache for every message in this thread so siblings
+                # encountered later in this loop or on the next poll skip
+                # the API.
+                for m in thread.messages:
+                    m_id = getattr(m, "id", None)
+                    if m_id:
+                        self._set_reply_decision(
+                            m_id,
+                            has_ai=has_ai,
+                            root_id=root_id,
+                            sg=getattr(m, "submission_group_id", None),
+                        )
+
                 if not has_ai:
                     reject_counts["no-ai-in-thread"] = reject_counts.get("no-ai-in-thread", 0) + 1
+                    # Replies in non-AI threads aren't ours to handle; ack so
+                    # they don't accumulate in the unread list.
+                    to_ack.append(msg_id)
                     continue
 
                 sg = getattr(msg, "submission_group_id", None)
@@ -410,12 +482,31 @@ class WebSocketScheduler:
                     continue
 
                 accepted_ids.append(msg_id)
-                trigger_entries.append((msg, sg, thread))
+                trigger_entries.append((msg, sg, root_id))
+
+            # Drain non-actionable messages from the agent's unread inbox.
+            # Bounded concurrency so a 1000-message backlog doesn't slam the
+            # backend. Errors are swallowed inside _ack_unread.
+            acked = 0
+            if to_ack:
+                ack_sem = asyncio.Semaphore(8)
+
+                async def _bounded_ack(mid: str) -> None:
+                    async with ack_sem:
+                        await self._ack_unread(mid)
+
+                await asyncio.gather(
+                    *(_bounded_ack(mid) for mid in to_ack),
+                    return_exceptions=True,
+                )
+                acked = len(to_ack)
 
             log_parts = [
                 f"tagged={len(tagged_messages or [])}",
                 f"all_unread={len(all_unread or [])}",
                 f"dropped_no_sg={dropped_no_sg}",
+                f"cache_hits={cache_hits}",
+                f"acked={acked}",
                 f"triggers={len(trigger_entries)}",
             ]
             if reject_counts:
@@ -433,15 +524,33 @@ class WebSocketScheduler:
                     f"until the tutor's unread backlog is reduced."
                 )
 
-            if not trigger_entries:
-                return 0
+        except Exception as e:
+            logger.warning(f"Error classifying unread messages for course {course_id}: {e}")
+            return []
 
-            # 3. Process each message with per-submission-group locking
-            for msg, submission_group_id, thread in trigger_entries:
+        return trigger_entries
+
+    async def _process_trigger_entries(
+        self, course_id: str, trigger_entries: list[tuple]
+    ) -> int:
+        """
+        Phase 2: process each classified trigger entry.
+
+        Runs without the per-course lock so a new WebSocket event arriving
+        during a long LLM call can immediately kick off a fresh classification
+        pass for the same course. The per-submission-group lock,
+        last_message_id check, and cooldown together prevent two concurrent
+        passes from processing the same message twice.
+        """
+        request_tags_with_hash = [f"#{t}" for t in self.trigger_config.request_tag_strings]
+        processed_count = 0
+
+        try:
+            for msg, submission_group_id, thread_root_id in trigger_entries:
                 message_id = getattr(msg, "id", "")
                 title = getattr(msg, "title", "") or ""
                 is_follow_up = bool(
-                    not any(tag in title for tag in request_tags_with_hash)
+                    not any(self._match_tag(tag, title) for tag in request_tags_with_hash)
                     and msg.parent_id
                 )
 
@@ -472,8 +581,6 @@ class WebSocketScheduler:
                     )
                     self._metrics.message_skipped(course_id)
                     continue
-
-                thread_root_id = thread.root_message_id if thread else None
 
                 trigger_type = "follow-up" if is_follow_up else "direct"
                 logger.info(f"Processing unread {trigger_type} message: {message_id}")
@@ -521,11 +628,16 @@ class WebSocketScheduler:
                     state.last_message_id = message_id
                     state.last_processed = datetime.now()
 
+                    # Our reply just landed in the thread — flip cached
+                    # siblings so they classify as triggers on the next poll
+                    # instead of being held back by a stale "no AI" verdict.
+                    self._mark_thread_has_ai(thread_root_id or message_id)
+
                 processed_count += 1
                 self._metrics.message_succeeded(course_id)
 
         except Exception as e:
-            logger.warning(f"Error processing unread messages for course {course_id}: {e}")
+            logger.warning(f"Error processing trigger entries for course {course_id}: {e}")
 
         return processed_count
 
@@ -672,8 +784,10 @@ class WebSocketScheduler:
         """Route event to appropriate handler."""
         event_type = event.get("type", "")
 
-        # Log routine events at DEBUG level, meaningful events at INFO
-        if event_type in ("system:ping", "system:pong"):
+        # Log routine events at DEBUG level, meaningful events at INFO.
+        # `read:update` is broadcast back for every messages.reads we issue
+        # (a flush of the ack queue can fire hundreds at once); keep it noise.
+        if event_type in ("system:ping", "system:pong", "read:update"):
             logger.debug(f"WebSocket event: {event_type}")
         else:
             logger.info(f"WebSocket event received: type={event_type}")
@@ -825,6 +939,57 @@ class WebSocketScheduler:
         if course_id not in self._course_locks:
             self._course_locks[course_id] = asyncio.Lock()
         return self._course_locks[course_id]
+
+    def _get_reply_decision(self, message_id: str) -> Optional[dict]:
+        """Look up a cached classification, refreshing LRU position on hit."""
+        cached = self._reply_decisions.get(message_id)
+        if cached is not None:
+            self._reply_decisions.move_to_end(message_id)
+        return cached
+
+    def _set_reply_decision(
+        self,
+        message_id: str,
+        *,
+        has_ai: bool,
+        root_id: Optional[str] = None,
+        sg: Optional[str] = None,
+    ) -> None:
+        """Cache a classification, evicting the oldest entry once over the cap."""
+        self._reply_decisions[message_id] = {
+            "has_ai": has_ai,
+            "root_id": root_id,
+            "sg": sg,
+        }
+        self._reply_decisions.move_to_end(message_id)
+        while len(self._reply_decisions) > self._reply_cache_max:
+            self._reply_decisions.popitem(last=False)
+
+    async def _ack_unread(self, message_id: str) -> None:
+        """Best-effort: tell the backend we've seen a non-actionable message.
+
+        Without this, the agent's unread inbox grows unboundedly (parentless
+        posts, replies in non-AI threads, the agent's own AI responses) and
+        eventually pushes new tagged triggers past the per-page cap on the
+        unread list, making them invisible to the scheduler.
+        """
+        try:
+            await self.client.messages.reads(id=message_id)
+        except Exception as e:
+            logger.debug(f"Failed to ack non-actionable message {message_id}: {e}")
+
+    def _mark_thread_has_ai(self, root_id: str) -> None:
+        """Flip every cached entry in this thread to has_ai=True.
+
+        Called after the agent itself posts a response, so untagged siblings
+        still in the unread list classify as triggers on the next poll instead
+        of being held back by a stale 'no AI in this thread' verdict.
+        """
+        if not root_id:
+            return
+        for entry in self._reply_decisions.values():
+            if entry.get("root_id") == root_id and not entry.get("has_ai"):
+                entry["has_ai"] = True
 
     def _evict_stale_states(self) -> None:
         """Remove processing states older than STATE_MAX_AGE to prevent memory leaks.
