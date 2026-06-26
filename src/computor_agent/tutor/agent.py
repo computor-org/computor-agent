@@ -327,24 +327,11 @@ class TutorAgent:
                 context.destroy()
 
     def _format_response_title(self, title: Optional[str], default: str = "") -> str:
+        """Agent replies live in conversational (submission_group) scope, which
+        carries no subject — so they get an empty title. Self-identification is
+        by author_id now, not a response tag.
         """
-        Format the response title with the configured response tag.
-
-        Adds the response tag (e.g., #ai::response) to the title so the
-        trigger checker can identify messages sent by the agent.
-
-        Args:
-            title: Original title (can be None or empty)
-            default: Default title if none provided
-
-        Returns:
-            Title with response tag prepended
-        """
-        response_tag = f"#{self.config.triggers.response_tag_string}"  # e.g., "#ai-response"
-        base_title = title or default
-        if base_title:
-            return f"{response_tag} {base_title}"
-        return response_tag
+        return ""
 
     def _build_system_prompt(self, context: ConversationContext) -> str:
         """Build the unified system prompt with all available context."""

@@ -306,13 +306,20 @@ class TriggerConfig(BaseModel):
         default=False,
         description="If True, message must have ALL request_tags. If False, ANY tag triggers.",
     )
+    agent_user_id: Optional[str] = Field(
+        default=None,
+        description="The agent's own backend user id, resolved at startup. Used to "
+        "self-exclude the agent's own messages and to detect threads it "
+        "participates in (follow-ups) — replacing the legacy response_tag marker.",
+    )
 
     @property
     def is_enabled(self) -> bool:
-        """Check if triggers are enabled. True if enabled is set, or if request_tags are defined."""
+        """Triggers are on by default (mention-based activation). Set
+        ``enabled: false`` in config to turn the agent off."""
         if self.enabled is not None:
             return self.enabled
-        return len(self.request_tags) > 0
+        return True
 
     @property
     def request_tag_strings(self) -> list[str]:

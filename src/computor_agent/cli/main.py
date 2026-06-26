@@ -1051,6 +1051,18 @@ async def _run_tutor_messaging(
                     f"Message processing failed: {processing_result.error}"
                 )
 
+        # Resolve the agent's own backend user id so the trigger checker can
+        # self-exclude its messages and detect threads it participates in
+        # (replaces the legacy #ai-response title tag).
+        try:
+            me = await client.user.list()
+            tutor_config.triggers.agent_user_id = str(me.id)
+            logger.info(f"Agent backend user id resolved: {me.id}")
+        except Exception as e:
+            logger.warning(
+                f"Could not resolve agent user id; follow-up detection will be degraded: {e}"
+            )
+
         # Try WebSocket first, fall back to HTTP polling
         scheduler = None
         use_websocket = False

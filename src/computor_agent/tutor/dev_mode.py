@@ -25,6 +25,11 @@ from rich import print as rprint
 logger = logging.getLogger(__name__)
 console = Console()
 
+# Stable id for the simulated agent user in dev mode. Student messages @mention
+# this id to activate the agent; the agent's own replies are authored by it, so
+# self-exclusion / follow-up detection by author_id works without a backend.
+DEV_AGENT_USER_ID = "dev_ai_tutor"
+
 
 class MockMessageAuthor(BaseModel):
     """Mock message author matching API structure."""
@@ -53,6 +58,7 @@ class MockMessage(BaseModel):
     )
     created_at: datetime = Field(default_factory=datetime.now)
     unread: bool = True
+    mentions_agent: bool = False
 
     def to_dict(self) -> dict:
         """Convert to dict format for agent.process_message()."""
@@ -125,19 +131,21 @@ class MessageSimulator:
         content: str,
         title: str = "",
         parent_id: Optional[str] = None,
-        add_request_tag: bool = False
+        mention_agent: bool = False
     ) -> MockMessage:
-        """Create a new message, optionally as part of a conversation."""
-        if add_request_tag and not title:
-            title = "#ai::request"
-        elif add_request_tag:
-            title = f"#ai::request {title}"
+        """Create a new message, optionally as part of a conversation. When
+        ``mention_agent`` is set, the message @mentions the agent — the new
+        activation signal that replaces the legacy #ai title tag.
+        """
+        if mention_agent:
+            content = f"{content} @[AI Tutor]({DEV_AGENT_USER_ID})".strip()
 
         message = MockMessage(
             content=content,
             title=title,
             parent_id=parent_id,
             submission_group_id=self.current_submission_group_id,
+            mentions_agent=mention_agent,
         )
 
         self.messages[message.id] = message
@@ -234,6 +242,12 @@ class MockMessagesEndpoint:
                 continue
             if kwargs.get("unread") and not msg.unread:
                 continue
+            if kwargs.get("mentions_me") and not msg.mentions_agent:
+                continue
+            if kwargs.get("mentioned_user_id") and not msg.mentions_agent:
+                continue
+            if kwargs.get("author_id") and msg.author_id != kwargs["author_id"]:
+                continue
             if kwargs.get("tags"):
                 tags = kwargs["tags"]
                 if not any(tag in (msg.title or "") for tag in tags):
@@ -256,6 +270,7 @@ class MockMessagesEndpoint:
             title=data.get("title", ""),
             parent_id=data.get("parent_id"),
             submission_group_id=data.get("submission_group_id", self.simulator.current_submission_group_id),
+            author_id=DEV_AGENT_USER_ID,
         )
         self.simulator.messages[message.id] = message
 
@@ -497,10 +512,10 @@ class DevelopmentScheduler:
                         break
                     continue
 
-                # Create a new message with AI request tag
+                # Create a new message that @mentions the agent
                 message = self.simulator.create_message(
                     content=user_input,
-                    add_request_tag=True,
+                    mention_agent=True,
                     parent_id=last_message_id if last_message_id else None
                 )
 
@@ -714,6 +729,9 @@ async def run_development_mode(
             ),
         )
     tutor_config = computor_config.get_tutor_config()
+    # Dev mode has no backend to resolve identity from; pin the simulated id so
+    # self-exclusion and follow-up detection work.
+    tutor_config.triggers.agent_user_id = DEV_AGENT_USER_ID
     console.print(f"[green]✓ Config loaded[/green]")
 
     # --- Phase 2: LLM ---
@@ -820,7 +838,7 @@ async def run_development_mode(
     # --- Phase 6: Run ---
     if is_single_shot:
         console.print(f"\n[bold]Prompt:[/bold] {prompt}")
-        message = simulator.create_message(content=prompt, add_request_tag=True)
+        message = simulator.create_message(content=prompt, mention_agent=True)
         await scheduler._process_message(message)
         await llm_provider.close()
         return

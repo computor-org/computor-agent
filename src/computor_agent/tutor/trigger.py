@@ -173,7 +173,7 @@ class TriggerChecker:
         if not self.config.is_enabled:
             return TriggerCheckResult(
                 should_respond=False,
-                reason="Tag-based triggers are disabled (no request_tags defined)",
+                reason="Triggers are disabled (enabled: false in config)",
             )
 
         try:
@@ -193,7 +193,7 @@ class TriggerChecker:
 
             return TriggerCheckResult(
                 should_respond=False,
-                reason="No unread messages with request tags or follow-ups found",
+                reason="No unread mentions or follow-ups found",
             )
 
         except Exception as e:
@@ -208,54 +208,43 @@ class TriggerChecker:
         submission_group_id: str,
         course_id: str,
     ) -> TriggerCheckResult:
-        """Check for new messages with request tags that start a conversation."""
+        """Check for new unread @mentions of the agent that start a conversation."""
 
         logger.debug(
-            f"Checking for new conversation triggers in {submission_group_id} "
-            f"with tags={self.config.request_tag_strings}"
+            f"Checking for new @mention triggers in {submission_group_id}"
         )
 
-        # Query for messages with request tags
+        # Query unread messages that @mention the agent. ``mentions_me`` resolves
+        # to the authenticated agent server-side, so no user_id is needed here.
         request_messages = await self.messages.list(
             submission_group_id=submission_group_id,
-            tags=self.config.request_tag_strings,
-            tags_match_all=self.config.require_all_tags,
-            unread=True,  # Only unread messages
+            mentions_me=True,
+            unread=True,
         )
 
         logger.debug(
-            f"API returned {len(request_messages) if request_messages else 0} messages "
-            f"for tags={self.config.request_tag_strings}"
+            f"API returned {len(request_messages) if request_messages else 0} unread "
+            f"messages mentioning the agent in {submission_group_id}"
         )
 
         if not request_messages:
             return TriggerCheckResult(
                 should_respond=False,
-                reason="No unread messages with request tags found",
+                reason="No unread messages mentioning the agent",
             )
 
-        # Log each message received
-        for msg in request_messages:
-            msg_title = getattr(msg, "title", "") or ""
-            msg_id = getattr(msg, "id", "")
-            logger.debug(f"  - Message {msg_id}: title='{msg_title}'")
-
-        # Filter out AI's own messages (have response_tag in title)
-        response_tag_hash = f"#{self.config.response_tag_string}"
+        # Defensive self-exclusion by authorship (the agent never mentions
+        # itself, but stay robust). Replaces the legacy response_tag filter.
+        agent_id = self.config.agent_user_id
         filtered_messages = [
             m for m in request_messages
-            if response_tag_hash not in (getattr(m, "title", "") or "")
+            if not agent_id or str(getattr(m, "author_id", "")) != str(agent_id)
         ]
-
-        logger.debug(
-            f"After filtering AI responses (response_tag={response_tag_hash}): "
-            f"{len(filtered_messages)} messages remain"
-        )
 
         if not filtered_messages:
             return TriggerCheckResult(
                 should_respond=False,
-                reason="No unread messages with request tags (excluding AI responses)",
+                reason="No unread mentions (excluding the agent's own messages)",
             )
 
         # Sort by created_at (oldest first to process in order)
@@ -277,7 +266,7 @@ class TriggerChecker:
 
         return TriggerCheckResult(
             should_respond=True,
-            reason=f"New conversation: message with request tag(s): {self.config.request_tag_strings}",
+            reason="New conversation: @mention of the agent",
             message_trigger=trigger,
             root_message_id=message_id,
         )
@@ -308,16 +297,16 @@ class TriggerChecker:
                 reason="No unread messages found",
             )
 
-        # Filter out messages that have request or response tags (already handled)
-        request_tags_with_hash = [f"#{t}" for t in self.config.request_tag_strings]
-        response_tag_with_hash = f"#{self.config.response_tag_string}"
+        # Follow-up candidates: unread replies (parent_id set) not authored by
+        # the agent. Participation is by authorship now, not tags.
+        agent_id = self.config.agent_user_id
         candidates = []
         for msg in unread_messages:
-            title = getattr(msg, "title", "") or ""
-            has_request_tag = any(tag in title for tag in request_tags_with_hash)
-            has_response_tag = response_tag_with_hash in title
-            if not has_request_tag and not has_response_tag and msg.parent_id:
-                candidates.append(msg)
+            if not msg.parent_id:
+                continue
+            if agent_id and str(getattr(msg, "author_id", "")) == str(agent_id):
+                continue
+            candidates.append(msg)
 
         if not candidates:
             return TriggerCheckResult(
@@ -332,8 +321,7 @@ class TriggerChecker:
             key=lambda m: getattr(m, "created_at", datetime.min) or datetime.min
         )
 
-        # Check each candidate's thread for an AI response
-        response_tag = f"#{self.config.response_tag_string}"  # e.g., "#ai-response"
+        # A thread is "the agent's" if the agent authored any message in it.
         for msg in candidates:
             try:
                 thread_raw = await self.messages.thread(msg.id)
@@ -342,15 +330,14 @@ class TriggerChecker:
                 logger.warning(f"Failed to fetch thread for message {msg.id}: {e}")
                 continue
 
-            # Check if any message in the thread has the AI response tag
-            has_ai_response = any(
-                response_tag in (getattr(m, "title", "") or "")
+            has_agent_message = bool(agent_id) and any(
+                str(getattr(m, "author_id", "")) == str(agent_id)
                 for m in thread.messages
             )
 
-            if has_ai_response:
+            if has_agent_message:
                 logger.info(
-                    f"Follow-up detected: message {msg.id} is a reply in an AI conversation "
+                    f"Follow-up detected: message {msg.id} is a reply in an agent conversation "
                     f"(root={thread.root_message_id})"
                 )
 
@@ -362,14 +349,14 @@ class TriggerChecker:
 
                 return TriggerCheckResult(
                     should_respond=True,
-                    reason=f"Follow-up reply in AI conversation (root={thread.root_message_id})",
+                    reason=f"Follow-up reply in agent conversation (root={thread.root_message_id})",
                     message_trigger=trigger,
                     root_message_id=thread.root_message_id,
                 )
 
         return TriggerCheckResult(
             should_respond=False,
-            reason="No unread replies in AI conversation threads",
+            reason="No unread replies in agent conversation threads",
         )
 
     async def _build_message_trigger(
@@ -451,25 +438,20 @@ class TriggerChecker:
                 reason="Artifact is not marked as submit=True",
             )
 
-        # Check if we already responded to this submission group
+        # Check if we already responded to this submission group (the agent
+        # authored any message in it).
         try:
-            response_tag = self.config.response_tag_string
-            existing_responses = await self.messages.list(
-                submission_group_id=submission_group_id,
-                tags=[response_tag],
-            )
-
-            response_tag_hash = f"#{response_tag}"
-            has_response = any(
-                response_tag_hash in (m.title or "")
-                for m in existing_responses
-            )
-
-            if has_response:
-                return TriggerCheckResult(
-                    should_respond=False,
-                    reason=f"Already responded to submission (found {response_tag_hash} tag)",
+            agent_id = self.config.agent_user_id
+            if agent_id:
+                existing = await self.messages.list(
+                    submission_group_id=submission_group_id,
+                    author_id=agent_id,
                 )
+                if existing:
+                    return TriggerCheckResult(
+                        should_respond=False,
+                        reason="Already responded to submission (agent has posted here)",
+                    )
         except Exception as e:
             logger.warning(f"Could not check for existing responses: {e}")
 

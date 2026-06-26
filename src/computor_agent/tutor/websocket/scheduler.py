@@ -331,8 +331,7 @@ class WebSocketScheduler:
         Returns a list of (msg, submission_group_id, root_message_id_or_None)
         tuples. On error returns [] so the scheduler keeps running.
         """
-        response_tag = f"#{self.trigger_config.response_tag_string}"
-        request_tags_with_hash = [f"#{t}" for t in self.trigger_config.request_tag_strings]
+        agent_id = self.trigger_config.agent_user_id
 
         # Raise the per-page limit far above the backend default of 100 so a
         # reply sitting past position 100 in a course with a large backlog of
@@ -345,8 +344,7 @@ class WebSocketScheduler:
             # 1. Fetch tagged unread messages (direct triggers).
             tagged_messages = await self.client.messages.list(
                 course_id=course_id,
-                tags=self.trigger_config.request_tag_strings,
-                tags_match_all=self.trigger_config.require_all_tags,
+                mentions_me=True,
                 unread=True,
                 limit=MESSAGES_LIMIT,
             )
@@ -359,7 +357,7 @@ class WebSocketScheduler:
             # skip-logs each poll.
             dropped_no_sg = 0
             for m in (tagged_messages or []):
-                if self._match_tag(response_tag, getattr(m, "title", "") or ""):
+                if agent_id and str(getattr(m, "author_id", "")) == str(agent_id):
                     continue
                 if getattr(m, "is_deleted", False):
                     continue
@@ -368,6 +366,10 @@ class WebSocketScheduler:
                     dropped_no_sg += 1
                     continue
                 trigger_entries.append((m, sg, None))
+
+            # Ids of the direct @mention triggers, to skip them in the
+            # follow-up (all_unread) pass below.
+            mention_trigger_ids = {getattr(e[0], "id", None) for e in trigger_entries}
 
             # 2. Fetch untagged follow-up replies in AI threads.
             all_unread = await self.client.messages.list(
@@ -395,20 +397,15 @@ class WebSocketScheduler:
                     to_ack.append(msg_id)
                     continue
 
-                # Use the regex helper, not substring `in`, so "#ai" doesn't
-                # match "#ai-response" (which would mis-bucket the agent's
-                # own replies as request-tag matches).
-                has_request_tag = any(self._match_tag(tag, title) for tag in request_tags_with_hash)
-                has_response_tag = self._match_tag(response_tag, title)
-                if has_request_tag:
-                    # Don't ack — these are real triggers being processed via
-                    # the tagged_messages loop; the processing path marks read.
-                    reject_counts["has-request-tag"] = reject_counts.get("has-request-tag", 0) + 1
+                # A message that @mentions the agent is a direct trigger handled
+                # in the tagged loop above; skip it here.
+                if msg_id in mention_trigger_ids:
+                    reject_counts["mention-trigger"] = reject_counts.get("mention-trigger", 0) + 1
                     continue
-                if has_response_tag:
-                    # The agent's own past replies. Drain from unread so they
-                    # don't push new triggers past the per-page cap.
-                    reject_counts["has-response-tag"] = reject_counts.get("has-response-tag", 0) + 1
+                # The agent's own past replies. Drain from unread so they don't
+                # push new triggers past the per-page cap.
+                if agent_id and str(getattr(msg, "author_id", "")) == str(agent_id):
+                    reject_counts["own-message"] = reject_counts.get("own-message", 0) + 1
                     to_ack.append(msg_id)
                     continue
                 if not parent_id:
@@ -444,8 +441,8 @@ class WebSocketScheduler:
                     thread_errors.append(f"{msg_id}:{type(e).__name__}")
                     continue
 
-                has_ai = any(
-                    self._match_tag(response_tag, getattr(m, "title", "") or "")
+                has_ai = bool(agent_id) and any(
+                    str(getattr(m, "author_id", "")) == str(agent_id)
                     for m in thread.messages
                 )
                 root_id = getattr(thread, "root_message_id", None)
@@ -542,17 +539,15 @@ class WebSocketScheduler:
         last_message_id check, and cooldown together prevent two concurrent
         passes from processing the same message twice.
         """
-        request_tags_with_hash = [f"#{t}" for t in self.trigger_config.request_tag_strings]
         processed_count = 0
 
         try:
             for msg, submission_group_id, thread_root_id in trigger_entries:
                 message_id = getattr(msg, "id", "")
-                title = getattr(msg, "title", "") or ""
-                is_follow_up = bool(
-                    not any(self._match_tag(tag, title) for tag in request_tags_with_hash)
-                    and msg.parent_id
-                )
+                # Classification already happened in _classify_unread_for_course:
+                # direct @mention triggers carry root_id=None, follow-ups carry
+                # the thread root id.
+                is_follow_up = thread_root_id is not None
 
                 state = self._get_or_create_state(submission_group_id)
 
@@ -883,7 +878,7 @@ class WebSocketScheduler:
             is_follow_up=is_follow_up,
         )
 
-        reason = "Follow-up reply in AI conversation" if is_follow_up else "WebSocket message:new event with trigger tags"
+        reason = "Follow-up reply in agent conversation" if is_follow_up else "WebSocket message:new event mentioning the agent"
         result = TriggerCheckResult(
             should_respond=True,
             reason=reason,
@@ -906,10 +901,10 @@ class WebSocketScheduler:
         return bool(re.search(r'(?<!\S)' + re.escape(tag_str) + r'(?![\w:-])', title))
 
     def _is_ai_response(self, message_data: dict) -> bool:
-        """Check if message is an AI response (has response tag)."""
-        title = message_data.get("title", "") or ""
-        response_tag = f"#{self.trigger_config.response_tag_string}"  # e.g., "#ai-response"
-        return self._match_tag(response_tag, title)
+        """Whether this message was authored by the agent itself (its own past
+        reply) — identified by author_id now, not a response tag."""
+        agent_id = self.trigger_config.agent_user_id
+        return bool(agent_id) and str(message_data.get("author_id", "")) == str(agent_id)
 
     def _should_skip(self, submission_group_id: str) -> bool:
         """Check if submission group should be skipped due to cooldown."""
