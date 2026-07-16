@@ -351,87 +351,6 @@ class ComputorConfig(BaseModel):
         """
         return cls(**data)
 
-    @classmethod
-    def from_env(cls, prefix: str = "COMPUTOR_") -> "ComputorConfig":
-        """
-        Load configuration from environment variables.
-
-        Environment variables:
-            COMPUTOR_BACKEND_URL - Backend API URL
-            COMPUTOR_BACKEND_API_TOKEN - API token (preferred, format: ctp_<32chars>)
-            COMPUTOR_BACKEND_USERNAME - API username (for basic auth)
-            COMPUTOR_BACKEND_PASSWORD - API password (for basic auth)
-            COMPUTOR_BACKEND_TIMEOUT - Request timeout
-
-            COMPUTOR_AGENT_NAME - Agent name
-            COMPUTOR_AGENT_DESCRIPTION - Agent description
-
-            COMPUTOR_LLM_PROVIDER - LLM provider type
-            COMPUTOR_LLM_MODEL - Model name
-            COMPUTOR_LLM_BASE_URL - LLM API base URL
-            COMPUTOR_LLM_API_KEY - LLM API key
-            COMPUTOR_LLM_TEMPERATURE - Sampling temperature
-            COMPUTOR_LLM_MAX_TOKENS - Max tokens
-
-        Args:
-            prefix: Environment variable prefix
-
-        Returns:
-            ComputorConfig instance
-
-        Raises:
-            ValueError: If required environment variables are missing
-        """
-        # Backend config (required)
-        backend_url = os.environ.get(f"{prefix}BACKEND_URL")
-        backend_api_token = os.environ.get(f"{prefix}BACKEND_API_TOKEN")
-        backend_username = os.environ.get(f"{prefix}BACKEND_USERNAME")
-        backend_password = os.environ.get(f"{prefix}BACKEND_PASSWORD")
-
-        if not backend_url:
-            raise ValueError(f"Missing required environment variable: {prefix}BACKEND_URL")
-
-        # Check for valid auth configuration
-        has_api_token = bool(backend_api_token)
-        has_basic_auth = bool(backend_username and backend_password)
-
-        if not has_api_token and not has_basic_auth:
-            raise ValueError(
-                f"Missing authentication: set {prefix}BACKEND_API_TOKEN "
-                f"or both {prefix}BACKEND_USERNAME and {prefix}BACKEND_PASSWORD"
-            )
-
-        backend = BackendConfig(
-            url=backend_url,
-            api_token=backend_api_token,
-            username=backend_username,
-            password=backend_password,
-            timeout=float(os.environ.get(f"{prefix}BACKEND_TIMEOUT", "30")),
-        )
-
-        # Agent config (optional)
-        agent = AgentConfig(
-            name=os.environ.get(f"{prefix}AGENT_NAME", "Computor Agent"),
-            description=os.environ.get(f"{prefix}AGENT_DESCRIPTION"),
-        )
-
-        # LLM config (optional)
-        llm = None
-        llm_provider = os.environ.get(f"{prefix}LLM_PROVIDER")
-        if llm_provider:
-            llm = LLMSettings(
-                provider=llm_provider,
-                model=os.environ.get(f"{prefix}LLM_MODEL", "gpt-4"),
-                base_url=os.environ.get(f"{prefix}LLM_BASE_URL"),
-                api_key=os.environ.get(f"{prefix}LLM_API_KEY"),
-                temperature=float(os.environ.get(f"{prefix}LLM_TEMPERATURE", "0.7")),
-                max_tokens=int(os.environ.get(f"{prefix}LLM_MAX_TOKENS"))
-                if os.environ.get(f"{prefix}LLM_MAX_TOKENS")
-                else None,
-            )
-
-        return cls(backend=backend, agent=agent, llm=llm)
-
     def to_dict(self, include_secrets: bool = False) -> dict:
         """
         Export configuration to a dictionary.
@@ -538,3 +457,82 @@ class ComputorConfig(BaseModel):
         if self.credentials:
             return GitCredentialsStore.from_dict({"credentials": self.credentials})
         return GitCredentialsStore()
+
+
+# Environment variables the container/start-script path can use to override
+# values from the config file. YAML stays the base; a set (non-empty) variable
+# wins. Every override is re-validated through the same pydantic models as
+# file values.
+_ENV_OVERRIDE_PATHS: dict[str, tuple[str, str]] = {
+    "COMPUTOR_BACKEND_URL": ("backend", "url"),
+    "COMPUTOR_BACKEND_API_TOKEN": ("backend", "api_token"),
+    "COMPUTOR_BACKEND_USERNAME": ("backend", "username"),
+    "COMPUTOR_BACKEND_PASSWORD": ("backend", "password"),
+    "COMPUTOR_LLM_PROVIDER": ("llm", "provider"),
+    "COMPUTOR_LLM_MODEL": ("llm", "model"),
+    "COMPUTOR_LLM_BASE_URL": ("llm", "base_url"),
+    "COMPUTOR_LLM_API_KEY": ("llm", "api_key"),
+}
+
+
+def apply_env_overrides(
+    config: ComputorConfig,
+    environ: Optional[dict[str, str]] = None,
+) -> ComputorConfig:
+    """
+    Overlay COMPUTOR_* environment variables onto a loaded configuration.
+
+    Supported variables (see _ENV_OVERRIDE_PATHS), plus:
+        COMPUTOR_WORKERS -> tutor.scheduler.max_concurrent_processing
+            (the worker count: how many messages are processed concurrently)
+
+    Args:
+        config: Configuration loaded from file
+        environ: Environment mapping (defaults to os.environ; injectable for tests)
+
+    Returns:
+        A new re-validated ComputorConfig with overrides applied, or the
+        original instance when no supported variable is set.
+
+    Raises:
+        ValueError: If COMPUTOR_WORKERS is not an integer between 1 and 50.
+    """
+    env = os.environ if environ is None else environ
+
+    # mode="python" keeps SecretStr values intact so re-validation does not
+    # destroy secrets loaded from the file (unlike to_dict, which masks them).
+    data = config.model_dump(mode="python")
+
+    changed = False
+    for var, (section, key) in _ENV_OVERRIDE_PATHS.items():
+        value = env.get(var)
+        if not value:
+            continue
+        if data.get(section) is None:
+            data[section] = {}
+        data[section][key] = value
+        changed = True
+
+    workers = env.get("COMPUTOR_WORKERS")
+    if workers:
+        try:
+            workers_int = int(workers)
+        except ValueError as e:
+            raise ValueError(
+                f"COMPUTOR_WORKERS must be an integer, got {workers!r}"
+            ) from e
+        if not 1 <= workers_int <= 50:
+            raise ValueError(
+                f"COMPUTOR_WORKERS must be between 1 and 50, got {workers_int}"
+            )
+        tutor = data.get("tutor") or {}
+        scheduler = tutor.get("scheduler") or {}
+        scheduler["max_concurrent_processing"] = workers_int
+        tutor["scheduler"] = scheduler
+        data["tutor"] = tutor
+        changed = True
+
+    if not changed:
+        return config
+
+    return ComputorConfig.from_dict(data)

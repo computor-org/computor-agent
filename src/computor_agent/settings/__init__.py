@@ -35,6 +35,7 @@ from computor_agent.settings.config import (
     AgentConfig,
     LLMSettings,
     ComputorConfig,
+    apply_env_overrides,
 )
 
 __all__ = [
@@ -47,4 +48,5 @@ __all__ = [
     "AgentConfig",
     "LLMSettings",
     "ComputorConfig",
+    "apply_env_overrides",
 ]

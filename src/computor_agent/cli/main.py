@@ -571,6 +571,16 @@ def tutor():
     show_default=True,
     help="Seconds between LLM liveness probes. Set 0 to disable.",
 )
+@click.option(
+    "--workers",
+    "-w",
+    type=click.IntRange(1, 50),
+    default=None,
+    help=(
+        "Worker count: how many messages are processed concurrently. "
+        "Overrides COMPUTOR_WORKERS and the config file."
+    ),
+)
 def messaging(
     config: Optional[str],
     verbose: bool,
@@ -584,6 +594,7 @@ def messaging(
     api_port: Optional[int],
     api_host: str,
     llm_probe_interval: float,
+    workers: Optional[int],
 ):
     """
     Start the messaging tutor agent.
@@ -649,10 +660,18 @@ def messaging(
         return
 
     try:
-        from computor_agent.settings import ComputorConfig
+        from computor_agent.settings import ComputorConfig, apply_env_overrides
 
         logger.info(f"Loading config from {config_path}")
         computor_config = ComputorConfig.from_file(config_path)
+
+        # COMPUTOR_* environment variables win over the config file...
+        computor_config = apply_env_overrides(computor_config)
+        # ...and an explicit --workers flag wins over both.
+        if workers is not None:
+            computor_config = apply_env_overrides(
+                computor_config, {"COMPUTOR_WORKERS": str(workers)}
+            )
 
         tutor_config = computor_config.get_tutor_config()
         git_credentials = computor_config.get_credentials_store()

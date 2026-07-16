@@ -777,52 +777,66 @@ llm:
 class TestComputorConfigEnv:
     """Tests for environment-based ComputorConfig."""
 
-    def test_from_env(self):
-        """Test loading config from environment variables."""
-        os.environ["COMPUTOR_BACKEND_URL"] = "https://api.example.com"
-        os.environ["COMPUTOR_BACKEND_USERNAME"] = "tutor"
-        os.environ["COMPUTOR_BACKEND_PASSWORD"] = "secret"
-        os.environ["COMPUTOR_AGENT_NAME"] = "Env Agent"
-        os.environ["COMPUTOR_LLM_PROVIDER"] = "openai"
-        os.environ["COMPUTOR_LLM_MODEL"] = "gpt-4"
+    def _base_config(self) -> ComputorConfig:
+        from computor_agent.settings.config import ComputorConfig
 
-        try:
-            config = ComputorConfig.from_env()
-            assert config.backend.url == "https://api.example.com"
-            assert config.backend.username == "tutor"
-            assert config.backend.get_password() == "secret"
-            assert config.agent.name == "Env Agent"
-            assert config.llm.provider == "openai"
-            assert config.llm.model == "gpt-4"
-        finally:
-            # Clean up
-            for key in list(os.environ.keys()):
-                if key.startswith("COMPUTOR_"):
-                    del os.environ[key]
+        return ComputorConfig.from_dict({
+            "backend": {"url": "https://api.example.com", "api_token": "ctp_" + "a" * 32},
+            "llm": {"provider": "openai", "model": "file-model"},
+            "credentials": [{"pattern": "https://gitlab.example.com", "token": "glpat-x"}],
+            "tutor": {"scheduler": {"cooldown_seconds": 42}},
+        })
 
-    def test_from_env_missing_required(self):
-        """Test error when required env vars are missing."""
-        # Clean any existing vars
-        for key in list(os.environ.keys()):
-            if key.startswith("COMPUTOR_"):
-                del os.environ[key]
+    def test_apply_env_overrides_workers(self):
+        """COMPUTOR_WORKERS maps to tutor.scheduler.max_concurrent_processing
+        without disturbing the rest of the config."""
+        from computor_agent.settings.config import apply_env_overrides
 
-        with pytest.raises(ValueError, match="Missing required"):
-            ComputorConfig.from_env()
+        config = self._base_config()
+        result = apply_env_overrides(config, {"COMPUTOR_WORKERS": "8"})
 
-    def test_from_env_custom_prefix(self):
-        """Test loading with custom prefix."""
-        os.environ["MY_APP_BACKEND_URL"] = "https://api.example.com"
-        os.environ["MY_APP_BACKEND_USERNAME"] = "user"
-        os.environ["MY_APP_BACKEND_PASSWORD"] = "pass"
+        assert result.tutor["scheduler"]["max_concurrent_processing"] == 8
+        assert result.tutor["scheduler"]["cooldown_seconds"] == 42
+        assert result.credentials[0]["token"] == "glpat-x"
+        assert result.backend.get_api_token() == "ctp_" + "a" * 32
 
-        try:
-            config = ComputorConfig.from_env(prefix="MY_APP_")
-            assert config.backend.url == "https://api.example.com"
-        finally:
-            for key in list(os.environ.keys()):
-                if key.startswith("MY_APP_"):
-                    del os.environ[key]
+    def test_apply_env_overrides_secrets_stay_secret(self):
+        """Overridden and passed-through secrets land as SecretStr."""
+        from pydantic import SecretStr
+
+        from computor_agent.settings.config import apply_env_overrides
+
+        config = self._base_config()
+        result = apply_env_overrides(
+            config,
+            {"COMPUTOR_LLM_API_KEY": "sk-test", "COMPUTOR_LLM_MODEL": "env-model"},
+        )
+
+        assert isinstance(result.llm.api_key, SecretStr)
+        assert result.llm.get_api_key() == "sk-test"
+        assert result.llm.model == "env-model"
+        assert isinstance(result.backend.api_token, SecretStr)
+        assert "sk-test" not in repr(result)
+
+    def test_apply_env_overrides_invalid_workers(self):
+        from computor_agent.settings.config import apply_env_overrides
+
+        config = self._base_config()
+
+        with pytest.raises(ValueError, match="must be an integer"):
+            apply_env_overrides(config, {"COMPUTOR_WORKERS": "abc"})
+        with pytest.raises(ValueError, match="between 1 and 50"):
+            apply_env_overrides(config, {"COMPUTOR_WORKERS": "0"})
+        with pytest.raises(ValueError, match="between 1 and 50"):
+            apply_env_overrides(config, {"COMPUTOR_WORKERS": "51"})
+
+    def test_apply_env_overrides_noop_without_vars(self):
+        """No supported variable set: the original instance is returned."""
+        from computor_agent.settings.config import apply_env_overrides
+
+        config = self._base_config()
+        assert apply_env_overrides(config, {}) is config
+        assert apply_env_overrides(config, {"UNRELATED": "x"}) is config
 
 
 class TestSecureRepresentations:
