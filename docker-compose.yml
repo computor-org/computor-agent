@@ -1,10 +1,10 @@
 # Computor Agent - Docker Compose
 #
-# Usage:
-#   1. Copy docker/config.example.yaml to config.yaml and edit it
-#   2. Start: docker compose up -d
-#   3. Logs:  docker compose logs -f
-#   4. Stop:  docker compose down
+# Quick start (see also ./start.sh):
+#   1. Copy config.example.yaml to config.yaml and edit it
+#   2. Start: ./start.sh --workers 8        (or: WORKERS=8 docker compose up -d)
+#   3. Logs:  ./start.sh logs               (or: docker compose logs -f)
+#   4. Stop:  ./start.sh down               (or: docker compose down)
 
 services:
   computor-agent:
@@ -12,19 +12,31 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     container_name: computor-agent
+    init: true
 
     # Mount config file (required)
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - computor-workspace:/data/workspace
 
+    environment:
+      # Worker count: how many messages are processed concurrently.
+      # Set via ./start.sh --workers N or WORKERS=N docker compose up -d.
+      # Any other COMPUTOR_* variable (see docker/README.md) can be added here.
+      COMPUTOR_WORKERS: ${WORKERS:-4}
+
+    # Dashboard + health endpoint, reachable from the host only
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8080}:8080"
+
     # Allow container to reach LLM on host machine and external services
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-    # Default command: run messaging agent
-    command: ["computor-agent", "tutor", "messaging", "-c", "/app/config.yaml"]
-
+    # Docker restarts the container when the process EXITS, not when the
+    # healthcheck reports unhealthy. The agent exits nonzero on unrecoverable
+    # errors (auth failure, unexpected crash), which is what triggers this
+    # policy; recoverable connection losses are retried in-process forever.
     restart: unless-stopped
 
 volumes:

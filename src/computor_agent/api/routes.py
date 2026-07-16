@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -36,6 +36,26 @@ def build_router(
                 "tracked_groups": 0,
                 "active_typing": 0,
             }
+
+    @router.get("/healthz")
+    def healthz(response: Response) -> dict:
+        """Strict liveness probe for container orchestration.
+
+        HTTP 200 only when the scheduler is running and the WebSocket is
+        connected; 503 otherwise. LLM state is deliberately ignored:
+        restarting the container cannot fix an LLM outage and the agent
+        retries LLM calls on its own (see /health for the full picture).
+        """
+        s = _scheduler_stats()
+        running = bool(s.get("running"))
+        connected = bool(s.get("connected"))
+        healthy = running and connected
+        response.status_code = 200 if healthy else 503
+        return {
+            "status": "ok" if healthy else "unavailable",
+            "scheduler_running": running,
+            "ws_connected": connected,
+        }
 
     @router.get("/health")
     def health() -> dict:
