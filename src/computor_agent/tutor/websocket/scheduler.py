@@ -541,9 +541,9 @@ class WebSocketScheduler:
         """
         processed_count = 0
 
-        try:
-            for msg, submission_group_id, thread_root_id in trigger_entries:
-                message_id = getattr(msg, "id", "")
+        for msg, submission_group_id, thread_root_id in trigger_entries:
+            message_id = getattr(msg, "id", "")
+            try:
                 # Classification already happened in _classify_unread_for_course:
                 # direct @mention triggers carry root_id=None, follow-ups carry
                 # the thread root id.
@@ -584,7 +584,7 @@ class WebSocketScheduler:
                 message_data = {
                     "id": message_id,
                     "content": getattr(msg, "content", "") or "",
-                    "title": title,
+                    "title": getattr(msg, "title", "") or "",
                     "author_id": getattr(msg, "author_id", "") or "",
                     "submission_group_id": submission_group_id,
                 }
@@ -631,8 +631,12 @@ class WebSocketScheduler:
                 processed_count += 1
                 self._metrics.message_succeeded(course_id)
 
-        except Exception as e:
-            logger.warning(f"Error processing trigger entries for course {course_id}: {e}")
+            except Exception as e:
+                logger.warning(
+                    f"Error processing trigger entry {message_id} for course "
+                    f"{course_id}: {e}"
+                )
+                self._metrics.message_failed(course_id)
 
         return processed_count
 
