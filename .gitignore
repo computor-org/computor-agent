@@ -211,3 +211,11 @@ config.yaml
 credentials.yaml
 
 prompts/*
+
+# Research / evaluation artifacts (produced by scripts/)
+output/
+results/
+scenarios/
+paper/
+report-intermediate/
+commit.sh
