@@ -8,19 +8,16 @@ This module provides a development environment where you can:
 - Simulate different student contexts
 """
 
-import asyncio
-import json
 import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Dict, List
+from typing import Optional, Dict, List
 from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
-from rich import print as rprint
 
 logger = logging.getLogger(__name__)
 console = Console()

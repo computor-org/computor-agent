@@ -7,7 +7,7 @@ to track student progress, issues, or other notes.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 

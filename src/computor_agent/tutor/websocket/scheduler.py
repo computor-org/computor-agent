@@ -391,7 +391,6 @@ class WebSocketScheduler:
             cache_hits = 0
             for msg in (all_unread or []):
                 msg_id = getattr(msg, "id", "?")
-                title = getattr(msg, "title", "") or ""
                 parent_id = getattr(msg, "parent_id", None)
 
                 if getattr(msg, "is_deleted", False):

@@ -30,6 +30,7 @@ from computor_agent.tutor.services.history import HistoryService
 from computor_agent.tutor.services.progress import ProgressService
 
 if TYPE_CHECKING:
+    from computor_agent.tutor.assignment_loader import AssignmentContext
     from computor_agent.tutor.config import ContextConfig
 
 logger = logging.getLogger(__name__)

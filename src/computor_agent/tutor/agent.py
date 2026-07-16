@@ -17,7 +17,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 # Import API types from computor-types (source of truth)
 from computor_types.student_course_contents import CourseContentStudentGet
@@ -29,6 +29,9 @@ from computor_agent.tutor.intents import IntentClassification, IntentClassifier
 from computor_agent.tutor.prompts.templates import TUTOR_SYSTEM_PROMPT, PERSONALITY_PROMPTS
 from computor_agent.tutor.security import SecurityCheckResult, SecurityGate
 from computor_agent.tutor.strategies import StrategyRegistry, StrategyResponse
+
+if TYPE_CHECKING:
+    from computor_agent.tutor.assignment_loader import AssignmentContext
 
 logger = logging.getLogger(__name__)
 

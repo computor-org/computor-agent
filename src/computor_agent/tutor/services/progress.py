@@ -7,7 +7,6 @@ context-aware feedback based on overall student performance.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)

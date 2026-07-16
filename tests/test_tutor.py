@@ -2,15 +2,10 @@
 Tests for the Tutor AI Agent module.
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock
-from pathlib import Path
+from unittest.mock import MagicMock
 
 from computor_agent.tutor import (
     TutorConfig,
-    PersonalityConfig,
-    SecurityConfig,
-    ContextConfig,
     Intent,
     IntentClassification,
     TriggerType,
@@ -20,13 +15,10 @@ from computor_agent.tutor import (
 )
 from computor_agent.tutor.context import (
     MessageInfo,
-    SubmissionInfo,
     StudentInfo,
-    AssignmentInfo,
     CodeContext,
 )
 from computor_agent.tutor.security.types import ThreatDetection, SecurityCheckResult
-from computor_agent.tutor.intents.types import IntentClassification
 
 
 class TestTutorConfig:

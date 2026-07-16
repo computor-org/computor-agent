@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 class PersonalityTone(str, Enum):
@@ -582,25 +582,9 @@ class TutorConfig(BaseModel):
         Raises:
             FileNotFoundError: If file doesn't exist
         """
-        path = Path(path).expanduser().resolve()
+        from computor_agent.settings.config import load_config_data
 
-        if not path.exists():
-            raise FileNotFoundError(f"Configuration file not found: {path}")
-
-        content = path.read_text()
-
-        if path.suffix in (".yaml", ".yml"):
-            data = yaml.safe_load(content)
-        elif path.suffix == ".json":
-            data = json.loads(content)
-        else:
-            # Try YAML first, then JSON
-            try:
-                data = yaml.safe_load(content)
-            except Exception:
-                data = json.loads(content)
-
-        return cls.model_validate(data or {})
+        return cls.model_validate(load_config_data(path))
 
     @classmethod
     def from_dict(cls, data: dict) -> "TutorConfig":

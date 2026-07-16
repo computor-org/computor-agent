@@ -12,7 +12,36 @@ from typing import Any, Optional, Union
 
 import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def load_config_data(path: Union[str, Path]) -> dict:
+    """Read a YAML or JSON config file into a dict.
+
+    The format is sniffed from the suffix; unknown suffixes try YAML first,
+    then JSON.
+
+    Raises:
+        FileNotFoundError: If the file doesn't exist.
+    """
+    path = Path(path).expanduser().resolve()
+
+    if not path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {path}")
+
+    content = path.read_text()
+
+    if path.suffix in (".yaml", ".yml"):
+        data = yaml.safe_load(content)
+    elif path.suffix == ".json":
+        data = json.loads(content)
+    else:
+        # Try YAML first, then JSON
+        try:
+            data = yaml.safe_load(content)
+        except Exception:
+            data = json.loads(content)
+
+    return data or {}
 
 
 class BackendConfig(BaseModel):
@@ -318,25 +347,7 @@ class ComputorConfig(BaseModel):
         Raises:
             FileNotFoundError: If the config file doesn't exist
         """
-        path = Path(path).expanduser().resolve()
-
-        if not path.exists():
-            raise FileNotFoundError(f"Configuration file not found: {path}")
-
-        content = path.read_text()
-
-        if path.suffix in (".yaml", ".yml"):
-            data = yaml.safe_load(content)
-        elif path.suffix == ".json":
-            data = json.loads(content)
-        else:
-            # Try YAML first, then JSON
-            try:
-                data = yaml.safe_load(content)
-            except Exception:
-                data = json.loads(content)
-
-        return cls.from_dict(data)
+        return cls.from_dict(load_config_data(path))
 
     @classmethod
     def from_dict(cls, data: dict) -> "ComputorConfig":

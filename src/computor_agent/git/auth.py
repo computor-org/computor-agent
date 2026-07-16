@@ -5,7 +5,6 @@ This module provides functions for handling Git authentication,
 including injecting tokens into HTTPS URLs for various providers.
 """
 
-import re
 from enum import Enum
 from typing import Optional
 from urllib.parse import urlparse, urlunparse

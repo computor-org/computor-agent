@@ -1,6 +1,5 @@
 """Tests for Git interface."""
 
-import os
 import tempfile
 from pathlib import Path
 

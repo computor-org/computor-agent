@@ -194,6 +194,7 @@ __all__ = [
     "TriggerChecker",
     "TriggerCheckResult",
     "MessageTrigger",
+    "SubmissionTrigger",
     "should_tutor_respond",
     "STAFF_ROLES",
     # Configuration

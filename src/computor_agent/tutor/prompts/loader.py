@@ -4,12 +4,10 @@ Prompt loader for reading prompts from markdown files.
 Supports hot reloading in development mode.
 """
 
-import os
 import re
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Any
-from datetime import datetime
+from typing import Dict, Optional
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 

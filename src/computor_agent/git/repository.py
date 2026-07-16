@@ -6,7 +6,6 @@ designed for use by AI agents. It wraps GitPython for convenient access
 to repository data and operations.
 """
 
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +31,6 @@ from computor_agent.git.exceptions import (
 )
 from computor_agent.git.auth import (
     GitCredentials,
-    GitProvider,
     inject_credentials,
     mask_credentials,
 )

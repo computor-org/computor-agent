@@ -471,9 +471,9 @@ class ComputorWebSocket:
             # Parse connection details from error message
             error_str = str(e)
 
-            # Extract errno description (e.g., "[Errno 113] Connect call failed")
+            # Keep the raw message when it carries an errno description
+            # (e.g., "[Errno 113] Connect call failed")
             if "[Errno" in error_str and "]" in error_str:
-                errno_desc = error_str[error_str.index("["):error_str.index("]")+1]
                 details["message"] = error_str
 
             # Extract host and port from error message

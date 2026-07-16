@@ -6,7 +6,6 @@ Provides automated grading of student submissions using LLM.
 
 import json
 import logging
-import re
 from typing import Callable, Optional, Protocol
 
 from computor_agent.tutor.grading.models import (

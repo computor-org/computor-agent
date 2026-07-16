@@ -5,7 +5,7 @@ This module provides a factory for creating LLM providers based on configuration
 It supports registering custom providers and selecting providers by type.
 """
 
-from typing import Callable, Optional, Type
+from typing import Callable, Optional
 
 from computor_agent.llm.base import LLMProvider
 from computor_agent.llm.config import DummyProviderConfig, LLMConfig, ProviderType

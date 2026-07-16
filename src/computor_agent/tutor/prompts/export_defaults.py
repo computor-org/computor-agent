@@ -5,7 +5,6 @@ Export default prompts to markdown files.
 This utility creates the default prompt files in markdown format.
 """
 
-import os
 from pathlib import Path
 from typing import Optional
 

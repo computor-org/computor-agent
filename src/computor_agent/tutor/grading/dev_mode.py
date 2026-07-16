@@ -7,7 +7,6 @@ Allows testing the grading system locally without API calls:
 - Run grading and display results
 """
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Optional
@@ -15,7 +14,6 @@ from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich import print as rprint
 
 from computor_agent.tutor.assignment_loader import AssignmentLoader, AssignmentFile
 from computor_agent.tutor.grading.models import (
