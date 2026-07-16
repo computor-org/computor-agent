@@ -8,6 +8,7 @@ receive every message the agent has read access to, across every scope.
 
 import asyncio
 import logging
+import random
 import re
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from computor_types.messages import MessageThread
 
 from computor_agent.api.metrics import MetricsCollector
 from computor_agent.tutor.config import TriggerConfig
+from computor_agent.tutor.errors import AuthFatalError, is_auth_error
 from computor_agent.tutor.websocket.client import ComputorWebSocket, WebSocketError
 from computor_agent.tutor.websocket.typing_manager import TypingManager
 
@@ -78,7 +80,7 @@ class WebSocketScheduler:
         on_message_trigger: Optional[Callable] = None,
         cooldown_seconds: int = 60,
         max_concurrent_processing: int = 5,
-        reconnect_delay_seconds: float = 30.0,
+        reconnect_delay_seconds: float = 5.0,
         max_reconnect_attempts: int = 0,  # 0 = unlimited
         token_provider: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
         metrics: Optional[MetricsCollector] = None,
@@ -119,7 +121,6 @@ class WebSocketScheduler:
         self._course_ids: list[str] = []
         self._subscribed_channels: set[str] = set()  # Track subscribed channels
         self._running = False
-        self._reconnect_count = 0
         self._consecutive_auth_failures = 0
         self._event_task: Optional[asyncio.Task] = None
         self._periodic_catchup_task: Optional[asyncio.Task] = None
@@ -186,7 +187,10 @@ class WebSocketScheduler:
         except asyncio.CancelledError:
             logger.info("WebSocket scheduler cancelled")
         except (WebSocketError, asyncio.TimeoutError) as e:
-            # Initial connection failed (including timeout) - attempt reconnection
+            # Initial connection failed (including timeout) - attempt reconnection.
+            # _reconnect raises on unrecoverable failures (auth exhaustion,
+            # attempt limit); anything else propagates to the runner, which
+            # shuts the process down with a nonzero exit code.
             logger.warning(f"Initial WebSocket connection failed: {e}")
             if self._running:
                 reconnected = await self._reconnect()
@@ -198,10 +202,6 @@ class WebSocketScheduler:
                         await self._event_task
                     except asyncio.CancelledError:
                         logger.info("WebSocket scheduler cancelled")
-                else:
-                    logger.error("Failed to establish WebSocket connection")
-        except Exception as e:
-            logger.error(f"Unexpected error in WebSocket scheduler: {e}")
         finally:
             self._running = False
 
@@ -251,9 +251,8 @@ class WebSocketScheduler:
             self._course_ids = [c.id for c in courses if c.id]
             logger.info(f"Discovered {len(self._course_ids)} course(s)")
         except Exception as e:
-            error_str = str(e)
-            # Check if it's an authorization error - stop immediately
-            if "401" in error_str or "Unauthorized" in error_str:
+            # Authorization errors stop the scheduler immediately
+            if is_auth_error(e):
                 logger.error(f"Authentication failed: {e}")
                 logger.error("The worker cannot continue without valid credentials. Please check your login.")
                 # Re-raise to stop the scheduler
@@ -663,10 +662,10 @@ class WebSocketScheduler:
                 if not self._running:
                     break
 
-                # Attempt to reconnect
-                reconnected = await self._reconnect()
-                if not reconnected:
-                    logger.error("Failed to reconnect after maximum attempts")
+                # Reconnect. Unrecoverable failures (auth exhaustion, attempt
+                # limit) raise out of the loop; False only means a clean
+                # shutdown happened during the backoff wait.
+                if not await self._reconnect():
                     break
 
     async def _periodic_catchup_loop(self) -> None:
@@ -690,94 +689,113 @@ class WebSocketScheduler:
 
     async def _reconnect(self) -> bool:
         """
-        Attempt to reconnect to the WebSocket server.
+        Reconnect to the WebSocket server with capped, jittered backoff.
 
-        Keeps trying until successful, stopped, or max attempts reached.
+        Retries until connected or stopped. Never wedges silently: auth
+        exhaustion raises AuthFatalError, a configured attempt limit raises
+        WebSocketError, and success is verified against the live socket
+        before it is reported.
 
         Returns:
-            True if reconnection successful, False if max attempts reached or stopped
+            True once actually reconnected; False only on clean shutdown.
+
+        Raises:
+            AuthFatalError: Token refresh failed MAX_AUTH_FAILURES times in a row.
+            WebSocketError: max_reconnect_attempts (when > 0) exhausted.
         """
+        attempt = 0
         while self._running:
-            self._reconnect_count += 1
+            attempt += 1
 
             # Check max attempts (0 = unlimited)
-            if self._max_reconnect_attempts > 0 and self._reconnect_count > self._max_reconnect_attempts:
-                return False
+            if 0 < self._max_reconnect_attempts < attempt:
+                raise WebSocketError(
+                    f"Failed to reconnect after {self._max_reconnect_attempts} attempts"
+                )
 
+            # Exponential backoff capped at 5 minutes, with jitter so a fleet
+            # of agents doesn't stampede the backend after an outage.
+            delay = min(self._reconnect_delay * (2 ** min(attempt - 1, 6)), 300.0)
+            delay *= random.uniform(0.8, 1.2)
             logger.info(
-                f"Attempting to reconnect in {self._reconnect_delay}s "
-                f"(attempt {self._reconnect_count}"
+                f"Reconnecting in {delay:.1f}s (attempt {attempt}"
                 f"{f'/{self._max_reconnect_attempts}' if self._max_reconnect_attempts > 0 else ''})..."
             )
-
-            # Wait before reconnecting
-            await asyncio.sleep(self._reconnect_delay)
+            await asyncio.sleep(delay)
 
             if not self._running:
                 return False
 
             try:
-                # Disconnect cleanly first (if still connected)
+                # Drop whatever is left of the old connection
                 try:
                     await self._ws.disconnect()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Error during pre-reconnect disconnect: {e}")
 
-                # Refresh token before reconnecting
-                token_ok = True
-                if self._token_provider:
-                    try:
-                        new_token = await self._token_provider()
-                        if new_token:
-                            self._ws.update_token(new_token)
-                            self._consecutive_auth_failures = 0
-                            logger.info("Refreshed WebSocket authentication token")
-                        else:
-                            self._consecutive_auth_failures += 1
-                            token_ok = False
-                            logger.warning(
-                                f"Token provider returned no token "
-                                f"({self._consecutive_auth_failures}/{MAX_AUTH_FAILURES} failures)"
-                            )
-                    except Exception as e:
-                        self._consecutive_auth_failures += 1
-                        token_ok = False
-                        logger.warning(
-                            f"Failed to refresh token: {e} "
-                            f"({self._consecutive_auth_failures}/{MAX_AUTH_FAILURES} failures)"
-                        )
+                # Raises AuthFatalError after MAX_AUTH_FAILURES strikes
+                await self._refresh_ws_token()
 
-                    if self._consecutive_auth_failures >= MAX_AUTH_FAILURES:
-                        logger.error(
-                            "Authentication failed repeatedly. "
-                            "Please check your credentials and restart the agent."
-                        )
-                        return False
-
-                # Reconnect
+                # Single attempt: raises on failure (never a silent no-op)
                 await self._ws.connect()
+                if not self._ws.is_connected:
+                    raise WebSocketError("connect() returned but socket is not live")
 
-                # Re-subscribe to all channels
-                if self._subscribed_channels:
-                    channels = list(self._subscribed_channels)
-                    await self._ws.subscribe(channels)
-                    logger.info(f"Re-subscribed to {len(channels)} channel(s)")
-
-                # Reset counters on successful connection
-                self._reconnect_count = 0
+                # Don't replay old subscriptions: the server auto-subscribes
+                # user:<id> and global on handshake (all the event loop needs),
+                # and typing channels re-subscribe lazily on next use.
+                self._subscribed_channels.clear()
                 self._consecutive_auth_failures = 0
-                logger.info("WebSocket reconnected successfully")
+                logger.info(f"WebSocket reconnected after {attempt} attempt(s)")
 
                 # Process any unread messages that arrived while disconnected
                 await self._process_unread_messages()
 
                 return True
 
+            except AuthFatalError:
+                raise
             except Exception as e:
-                logger.warning(f"Reconnection attempt failed: {e}")
+                logger.warning(f"Reconnection attempt {attempt} failed: {e}")
                 # Continue loop to retry
 
         return False
+
+    async def _refresh_ws_token(self) -> None:
+        """Refresh the WebSocket auth token before a reconnect attempt.
+
+        Raises:
+            AuthFatalError: After MAX_AUTH_FAILURES consecutive failures —
+                retrying further cannot succeed without new credentials.
+        """
+        if not self._token_provider:
+            return
+
+        try:
+            new_token = await self._token_provider()
+        except Exception as e:
+            self._consecutive_auth_failures += 1
+            logger.warning(
+                f"Failed to refresh token: {e} "
+                f"({self._consecutive_auth_failures}/{MAX_AUTH_FAILURES} failures)"
+            )
+        else:
+            if new_token:
+                self._ws.update_token(new_token)
+                self._consecutive_auth_failures = 0
+                logger.info("Refreshed WebSocket authentication token")
+                return
+            self._consecutive_auth_failures += 1
+            logger.warning(
+                f"Token provider returned no token "
+                f"({self._consecutive_auth_failures}/{MAX_AUTH_FAILURES} failures)"
+            )
+
+        if self._consecutive_auth_failures >= MAX_AUTH_FAILURES:
+            raise AuthFatalError(
+                "Authentication failed repeatedly while reconnecting. "
+                "Check the configured credentials."
+            )
 
     async def _handle_event(self, event: dict) -> None:
         """Route event to appropriate handler."""
@@ -1005,6 +1023,9 @@ class WebSocketScheduler:
         for sid in stale_ids:
             del self._states[sid]
             self._locks.pop(sid, None)
+            # Drop the typing-channel marker too so the set stays bounded on
+            # long uptimes; it re-subscribes lazily if the group comes back.
+            self._subscribed_channels.discard(f"submission_group:{sid}")
         if stale_ids:
             logger.debug(f"Evicted {len(stale_ids)} stale processing state(s)")
 

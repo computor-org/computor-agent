@@ -683,11 +683,13 @@ def messaging(
     )
 
     prompts_path = Path(prompts_dir) if prompts_dir else None
-    asyncio.run(_run_tutor_messaging(
+    exit_code = asyncio.run(_run_tutor_messaging(
         computor_config, tutor_config, git_credentials, dry_run, prompts_path,
         api_port=api_port, api_host=api_host, log_file=log_file,
         llm_probe_interval=llm_probe_interval,
     ))
+    if exit_code:
+        sys.exit(exit_code)
 
 
 @tutor.command()
@@ -823,8 +825,13 @@ async def _run_tutor_messaging(
     api_host: str = "127.0.0.1",
     log_file: Optional[str] = None,
     llm_probe_interval: float = 30.0,
-):
-    """Run the tutor messaging agent."""
+) -> int:
+    """Run the tutor messaging agent.
+
+    Returns a process exit code: 0 after a clean shutdown (signal), nonzero
+    when the scheduler died on an unrecoverable error — so a container
+    restart policy can relaunch the agent.
+    """
     from computor_client import ComputorClient
 
     from computor_agent.api.metrics import MetricsCollector
@@ -834,6 +841,7 @@ async def _run_tutor_messaging(
     from computor_agent.tutor.prompts.loader import get_prompt_loader
 
     logger = logging.getLogger(__name__)
+    run_state = {"exit_code": 0}
 
     # Initialize prompt loader only if prompts_dir is specified
     if prompts_dir is not None:
@@ -1155,7 +1163,9 @@ async def _run_tutor_messaging(
             loop.add_signal_handler(sig, signal_handler)
 
         # Start scheduler in background task
-        scheduler_task = asyncio.create_task(_run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket))
+        scheduler_task = asyncio.create_task(
+            _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket, run_state)
+        )
 
         # Periodic LLM liveness probe. Off when interval == 0.
         llm_monitor = None
@@ -1209,25 +1219,34 @@ async def _run_tutor_messaging(
         logger.info("Tutor scheduler stopped")
 
     await tutor_llm.close()
-    console.print("[green]Tutor agent stopped.[/green]")
+    if run_state["exit_code"]:
+        console.print(
+            "[bold red]Tutor agent stopped after an unrecoverable error.[/bold red]"
+        )
+    else:
+        console.print("[green]Tutor agent stopped.[/green]")
+    return run_state["exit_code"]
 
 
-async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket: bool):
-    """Run scheduler and handle WebSocket reconnection on failure."""
+async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket: bool, run_state: dict):
+    """Run the scheduler; on unrecoverable failure record a nonzero exit code
+    and signal shutdown so the process exits (and a container restart policy
+    can relaunch it)."""
+    from computor_agent.tutor.errors import is_auth_error
+
     logger = logging.getLogger(__name__)
 
     if use_websocket:
-        # For WebSocket, start() blocks until stopped or reconnection fails
-        # The scheduler handles reconnection internally, so we only need to
-        # signal shutdown if it exits (either stopped or max reconnects reached)
+        # For WebSocket, start() blocks until stopped. Recoverable connection
+        # losses are retried internally forever; only unrecoverable failures
+        # (auth exhaustion, attempt limit, unexpected errors) raise.
         try:
             await scheduler.start()
-            # Scheduler exited normally (either stopped or max reconnects reached)
+            # Scheduler exited normally (clean stop)
             logger.info("WebSocket scheduler exited")
         except Exception as e:
-            error_str = str(e)
-            status_code = getattr(getattr(e, "response", None), "status_code", None)
-            if status_code == 401 or "401" in error_str or "Unauthorized" in error_str:
+            run_state["exit_code"] = 1
+            if is_auth_error(e):
                 logger.error("Authentication failed. Please check your credentials and try again.")
                 logger.error("Run 'computor-agent login' to re-authenticate.")
             else:
@@ -1244,9 +1263,8 @@ async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket:
             # Wait indefinitely (shutdown will come from signal)
             await asyncio.Event().wait()
         except Exception as e:
-            error_str = str(e)
-            status_code = getattr(getattr(e, "response", None), "status_code", None)
-            if status_code == 401 or "401" in error_str or "Unauthorized" in error_str:
+            run_state["exit_code"] = 1
+            if is_auth_error(e):
                 logger.error("Authentication failed. Please check your credentials and try again.")
                 logger.error("Run 'computor-agent login' to re-authenticate.")
             else:
