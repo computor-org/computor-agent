@@ -2,14 +2,15 @@
 WebSocket client for Computor backend.
 
 Provides a wrapper around the websockets library with:
-- Auto-reconnection with exponential backoff
-- Heartbeat/ping-pong handling
+- Single-attempt connect (retry policy is owned by the caller)
+- Heartbeat/ping-pong handling with dead-connection detection
 - Type-safe message sending using computor_types.websocket DTOs
 """
 
 import asyncio
 import json
 import logging
+import time
 from typing import AsyncIterator, Optional
 
 import websockets
@@ -27,6 +28,11 @@ from computor_types.websocket import (
 
 # Recommended ping interval from server config (WS_PING_INTERVAL)
 PING_INTERVAL = 25  # seconds
+
+# If no frame at all (pong, event, anything) arrives for this long even though
+# we ping every PING_INTERVAL, the connection is considered dead and force-closed
+# so the receive loop unblocks and the scheduler can reconnect.
+ACTIVITY_TIMEOUT = 3 * PING_INTERVAL  # seconds
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +71,6 @@ class ComputorWebSocket:
         self,
         base_url: str,
         token: str,
-        reconnect_delay: float = 5.0,
-        max_reconnect_attempts: int = 10,
         connect_timeout: float = 30.0,
     ):
         """
@@ -75,8 +79,6 @@ class ComputorWebSocket:
         Args:
             base_url: Backend API base URL (http:// or https://)
             token: Authentication token (Bearer token)
-            reconnect_delay: Initial delay between reconnection attempts (seconds)
-            max_reconnect_attempts: Maximum number of reconnection attempts
             connect_timeout: Timeout for connection handshake (seconds)
         """
         # Convert http(s) to ws(s)
@@ -84,15 +86,13 @@ class ComputorWebSocket:
         self._ws_base = f"{ws_base}/ws"
         self._token = token
 
-        self._reconnect_delay = reconnect_delay
-        self._max_reconnect_attempts = max_reconnect_attempts
         self._connect_timeout = connect_timeout
 
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._connected = False
-        self._reconnect_count = 0
         self._user_id: Optional[str] = None
         self._ping_task: Optional[asyncio.Task] = None
+        self._last_activity = 0.0
 
         # Subscription tracking
         self._pending_subscriptions: set[str] = set()
@@ -125,86 +125,69 @@ class ComputorWebSocket:
 
     async def connect(self) -> None:
         """
-        Connect to the WebSocket server.
+        Connect to the WebSocket server (single attempt).
 
         Waits for the system:connected event and starts the ping loop.
+        Retry policy is owned by the caller — this method either establishes
+        a live connection or raises; it never returns unconnected.
 
         Raises:
-            WebSocketConnectionError: If connection fails after max attempts
+            WebSocketConnectionError: If the connection attempt fails.
         """
-        while self._reconnect_count < self._max_reconnect_attempts:
+        logger.info(f"Connecting to WebSocket: {self._masked_ws_url}")
+        try:
+            self._ws = await websockets.connect(
+                self.ws_url,
+                ping_interval=20.0,  # Protocol-level keepalive (handled by the library)
+                ping_timeout=20.0,   # Missing protocol pong closes the connection
+                open_timeout=self._connect_timeout,
+                close_timeout=10.0,
+            )
+        except asyncio.TimeoutError as e:
+            raise WebSocketConnectionError(
+                f"Connection timed out after {self._connect_timeout}s: {self._masked_ws_url}"
+            ) from e
+        except (WebSocketException, OSError) as e:
+            error_details = self._extract_error_details(e)
+            raise WebSocketConnectionError(
+                f"Failed to connect: {error_details['message']} "
+                f"(type={error_details['error_type']}, url={error_details['url']})"
+            ) from e
+
+        # Wait for system:connected event
+        try:
+            response = await asyncio.wait_for(self._ws.recv(), timeout=10.0)
+            data = json.loads(response)
+            if data.get("type") == "system:connected":
+                self._user_id = data.get("user_id")
+                logger.info(f"WebSocket connected as user {self._user_id}")
+            else:
+                logger.warning(f"Expected system:connected, got: {data.get('type')}")
+        except asyncio.TimeoutError:
+            logger.warning("Timeout waiting for system:connected event")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Malformed greeting from server: {e}")
+        except (ConnectionClosed, OSError) as e:
+            # Server accepted the handshake but dropped us during the greeting
+            await self._close_transport()
+            raise WebSocketConnectionError(
+                f"Connection lost while waiting for system:connected: {e}"
+            ) from e
+
+        self._connected = True
+        self._last_activity = time.monotonic()
+
+        # Start ping loop
+        self._ping_task = asyncio.create_task(self._ping_loop())
+
+    async def _close_transport(self) -> None:
+        """Best-effort close of the underlying transport."""
+        if self._ws:
             try:
-                logger.info(f"Connecting to WebSocket: {self._masked_ws_url}")
-                self._ws = await websockets.connect(
-                    self.ws_url,
-                    ping_interval=None,  # Disable protocol-level pings (we use application-level system:ping instead)
-                    ping_timeout=None,   # No timeout — dead connections detected by send failures
-                    open_timeout=self._connect_timeout,
-                    close_timeout=10.0,
-                )
-
-                # Wait for system:connected event
-                try:
-                    response = await asyncio.wait_for(self._ws.recv(), timeout=10.0)
-                    data = json.loads(response)
-                    if data.get("type") == "system:connected":
-                        self._user_id = data.get("user_id")
-                        logger.info(f"WebSocket connected as user {self._user_id}")
-                    else:
-                        logger.warning(f"Expected system:connected, got: {data.get('type')}")
-                except asyncio.TimeoutError:
-                    logger.warning("Timeout waiting for system:connected event")
-
-                self._connected = True
-                self._reconnect_count = 0
-
-                # Start ping loop
-                self._ping_task = asyncio.create_task(self._ping_loop())
-
-                return
-
-            except asyncio.TimeoutError as e:
-                # Handle connection timeout (opening handshake timeout)
-                self._reconnect_count += 1
-                delay = self._reconnect_delay * (2 ** (self._reconnect_count - 1))
-                delay = min(delay, 60.0)
-
-                logger.warning(
-                    f"WebSocket connection timed out after {self._connect_timeout}s\n"
-                    f"  Target URL: {self._masked_ws_url}\n"
-                    f"  Attempt: {self._reconnect_count}/{self._max_reconnect_attempts}\n"
-                    f"  Next retry in: {delay:.1f}s"
-                )
-
-                if self._reconnect_count >= self._max_reconnect_attempts:
-                    raise WebSocketConnectionError(
-                        f"Connection timed out after {self._max_reconnect_attempts} attempts"
-                    ) from e
-
-                await asyncio.sleep(delay)
-
-            except (WebSocketException, OSError) as e:
-                self._reconnect_count += 1
-                delay = self._reconnect_delay * (2 ** (self._reconnect_count - 1))
-                delay = min(delay, 60.0)  # Cap at 60 seconds
-
-                # Extract more detailed error information
-                error_details = self._extract_error_details(e)
-
-                logger.warning(
-                    f"WebSocket connection failed: {error_details['message']}\n"
-                    f"  Error type: {error_details['error_type']}\n"
-                    f"  Target URL: {error_details['url']}\n"
-                    f"  Attempt: {self._reconnect_count}/{self._max_reconnect_attempts}\n"
-                    f"  Next retry in: {delay:.1f}s"
-                )
-
-                if self._reconnect_count >= self._max_reconnect_attempts:
-                    raise WebSocketConnectionError(
-                        f"Failed to connect after {self._max_reconnect_attempts} attempts: {e}"
-                    ) from e
-
-                await asyncio.sleep(delay)
+                await self._ws.close()
+            except Exception as e:
+                logger.debug(f"Error closing WebSocket transport: {e}")
+            self._ws = None
 
     async def disconnect(self) -> None:
         """Disconnect from the WebSocket server."""
@@ -369,6 +352,8 @@ class ComputorWebSocket:
 
         try:
             async for message in self._ws:
+                # Any inbound frame proves the link is alive
+                self._last_activity = time.monotonic()
                 try:
                     event = json.loads(message)
                     event_type = event.get("type", "")
@@ -415,17 +400,34 @@ class ComputorWebSocket:
         """
         Background task that sends periodic pings to keep connection alive.
 
-        Sends system:ping every PING_INTERVAL seconds (25s by default).
+        Sends system:ping every PING_INTERVAL seconds (25s by default) and
+        watches for inbound activity: the server answers each ping with
+        system:pong, so if no frame at all arrives for ACTIVITY_TIMEOUT the
+        connection is half-open. Force-closing it unblocks the receive loop,
+        which raises and routes the scheduler into its reconnect path.
         """
         try:
             while self._connected:
                 await asyncio.sleep(PING_INTERVAL)
-                if self._connected:
-                    try:
-                        await self.send_ping()
-                    except WebSocketError:
-                        # Connection lost, exit loop
-                        break
+                if not self._connected:
+                    break
+                try:
+                    await self.send_ping()
+                except WebSocketError:
+                    # Connection lost, exit loop
+                    break
+                if time.monotonic() - self._last_activity > ACTIVITY_TIMEOUT:
+                    logger.warning(
+                        f"No WebSocket activity for {ACTIVITY_TIMEOUT}s despite "
+                        f"pings every {PING_INTERVAL}s — closing dead connection"
+                    )
+                    self._connected = False
+                    if self._ws:
+                        try:
+                            await self._ws.close()
+                        except Exception as e:
+                            logger.debug(f"Error closing dead WebSocket: {e}")
+                    break
         except asyncio.CancelledError:
             # Task cancelled - expected during disconnect
             pass
@@ -439,7 +441,7 @@ class ComputorWebSocket:
 
         try:
             await self._ws.send(json.dumps(data))
-        except ConnectionClosed as e:
+        except (ConnectionClosed, OSError) as e:
             self._connected = False
             raise WebSocketError(f"Connection closed while sending: {e}") from e
 
