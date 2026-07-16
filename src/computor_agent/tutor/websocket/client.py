@@ -396,6 +396,16 @@ class ComputorWebSocket:
             self._connected = False
             raise WebSocketError(f"Connection lost: {e}") from e
 
+        # The websockets iterator swallows CLEAN closes (ConnectionClosedOK)
+        # and simply ends. That happens when the server closes gracefully
+        # (deploy/restart, code 1000/1001) or when our activity watchdog
+        # force-closes a dead link. From the consumer's perspective the
+        # connection is gone either way — raise so the scheduler reconnects
+        # instead of silently spinning on an already-closed socket.
+        logger.warning("WebSocket connection closed cleanly by peer")
+        self._connected = False
+        raise WebSocketError("Connection closed cleanly")
+
     async def _ping_loop(self) -> None:
         """
         Background task that sends periodic pings to keep connection alive.

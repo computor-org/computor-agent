@@ -165,6 +165,36 @@ async def test_send_failure_marks_disconnected(monkeypatch):
         await ws.disconnect()
 
 
+async def test_receive_raises_on_clean_close(monkeypatch):
+    """Regression: the websockets iterator swallows ConnectionClosedOK and
+    just ends. receive() ending silently made the scheduler's event loop spin
+    forever on a dead socket after a graceful server close (deploy/restart)
+    instead of reconnecting."""
+
+    class CleanCloseProtocol(FakeProtocol):
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration  # clean close: iteration simply ends
+
+    protocol = CleanCloseProtocol()
+
+    async def ok(*args, **kwargs):
+        return protocol
+
+    patch_connect(monkeypatch, ok)
+    ws = make_client()
+    await ws.connect()
+    try:
+        with pytest.raises(WebSocketError):
+            async for _ in ws.receive():
+                pass
+        assert not ws.is_connected
+    finally:
+        await ws.disconnect()
+
+
 async def test_activity_watchdog_closes_dead_connection(monkeypatch):
     """Half-open connection: pings keep 'succeeding' but nothing ever comes
     back. The watchdog must force-close so the receive loop can unblock."""
