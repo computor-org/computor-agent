@@ -82,6 +82,7 @@ class WebSocketScheduler:
         max_concurrent_processing: int = 5,
         reconnect_delay_seconds: float = 5.0,
         max_reconnect_attempts: int = 0,  # 0 = unlimited
+        periodic_catchup_seconds: int = 60,
         token_provider: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
         metrics: Optional[MetricsCollector] = None,
     ) -> None:
@@ -96,8 +97,10 @@ class WebSocketScheduler:
                 Signature: async def callback(trigger_result, course_content, channel) -> None
             cooldown_seconds: Minimum seconds between processing same submission group
             max_concurrent_processing: Maximum concurrent message processing
-            reconnect_delay_seconds: Delay between reconnection attempts
+            reconnect_delay_seconds: Base delay for reconnection backoff
             max_reconnect_attempts: Maximum reconnection attempts (0 = unlimited)
+            periodic_catchup_seconds: Interval of the periodic REST catch-up scan
+                that backstops the WebSocket event stream
             token_provider: Async callable that returns a fresh token for WebSocket auth.
                 Called before each reconnection attempt. If None, the original token is reused.
         """
@@ -124,7 +127,7 @@ class WebSocketScheduler:
         self._consecutive_auth_failures = 0
         self._event_task: Optional[asyncio.Task] = None
         self._periodic_catchup_task: Optional[asyncio.Task] = None
-        self._periodic_catchup_interval = 60  # seconds
+        self._periodic_catchup_interval = periodic_catchup_seconds
 
         # Reply-classification cache: avoid re-fetching /messages/{id}/thread for
         # the same untagged unread reply on every poll. Keyed by message_id; we

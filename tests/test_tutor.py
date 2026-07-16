@@ -441,7 +441,8 @@ class TestSchedulerConfig:
         config = SchedulerConfig()
 
         assert config.enabled is True
-        assert config.poll_interval_seconds == 30
+        # Interval of the periodic REST catch-up scan backing the WebSocket
+        assert config.poll_interval_seconds == 60
         assert config.max_concurrent_processing == 5
         assert config.cooldown_seconds == 60
 

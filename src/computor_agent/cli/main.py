@@ -837,7 +837,7 @@ async def _run_tutor_messaging(
     from computor_agent.api.metrics import MetricsCollector
     from computor_agent.llm.config import LLMConfig, ProviderType
     from computor_agent.llm.factory import get_provider
-    from computor_agent.tutor import TutorAgent, TutorScheduler, SchedulerConfig, TutorLLMAdapter
+    from computor_agent.tutor import TutorAgent, SchedulerConfig, TutorLLMAdapter
     from computor_agent.tutor.prompts.loader import get_prompt_loader
 
     logger = logging.getLogger(__name__)
@@ -973,53 +973,16 @@ async def _run_tutor_messaging(
         # Create scheduler config from tutor config or defaults
         if tutor_config.scheduler:
             scheduler_config = SchedulerConfig.model_validate(tutor_config.scheduler)
-            logger.info(f"Scheduler config: poll={scheduler_config.poll_interval_seconds}s, cache={scheduler_config.cache.enabled}")
+            logger.info(
+                f"Scheduler config: catchup={scheduler_config.poll_interval_seconds}s, "
+                f"workers={scheduler_config.max_concurrent_processing}"
+            )
         else:
             scheduler_config = SchedulerConfig()
             logger.info("Using default scheduler config")
 
-        # Message trigger callback for HTTP polling scheduler
-        async def on_message_trigger_polling(result, course_content):
-            """
-            Handle message trigger from HTTP polling scheduler.
-
-            Args:
-                result: TriggerCheckResult with message_trigger
-                course_content: CourseContentStudentGet from scheduler
-            """
-            logger.info(f"Processing message trigger: {result.reason}")
-            if dry_run:
-                logger.info(f"[DRY RUN] Would process message: {result.message_trigger.message_id}")
-                return
-
-            # Get the message data
-            message = {
-                "id": result.message_trigger.message_id,
-                "content": result.message_trigger.content,
-                "title": result.message_trigger.title,
-                "author_id": result.message_trigger.author_id,
-                "is_follow_up": result.message_trigger.is_follow_up,
-                "thread_root_id": result.root_message_id,
-            }
-
-            # Get submission_group_id from the course content
-            sg = course_content.submission_group
-            submission_group_id = sg.id if sg else result.message_trigger.submission_group_id
-
-            # Extract course_member_id from submission group members
-            course_member_id = None
-            if sg and sg.members:
-                course_member_id = sg.members[0].course_member_id if sg.members else None
-
-            await agent.process_message(
-                submission_group_id=submission_group_id,
-                message=message,
-                course_content=course_content,  # Pass pre-fetched data
-                course_member_id=course_member_id,
-            )
-
-        # Message trigger callback for WebSocket scheduler
-        async def on_message_trigger_websocket(result, course_content, channel):
+        # Message trigger callback for the WebSocket scheduler
+        async def on_message_trigger(result, course_content, channel):
             """
             Handle message trigger from WebSocket scheduler.
 
@@ -1071,80 +1034,68 @@ async def _run_tutor_messaging(
                 f"Could not resolve agent user id; follow-up detection will be degraded: {e}"
             )
 
-        # Try WebSocket first, fall back to HTTP polling
-        scheduler = None
-        use_websocket = False
+        # WebSocket is the only transport: resolve a token or fail fast.
+        from computor_agent.tutor.websocket import ComputorWebSocket, WebSocketScheduler
 
-        try:
-            from computor_agent.tutor.websocket import ComputorWebSocket, WebSocketScheduler
-
-            # Get token for WebSocket auth
-            # For API token auth: use the static token
-            # For username/password auth: extract the access token from the logged-in client
-            token = computor_config.backend.get_api_token()
-            if not token:
-                # Try to get access token from the authenticated client session
-                token = await client._auth_provider.get_access_token()
-                if token:
-                    logger.info("Using session access token for WebSocket authentication")
-
+        # For API token auth: use the static token.
+        # For username/password auth: extract the access token from the
+        # logged-in client session.
+        token = computor_config.backend.get_api_token()
+        if not token:
+            token = await client._auth_provider.get_access_token()
             if token:
-                ws = ComputorWebSocket(
-                    base_url=computor_config.backend.url,
-                    token=token,
-                )
+                logger.info("Using session access token for WebSocket authentication")
 
-                # Create token provider for refreshing on reconnect
-                async def _provide_fresh_token() -> str | None:
-                    """Get a fresh token for WebSocket reconnection."""
-                    # For API token auth, the token is static
-                    api_token = computor_config.backend.get_api_token()
-                    if api_token:
-                        return api_token
-                    # For username/password auth, refresh via the client
-                    new_token = await client._auth_provider.refresh_token()
-                    if new_token:
-                        return new_token
-                    # Refresh failed — try re-login
-                    try:
-                        await client.login(
-                            username=computor_config.backend.username,
-                            password=computor_config.backend.get_password(),
-                        )
-                        return await client._auth_provider.get_access_token()
-                    except Exception as e:
-                        logger.error(f"Re-login failed during token refresh: {e}")
-                        return None
-
-                scheduler = WebSocketScheduler(
-                    client=client,
-                    ws=ws,
-                    trigger_config=tutor_config.triggers,
-                    on_message_trigger=on_message_trigger_websocket,
-                    cooldown_seconds=scheduler_config.cooldown_seconds,
-                    max_concurrent_processing=scheduler_config.max_concurrent_processing,
-                    token_provider=_provide_fresh_token,
-                    metrics=metrics,
-                )
-                use_websocket = True
-                logger.info("Using WebSocket for real-time events")
-            else:
-                logger.info("No authentication token available for WebSocket")
-
-        except ImportError as e:
-            logger.warning(f"WebSocket support not available ({e}), using HTTP polling")
-        except Exception as e:
-            logger.warning(f"WebSocket initialization failed ({e}), falling back to HTTP polling")
-
-        # Fall back to HTTP polling if WebSocket not available
-        if not use_websocket:
-            scheduler = TutorScheduler(
-                client=client,
-                config=scheduler_config,
-                trigger_config=tutor_config.triggers,
-                on_message_trigger=on_message_trigger_polling,
+        if not token:
+            logger.error(
+                "No authentication token available for the WebSocket connection. "
+                "Configure backend.api_token or username/password in the config file."
             )
-            logger.info("Using HTTP polling for message detection")
+            console.print(
+                "[bold red]Error:[/bold red] no authentication token available "
+                "for the WebSocket connection."
+            )
+            return 1
+
+        ws = ComputorWebSocket(
+            base_url=computor_config.backend.url,
+            token=token,
+        )
+
+        # Create token provider for refreshing on reconnect
+        async def _provide_fresh_token() -> str | None:
+            """Get a fresh token for WebSocket reconnection."""
+            # For API token auth, the token is static
+            api_token = computor_config.backend.get_api_token()
+            if api_token:
+                return api_token
+            # For username/password auth, refresh via the client
+            new_token = await client._auth_provider.refresh_token()
+            if new_token:
+                return new_token
+            # Refresh failed — try re-login
+            try:
+                await client.login(
+                    username=computor_config.backend.username,
+                    password=computor_config.backend.get_password(),
+                )
+                return await client._auth_provider.get_access_token()
+            except Exception as e:
+                logger.error(f"Re-login failed during token refresh: {e}")
+                return None
+
+        scheduler = WebSocketScheduler(
+            client=client,
+            ws=ws,
+            trigger_config=tutor_config.triggers,
+            on_message_trigger=on_message_trigger,
+            cooldown_seconds=scheduler_config.cooldown_seconds,
+            max_concurrent_processing=scheduler_config.max_concurrent_processing,
+            periodic_catchup_seconds=scheduler_config.poll_interval_seconds,
+            token_provider=_provide_fresh_token,
+            metrics=metrics,
+        )
+        logger.info("Using WebSocket for real-time events")
 
         # The dashboard (if started above) was holding a placeholder until
         # the scheduler existed. Wire the real one in now so /metrics, /,
@@ -1164,7 +1115,7 @@ async def _run_tutor_messaging(
 
         # Start scheduler in background task
         scheduler_task = asyncio.create_task(
-            _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket, run_state)
+            _run_scheduler_with_shutdown(scheduler, shutdown_event, run_state)
         )
 
         # Periodic LLM liveness probe. Off when interval == 0.
@@ -1228,48 +1179,34 @@ async def _run_tutor_messaging(
     return run_state["exit_code"]
 
 
-async def _run_scheduler_with_shutdown(scheduler, shutdown_event, use_websocket: bool, run_state: dict):
+async def _run_scheduler_with_shutdown(scheduler, shutdown_event, run_state: dict):
     """Run the scheduler; on unrecoverable failure record a nonzero exit code
     and signal shutdown so the process exits (and a container restart policy
-    can relaunch it)."""
+    can relaunch it).
+
+    start() blocks until stopped. Recoverable connection losses are retried
+    internally forever; only unrecoverable failures (auth exhaustion, attempt
+    limit, unexpected errors) raise.
+    """
     from computor_agent.tutor.errors import is_auth_error
 
     logger = logging.getLogger(__name__)
 
-    if use_websocket:
-        # For WebSocket, start() blocks until stopped. Recoverable connection
-        # losses are retried internally forever; only unrecoverable failures
-        # (auth exhaustion, attempt limit, unexpected errors) raise.
-        try:
-            await scheduler.start()
-            # Scheduler exited normally (clean stop)
-            logger.info("WebSocket scheduler exited")
-        except Exception as e:
-            run_state["exit_code"] = 1
-            if is_auth_error(e):
-                logger.error("Authentication failed. Please check your credentials and try again.")
-                logger.error("Run 'computor-agent login' to re-authenticate.")
-            else:
-                logger.error(f"WebSocket scheduler error: {e}")
-        finally:
-            # Only signal shutdown if we're not already shutting down
-            if not shutdown_event.is_set():
-                logger.info("Signaling shutdown after scheduler exit")
-                shutdown_event.set()
-    else:
-        # For HTTP polling, start() returns immediately, scheduler runs in background
-        try:
-            await scheduler.start()
-            # Wait indefinitely (shutdown will come from signal)
-            await asyncio.Event().wait()
-        except Exception as e:
-            run_state["exit_code"] = 1
-            if is_auth_error(e):
-                logger.error("Authentication failed. Please check your credentials and try again.")
-                logger.error("Run 'computor-agent login' to re-authenticate.")
-            else:
-                logger.error(f"HTTP scheduler error: {e}")
-            # Exit the program
+    try:
+        await scheduler.start()
+        # Scheduler exited normally (clean stop)
+        logger.info("WebSocket scheduler exited")
+    except Exception as e:
+        run_state["exit_code"] = 1
+        if is_auth_error(e):
+            logger.error("Authentication failed. Please check your credentials and try again.")
+            logger.error("Run 'computor-agent login' to re-authenticate.")
+        else:
+            logger.error(f"WebSocket scheduler error: {e}")
+    finally:
+        # Only signal shutdown if we're not already shutting down
+        if not shutdown_event.is_set():
+            logger.info("Signaling shutdown after scheduler exit")
             shutdown_event.set()
 
 
