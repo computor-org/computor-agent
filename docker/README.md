@@ -1,59 +1,76 @@
-# Docker Setup
+# Running the Computor Agent with Docker
 
-Run the Computor Agent in a Docker container.
+Everything an admin needs: **Docker** (with the compose plugin), a **config
+file**, and the **start script**.
 
-## Quick Start
-
-### 1. Configure
+## Quick start
 
 ```bash
-cp config.example.yaml config.yaml
-# Edit config.yaml with your settings
+# 1. First run creates config.yaml from the example and exits
+./start.sh
+
+# 2. Edit config.yaml: backend url + api_token, llm provider/model
+$EDITOR config.yaml
+
+# 3. Start the agent with 8 workers
+./start.sh --workers 8
+
+# 4. Check it
+./start.sh status      # container state + /health snapshot
+./start.sh logs        # follow logs
 ```
+
+Stop with `./start.sh down`. Rebuild after a code update with
+`./start.sh up --build`.
 
 **Required settings in config.yaml:**
-- `backend.url` - Backend API URL
-- `backend.api_token` or `backend.username`/`password` - Authentication
-- `llm.provider`, `llm.model`, `llm.base_url` - LLM settings
+- `backend.url` — Backend API URL
+- `backend.api_token` or `backend.username`/`password` — Authentication
+- `llm.provider`, `llm.model`, `llm.base_url` — LLM settings
 
-### 2. Start LLM Server
+## Worker count
 
-The agent needs an LLM server running on your host machine:
+The worker count is how many messages the agent processes **concurrently**
+(one container, one process — concurrency is bounded by an internal
+semaphore). Precedence, highest first:
 
-```bash
-# Ollama
-ollama pull devstral-small
-ollama serve
+1. `computor-agent tutor messaging --workers N` (CLI flag)
+2. `COMPUTOR_WORKERS` environment variable — what `./start.sh --workers N` sets
+3. `tutor.scheduler.max_concurrent_processing` in `config.yaml`
+4. Default: 5 (compose default: 4)
 
-# Or LM Studio - start server on port 1234
-```
+Valid range: 1–50.
 
-### 3. Run
+## Environment variable overrides
 
-```bash
-# Start
-docker compose up -d
+Any of these can be set in the `environment:` section of
+`docker-compose.yml`; they win over the mounted `config.yaml`:
 
-# View logs
-docker compose logs -f
+| Variable | Overrides |
+|---|---|
+| `COMPUTOR_WORKERS` | `tutor.scheduler.max_concurrent_processing` |
+| `COMPUTOR_BACKEND_URL` | `backend.url` |
+| `COMPUTOR_BACKEND_API_TOKEN` | `backend.api_token` |
+| `COMPUTOR_BACKEND_USERNAME` | `backend.username` |
+| `COMPUTOR_BACKEND_PASSWORD` | `backend.password` |
+| `COMPUTOR_LLM_PROVIDER` | `llm.provider` |
+| `COMPUTOR_LLM_MODEL` | `llm.model` |
+| `COMPUTOR_LLM_BASE_URL` | `llm.base_url` |
+| `COMPUTOR_LLM_API_KEY` | `llm.api_key` |
 
-# Stop
-docker compose down
-```
+`start.sh` additionally reads `WORKERS` and `DASHBOARD_PORT` (host port for
+the dashboard, default 8080).
 
-## Configuration
+## Using an LLM on the host machine
 
-All configuration is in `config.yaml` at the project root. See [config.example.yaml](../config.example.yaml) for all options.
-
-### LLM Connection
-
-The container uses `host.docker.internal` to reach services on your host machine:
+The container reaches the host through `host.docker.internal`. In
+`config.yaml`:
 
 ```yaml
 llm:
   provider: ollama
   model: devstral-small
-  base_url: http://host.docker.internal:11434/v1  # Ollama on host
+  base_url: http://host.docker.internal:11434/v1
 ```
 
 | Provider | Host URL |
@@ -61,78 +78,85 @@ llm:
 | Ollama | `http://host.docker.internal:11434/v1` |
 | LM Studio | `http://host.docker.internal:1234/v1` |
 
-### Git Credentials
+For Ollama, make sure it listens on all interfaces
+(`OLLAMA_HOST=0.0.0.0 ollama serve`, or the systemd equivalent) — by default
+it binds to 127.0.0.1 and is unreachable from containers.
 
-Add credentials for repository access:
+## Health, restarts, and self-healing
 
-```yaml
-credentials:
-  - pattern: https://gitlab.example.com
-    token: glpat-xxxxxxxxxxxx
-```
+- **`GET /healthz`** (strict): HTTP 200 only when the scheduler is running
+  *and* the WebSocket to the backend is connected; 503 otherwise. This is
+  what the container HEALTHCHECK polls. LLM state is deliberately excluded —
+  restarting the container can't fix an LLM outage.
+- **`GET /health`** (informational): always HTTP 200, with the full picture
+  (scheduler, WebSocket, LLM probe). Used by `./start.sh status`.
+- **Recoverable failures** (backend restart, network blip, idle-connection
+  reaping): the agent reconnects on its own with capped exponential backoff
+  (5s→300s, jittered) and catches up on unread messages afterwards. The
+  container may show `(unhealthy)` while offline; it recovers by itself.
+- **Unrecoverable failures** (invalid credentials, unexpected crash): the
+  process exits **nonzero** and Docker's `restart: unless-stopped` policy
+  relaunches it. Note Docker restarts on process *exit*, not on unhealthy
+  healthcheck status.
+- A clean `docker compose down` / SIGTERM exits 0.
 
-## Commands
+The healthcheck tolerates ~5 minutes of failure (10 retries × 30s) before
+flagging unhealthy, so short reconnect windows don't flap the status.
+
+## Dashboard
+
+The image runs the agent with `--api-port 8080`; compose publishes it as
+`127.0.0.1:8080` on the host (change with `DASHBOARD_PORT`). Endpoints:
+`/` (dashboard), `/health`, `/healthz`, `/metrics`, `/logs`.
+
+## Verifying the reconnect behavior (manual e2e)
 
 ```bash
-# Messaging agent (default)
-docker compose up -d
+./start.sh --workers 2
+docker ps                                   # wait for (healthy)
 
-# Interactive shell
+# Simulate a long outage (longer than any old retry budget)
+docker network disconnect <network> computor-agent   # find it: docker inspect computor-agent
+sleep 700
+docker network connect <network> computor-agent
+
+./start.sh logs   # expect: capped backoff attempts, then
+                  # "WebSocket reconnected after N attempt(s)" and a catch-up run
+curl -s http://127.0.0.1:8080/healthz       # back to {"status": "ok"}
+```
+
+Clean-shutdown check: `docker kill -s TERM computor-agent` → exit code 0, no
+restart loop (`docker inspect -f '{{.State.ExitCode}}' computor-agent`).
+
+## Without start.sh
+
+```bash
+cp config.example.yaml config.yaml && $EDITOR config.yaml
+WORKERS=8 docker compose up -d --build
+docker compose logs -f
+docker compose down
+```
+
+One-off commands and an interactive shell:
+
+```bash
 docker compose run --rm computor-agent bash
-
-# Single command
 docker compose run --rm computor-agent \
     computor-agent ask "Hello" -p ollama -m devstral-small
 ```
 
-### Override Command
-
-Edit `docker-compose.yml` to change the default command:
-
-```yaml
-command: ["computor-agent", "tutor", "messaging", "-c", "/app/config.yaml", "-v"]
-```
-
-## Building
-
-```bash
-# Build image
-docker build -t computor-agent -f docker/Dockerfile .
-
-# Run manually
-docker run -it --rm \
-    -v ./config.yaml:/app/config.yaml:ro \
-    --add-host=host.docker.internal:host-gateway \
-    computor-agent
-```
-
 ## Troubleshooting
 
-### Cannot reach LLM server
-
-1. Check LLM is running on host:
-   ```bash
-   curl http://localhost:11434/v1/models
-   ```
-
-2. Verify `base_url` uses `host.docker.internal`:
-   ```yaml
-   llm:
-     base_url: http://host.docker.internal:11434/v1
-   ```
-
-### Config file not found
-
-Ensure `config.yaml` exists in the project root:
-```bash
-cp config.example.yaml config.yaml
-```
-
-### Authentication failed
-
-Check your `backend` settings in config.yaml:
-```yaml
-backend:
-  url: https://api.computor.example.com
-  api_token: ctp_your_token_here
-```
+- **Container restarts in a loop** — `docker compose logs` shows why; most
+  common: invalid `backend.api_token` (exit after repeated auth failures) or
+  unreachable `backend.url`.
+- **`(unhealthy)` but running** — the WebSocket to the backend is down and
+  the agent is retrying; check backend availability, then `/health` for
+  detail.
+- **Cannot reach the LLM** — `/health` shows the last LLM probe result;
+  verify `llm.base_url` is reachable *from inside the container* (use
+  `host.docker.internal`, not `localhost`), and that the LLM server listens
+  on all interfaces.
+- **Config file not found** — `config.yaml` must exist next to
+  `docker-compose.yml` (`./start.sh` creates it from the example on first
+  run).

@@ -41,5 +41,10 @@ tutor:
 
   # Scheduler settings
   scheduler:
-    poll_interval_seconds: 30
+    # Worker count: how many messages are processed concurrently (1-50).
+    # Overridable per deployment via COMPUTOR_WORKERS / ./start.sh --workers N.
+    max_concurrent_processing: 5
+    # Interval of the periodic REST catch-up scan backing the WebSocket (seconds)
+    poll_interval_seconds: 60
+    # Minimum seconds between processing the same submission group
     cooldown_seconds: 5

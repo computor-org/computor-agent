@@ -11,7 +11,24 @@ AI agents for the Computor system.
 - **Testing Support**: Dummy provider for testing without API calls
 - **CLI Tool**: Interactive chat and single-query commands
 
-## Installation
+## Running the tutor agent (Docker)
+
+The production deployment needs only Docker, a config file, and the start
+script:
+
+```bash
+./start.sh                  # first run creates config.yaml, then edit it
+./start.sh --workers 8      # start the agent with 8 workers
+./start.sh status           # container state + health snapshot
+./start.sh logs             # follow logs
+./start.sh down             # stop
+```
+
+The worker count is how many messages are processed concurrently. See
+[docker/README.md](docker/README.md) for the full deployment guide
+(environment overrides, health/restart semantics, troubleshooting).
+
+## Development installation
 
 ```bash
 # From the repository root
@@ -19,6 +36,9 @@ pip install -e .
 
 # With development dependencies
 pip install -e ".[dev]"
+
+# Run the agent from the venv (instead of Docker)
+computor-agent tutor messaging -c config.yaml --workers 4
 ```
 
 ## Quick Start
