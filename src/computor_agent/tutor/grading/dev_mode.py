@@ -177,10 +177,12 @@ async def run_grading_dev_mode(
     from computor_agent.llm.config import LLMConfig, ProviderType
     from computor_agent.llm.factory import get_provider
     from computor_agent.tutor import TutorLLMAdapter
+    from computor_agent.tutor.figures.service import build_figure_reviewer
 
     # Load configuration
     logger.info(f"Loading config from {config_path}")
     computor_config = ComputorConfig.from_file(config_path)
+    tutor_config = computor_config.get_tutor_config()
 
     # Build info panel
     info_lines = [
@@ -189,6 +191,17 @@ async def run_grading_dev_mode(
         f"Reference: [cyan]{reference_path}[/cyan]",
         f"Student: [cyan]{student_path}[/cyan]",
     ]
+    if tutor_config.figure_review.enabled:
+        vision_label = (
+            f"{computor_config.llm.provider}/{computor_config.llm.model} (main LLM)"
+            if tutor_config.figure_review.use_agent_llm
+            else (
+                f"{computor_config.vision_llm.provider}/{computor_config.vision_llm.model}"
+                if computor_config.vision_llm
+                else "[red]not configured[/red]"
+            )
+        )
+        info_lines.append(f"Figure review: [green]{vision_label}[/green]")
 
     if prompts_dir:
         info_lines.append(f"Prompts: [cyan]{prompts_dir}[/cyan]")
@@ -220,13 +233,18 @@ async def run_grading_dev_mode(
 
     # Load student submission
     console.print("[dim]Loading student submission...[/dim]")
-    student_submission = load_student_submission(student_path, assignment.files)
+    student_submission = load_student_submission(
+        student_path, assignment.files, figure_config=tutor_config.figure_review
+    )
 
     if not student_submission.files:
         console.print("[red]No student files found![/red]")
         raise ValueError("No student submission files found")
 
     console.print(f"[green]✓ Loaded {len(student_submission.files)} student file(s)[/green]")
+    if student_submission.images:
+        figure_names = ", ".join(f.path for f in student_submission.images)
+        console.print(f"[green]✓ Found {len(student_submission.images)} figure(s):[/green] [cyan]{figure_names}[/cyan]")
 
     # Show file comparison
     table = Table(title="Files")
@@ -271,6 +289,16 @@ async def run_grading_dev_mode(
     llm_provider = get_provider(llm_config)
     tutor_llm = TutorLLMAdapter(llm_provider)
 
+    # Build the figure reviewer (fail fast on misconfiguration)
+    try:
+        figure_reviewer = build_figure_reviewer(
+            computor_config, tutor_config, main_provider=llm_provider
+        )
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        await tutor_llm.close()
+        raise
+
     # Load custom grading prompt if prompts_dir is specified
     grading_prompt = None
     if prompts_dir:
@@ -283,7 +311,9 @@ async def run_grading_dev_mode(
                 logger.warning(f"Failed to load grading prompt: {e}")
 
     # Create grader and run grading
-    grader = SubmissionGrader(tutor_llm, prompt_template=grading_prompt)
+    grader = SubmissionGrader(
+        tutor_llm, prompt_template=grading_prompt, figure_reviewer=figure_reviewer
+    )
 
     console.print("\n[bold]Grading submission (multi-step analysis)...[/bold]")
 
@@ -303,6 +333,8 @@ async def run_grading_dev_mode(
     display_grading_result(result)
 
     # Cleanup
+    if figure_reviewer:
+        await figure_reviewer.close()
     await tutor_llm.close()
 
     return result

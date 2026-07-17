@@ -569,6 +569,116 @@ class TestAgentFigureReviewFlow:
         assert "Could not be reviewed" in system_prompt
 
 
+class TestGraderFigureReview:
+    """Tests for figure review in the grading flow."""
+
+    SYNTHESIS_JSON = json.dumps(
+        {
+            "grade": 0.7,
+            "status": "improvement_possible",
+            "summary": "Mostly correct, figure has issues.",
+            "feedback": "The plot is missing a legend.",
+            "issues": ["missing legend"],
+            "suggestions": ["add a legend"],
+        }
+    )
+
+    def _grading_context(self, with_images: bool):
+        from computor_agent.tutor.assignment_loader import AssignmentFile
+        from computor_agent.tutor.grading.models import GradingContext, StudentSubmission
+
+        images = []
+        if with_images:
+            images = [FigureFile(path="plot.png", data=PNG_BYTES, media_type="image/png")]
+        return GradingContext(
+            assignment_title="Plots",
+            assignment_description="Plot a sine curve",
+            reference_solution=[
+                AssignmentFile(path="main.py", content="ref code", is_submission_file=True)
+            ],
+            student_submission=StudentSubmission(
+                files=[
+                    AssignmentFile(
+                        path="main.py", content="student code", is_submission_file=True
+                    )
+                ],
+                images=images,
+            ),
+            language="en",
+        )
+
+    def _grader(self, main_provider, vision_provider=None):
+        from computor_agent.tutor import TutorLLMAdapter
+        from computor_agent.tutor.grading.grader import SubmissionGrader
+
+        reviewer = None
+        if vision_provider is not None:
+            reviewer = FigureReviewService(
+                vision_provider, FigureReviewConfig(enabled=True), owns_provider=True
+            )
+        return SubmissionGrader(TutorLLMAdapter(main_provider), figure_reviewer=reviewer)
+
+    @pytest.mark.asyncio
+    async def test_multi_step_with_figures(self):
+        main_provider = make_dummy_provider(
+            response_queue=[
+                json.dumps({"is_functionally_equivalent": True, "differences": [], "severity": "none"}),
+                json.dumps({"same_approach": True, "reference_approach": "x", "student_approach": "x", "issue": None}),
+                self.SYNTHESIS_JSON,
+            ]
+        )
+        vision_provider = make_dummy_provider(
+            response_text=review_json("Sine curve visible", ["missing legend"], 0.6)
+        )
+        grader = self._grader(main_provider, vision_provider)
+
+        result = await grader.grade(self._grading_context(with_images=True))
+
+        # One vision call, three grading calls
+        assert vision_provider.call_count == 1
+        assert main_provider.call_count == 3
+        # Synthesis prompt (last main call) carries the figure findings
+        synthesis_prompt = main_provider.prompt_history[-1]
+        assert "Figure Review" in synthesis_prompt
+        assert "missing legend" in synthesis_prompt
+        assert result.grade == 0.7
+
+    @pytest.mark.asyncio
+    async def test_multi_step_without_figures(self):
+        main_provider = make_dummy_provider(
+            response_queue=[
+                json.dumps({"is_functionally_equivalent": True, "differences": [], "severity": "none"}),
+                json.dumps({"same_approach": True, "reference_approach": "x", "student_approach": "x", "issue": None}),
+                self.SYNTHESIS_JSON,
+            ]
+        )
+        vision_provider = make_dummy_provider()
+        grader = self._grader(main_provider, vision_provider)
+
+        await grader.grade(self._grading_context(with_images=False))
+
+        assert vision_provider.call_count == 0
+        assert main_provider.call_count == 3
+        assert "(No figures in submission)" in main_provider.prompt_history[-1]
+
+    @pytest.mark.asyncio
+    async def test_single_step_appends_figure_review(self):
+        main_provider = make_dummy_provider(response_text=self.SYNTHESIS_JSON)
+        vision_provider = make_dummy_provider(
+            response_text=review_json("OK", ["wrong axis scale"])
+        )
+        grader = self._grader(main_provider, vision_provider)
+        grader.use_multi_step = False
+
+        result = await grader.grade(self._grading_context(with_images=True))
+
+        assert vision_provider.call_count == 1
+        prompt = main_provider.prompt_history[-1]
+        assert "## Figure Review" in prompt
+        assert "wrong axis scale" in prompt
+        assert result.grade == 0.7
+
+
 class TestFigureReviewPrompt:
     """Tests for the figure review prompt template."""
 

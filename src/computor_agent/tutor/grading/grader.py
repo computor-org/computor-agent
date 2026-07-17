@@ -6,13 +6,16 @@ Provides automated grading of student submissions using LLM.
 
 import json
 import logging
-from typing import Callable, Optional, Protocol
+from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
 from computor_agent.tutor.grading.models import (
     GradingContext,
     GradingResult,
     GradingStatus,
 )
+
+if TYPE_CHECKING:
+    from computor_agent.tutor.figures.service import FigureReviewService
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,9 @@ GRADING_SYNTHESIS_PROMPT = """You are a grading assistant. Based on the analysis
 ### Approach Check Result:
 {approach_result}
 
+### Figure Review Result:
+{figure_review_result}
+
 ## Your Task
 
 Based on the analysis above, determine the final grade using these rules:
@@ -113,6 +119,7 @@ Based on the analysis above, determine the final grade using these rules:
   - "major" severity: subtract 0.3-0.5 (grade becomes 0.5-0.7)
   - "minor" severity: subtract 0.1-0.2 (grade becomes 0.8-0.9)
 - If wrong approach (same_approach = false): subtract additional 0.2-0.4
+- If figures were reviewed and contain significant problems (missing labels/legend/units, implausible or wrong data, figure does not match the assignment): subtract 0.05-0.3 depending on severity; include the figure issues in the feedback
 
 **Status Mapping:**
 - grade >= 0.9 AND is_functionally_equivalent = true → "corrected"
@@ -201,6 +208,7 @@ class SubmissionGrader:
         prompt_template: Optional[str] = None,
         max_retries: int = 2,
         use_multi_step: bool = True,
+        figure_reviewer: Optional["FigureReviewService"] = None,
     ):
         """
         Initialize the grader.
@@ -210,11 +218,14 @@ class SubmissionGrader:
             prompt_template: Custom grading prompt template (uses default if None)
             max_retries: Maximum retries for LLM JSON parsing failures
             use_multi_step: Use multi-step grading (default True, more accurate)
+            figure_reviewer: Service for reviewing submission figures with a
+                vision LLM (None = figure review disabled)
         """
         self.llm = llm
         self.prompt_template = prompt_template or GRADING_PROMPT
         self.max_retries = max_retries
         self.use_multi_step = use_multi_step
+        self.figure_reviewer = figure_reviewer
 
     async def grade(
         self,
@@ -265,6 +276,9 @@ class SubmissionGrader:
             f"# {f.path}\n{f.content}" for f in context.student_submission.files
         )
 
+        # Step 0 (optional): Figure review with the vision LLM
+        figure_review_result = await self._review_figures(context, report_progress)
+
         # Step 1: Functionality check
         report_progress("Checking functionality (1/3)...")
         logger.debug("Running functionality check...")
@@ -292,6 +306,7 @@ class SubmissionGrader:
         synthesis_prompt = GRADING_SYNTHESIS_PROMPT.format(
             functionality_result=functionality_result,
             approach_result=approach_result,
+            figure_review_result=figure_review_result,
         )
         synthesis_response = await self._call_llm_with_retry(synthesis_prompt)
 
@@ -306,6 +321,35 @@ class SubmissionGrader:
                 feedback="Automatic grading failed. Please review manually.",
                 summary="Grading could not be completed automatically.",
             )
+
+    async def _review_figures(
+        self,
+        context: GradingContext,
+        report_progress: Callable[[str], None],
+    ) -> str:
+        """
+        Review submission figures with the vision LLM (if configured).
+
+        Returns:
+            Formatted figure review text for the grading prompts.
+            Never raises — grading proceeds without figure results on error.
+        """
+        if not self.figure_reviewer or not context.student_submission.images:
+            return "(No figures in submission)"
+
+        report_progress("Reviewing figures...")
+        logger.debug("Running figure review...")
+        try:
+            summary = await self.figure_reviewer.review_all(
+                context.student_submission.images,
+                assignment_section=context.assignment_description or "",
+                language=context.language,
+            )
+            return summary.format_for_prompt()
+        except Exception as e:
+            # Defensive: the service degrades per figure and shouldn't raise
+            logger.warning(f"Figure review failed: {e}")
+            return "(Figure review failed — figures could not be analyzed)"
 
     async def _call_llm_with_retry(self, prompt: str) -> str:
         """Call LLM with retry logic for transient failures."""
@@ -327,8 +371,14 @@ class SubmissionGrader:
 
         Less accurate but faster and uses less tokens.
         """
-        # Build the prompt
-        prompt = self.prompt_template.format(context=context.to_prompt_context())
+        # Build the prompt (figure review results are appended to the
+        # context so custom templates pick them up without a placeholder)
+        prompt_context = context.to_prompt_context()
+        if self.figure_reviewer and context.student_submission.images:
+            figure_review_result = await self._review_figures(context, lambda _: None)
+            prompt_context += f"\n\n## Figure Review\n{figure_review_result}"
+
+        prompt = self.prompt_template.format(context=prompt_context)
 
         # Call LLM with retry logic
         for attempt in range(self.max_retries + 1):
