@@ -185,12 +185,14 @@ class LLMProvider(ABC):
         self,
         prompt: str | list[Message],
         system_prompt: Optional[str] = None,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         """
         Prepare messages for the API request.
 
         Converts the prompt to a list of message dicts, optionally
-        prepending a system prompt.
+        prepending a system prompt. Messages without images keep a plain
+        string content (byte-identical wire format to before); messages
+        with images use the OpenAI vision content-parts format.
 
         Args:
             prompt: User prompt (string or list of Message objects)
@@ -199,7 +201,7 @@ class LLMProvider(ABC):
         Returns:
             List of message dicts ready for API call
         """
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
 
         # Add system prompt if provided or from config
         effective_system_prompt = system_prompt or self.config.system_prompt
@@ -211,7 +213,18 @@ class LLMProvider(ABC):
             messages.append({"role": "user", "content": prompt})
         else:
             for msg in prompt:
-                messages.append({"role": msg.role.value, "content": msg.content})
+                if msg.images:
+                    content: Any = [{"type": "text", "text": msg.content}]
+                    content.extend(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": img.to_data_url()},
+                        }
+                        for img in msg.images
+                    )
+                else:
+                    content = msg.content
+                messages.append({"role": msg.role.value, "content": content})
 
         return messages
 

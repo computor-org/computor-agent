@@ -59,6 +59,7 @@ class DummyProvider(LLMProvider):
         self._call_count = 0
         self._last_prompt: Optional[str | list[Message]] = None
         self._last_kwargs: dict[str, Any] = {}
+        self._prompt_history: list[str | list[Message]] = []
 
     @property
     def call_count(self) -> int:
@@ -75,11 +76,17 @@ class DummyProvider(LLMProvider):
         """Get the last kwargs that were passed to complete() or stream()."""
         return self._last_kwargs
 
+    @property
+    def prompt_history(self) -> list[str | list[Message]]:
+        """Get every prompt passed to complete() or stream(), in call order."""
+        return self._prompt_history
+
     def reset_tracking(self) -> None:
         """Reset call tracking (useful between test cases)."""
         self._call_count = 0
         self._last_prompt = None
         self._last_kwargs = {}
+        self._prompt_history = []
 
     async def complete(
         self,
@@ -107,6 +114,7 @@ class DummyProvider(LLMProvider):
         self._call_count += 1
         self._last_prompt = prompt
         self._last_kwargs = {"system_prompt": system_prompt, **kwargs}
+        self._prompt_history.append(prompt)
 
         # Simulate delay
         if self.dummy_config.delay_seconds > 0:
@@ -120,17 +128,29 @@ class DummyProvider(LLMProvider):
                 model=self.model_name,
             )
 
+        response_text = self._next_response_text()
         return LLMResponse(
-            content=self.dummy_config.response_text,
+            content=response_text,
             model=self.config.model,
             finish_reason="stop",
             usage={
                 "prompt_tokens": self._estimate_tokens(prompt),
-                "completion_tokens": len(self.dummy_config.response_text.split()),
+                "completion_tokens": len(response_text.split()),
                 "total_tokens": self._estimate_tokens(prompt)
-                + len(self.dummy_config.response_text.split()),
+                + len(response_text.split()),
             },
         )
+
+    def _next_response_text(self) -> str:
+        """Pick the response for the current call.
+
+        With a response_queue configured, responses are returned in call
+        order (falling back to response_text once exhausted).
+        """
+        queue = self.dummy_config.response_queue
+        if queue is not None and self._call_count <= len(queue):
+            return queue[self._call_count - 1]
+        return self.dummy_config.response_text
 
     async def stream(
         self,
@@ -159,6 +179,7 @@ class DummyProvider(LLMProvider):
         self._call_count += 1
         self._last_prompt = prompt
         self._last_kwargs = {"system_prompt": system_prompt, **kwargs}
+        self._prompt_history.append(prompt)
 
         # Check if configured to fail immediately
         if self.dummy_config.should_fail:

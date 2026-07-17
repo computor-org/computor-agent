@@ -1,10 +1,13 @@
 """Tests for LLM providers."""
 
+import base64
+
 import pytest
 
 from computor_agent.llm import (
     DummyProvider,
     DummyProviderConfig,
+    ImageContent,
     LLMConfig,
     LLMResponse,
     Message,
@@ -92,6 +95,117 @@ class TestMessage:
         assert msg.content == "Hi there"
 
 
+class TestImageContent:
+    """Tests for ImageContent and multimodal messages."""
+
+    PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-image-data"
+
+    def test_to_data_url(self):
+        """Test base64 data URL encoding."""
+        image = ImageContent(data=self.PNG_BYTES, media_type="image/png")
+        expected = base64.b64encode(self.PNG_BYTES).decode("ascii")
+        assert image.to_data_url() == f"data:image/png;base64,{expected}"
+
+    def test_data_not_in_repr(self):
+        """Image bytes must not leak into repr (log safety)."""
+        image = ImageContent(data=self.PNG_BYTES, media_type="image/png")
+        assert "fake-image-data" not in repr(image)
+
+    def test_user_with_images(self):
+        """Test creating a user message with images."""
+        image = ImageContent(data=self.PNG_BYTES, media_type="image/png")
+        msg = Message.user_with_images("Review this", [image])
+        assert msg.role.value == "user"
+        assert msg.content == "Review this"
+        assert len(msg.images) == 1
+
+    def test_message_defaults_to_no_images(self):
+        """Plain messages have an empty images list."""
+        assert Message.user("Hello").images == []
+
+
+class TestPrepareMessagesMultimodal:
+    """Tests for LLMProvider._prepare_messages with and without images."""
+
+    @pytest.fixture
+    def provider(self):
+        config = LLMConfig(provider=ProviderType.DUMMY)
+        return DummyProvider(config, DummyProviderConfig(delay_seconds=0))
+
+    def test_text_only_unchanged(self, provider):
+        """Text-only messages keep plain string content (regression)."""
+        messages = provider._prepare_messages(
+            [Message.user("Hello"), Message.assistant("Hi")],
+            system_prompt="Be helpful",
+        )
+        assert messages == [
+            {"role": "system", "content": "Be helpful"},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+        ]
+
+    def test_string_prompt_unchanged(self, provider):
+        """String prompts keep plain string content."""
+        messages = provider._prepare_messages("Hello")
+        assert messages == [{"role": "user", "content": "Hello"}]
+
+    def test_message_with_image_uses_content_parts(self, provider):
+        """Messages with images become OpenAI vision content-parts lists."""
+        image = ImageContent(data=b"img-bytes", media_type="image/png")
+        messages = provider._prepare_messages(
+            [Message.user_with_images("Review this figure", [image])]
+        )
+        assert len(messages) == 1
+        content = messages[0]["content"]
+        assert content == [
+            {"type": "text", "text": "Review this figure"},
+            {"type": "image_url", "image_url": {"url": image.to_data_url()}},
+        ]
+
+    def test_multiple_images_one_part_each(self, provider):
+        """Multiple images produce one image_url part each, text first."""
+        images = [
+            ImageContent(data=b"one", media_type="image/png"),
+            ImageContent(data=b"two", media_type="image/jpeg"),
+        ]
+        messages = provider._prepare_messages(
+            [Message.user_with_images("Two figures", images)]
+        )
+        content = messages[0]["content"]
+        assert content[0] == {"type": "text", "text": "Two figures"}
+        assert [p["type"] for p in content[1:]] == ["image_url", "image_url"]
+        assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert content[2]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+class TestSanitizeMessagesForLog:
+    """Tests for the debug-log image sanitizer."""
+
+    def test_image_urls_truncated(self):
+        from computor_agent.llm.openai_provider import _sanitize_messages_for_log
+
+        long_url = "data:image/png;base64," + "A" * 10000
+        messages = [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image_url", "image_url": {"url": long_url}},
+                ],
+            },
+        ]
+        sanitized = _sanitize_messages_for_log(messages)
+        # Original untouched, text parts untouched
+        assert messages[1]["content"][1]["image_url"]["url"] == long_url
+        assert sanitized[0] == {"role": "system", "content": "sys"}
+        assert sanitized[1]["content"][0] == {"type": "text", "text": "look"}
+        # Image URL truncated but annotated with original length
+        logged_url = sanitized[1]["content"][1]["image_url"]["url"]
+        assert len(logged_url) < 100
+        assert f"({len(long_url)} chars)" in logged_url
+
+
 class TestDummyProvider:
     """Tests for DummyProvider."""
 
@@ -139,6 +253,34 @@ class TestDummyProvider:
             pass
         assert provider.call_count == 2
         assert provider.last_prompt == "Second"
+
+    @pytest.mark.asyncio
+    async def test_prompt_history(self, provider):
+        """Test that every prompt is recorded in order."""
+        await provider.complete("First")
+        await provider.complete("Second")
+        async for _ in provider.stream("Third"):
+            pass
+        assert provider.prompt_history == ["First", "Second", "Third"]
+
+        provider.reset_tracking()
+        assert provider.prompt_history == []
+        assert provider.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_response_queue(self):
+        """Test queued responses returned in call order, then fallback."""
+        config = LLMConfig(provider=ProviderType.DUMMY)
+        dummy_config = DummyProviderConfig(
+            response_text="fallback",
+            response_queue=["one", "two"],
+            delay_seconds=0,
+        )
+        provider = DummyProvider(config, dummy_config)
+
+        assert (await provider.complete("a")).content == "one"
+        assert (await provider.complete("b")).content == "two"
+        assert (await provider.complete("c")).content == "fallback"
 
     @pytest.mark.asyncio
     async def test_should_fail(self, provider):

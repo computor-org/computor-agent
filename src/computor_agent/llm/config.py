@@ -5,6 +5,7 @@ This module provides Pydantic models for configuring LLM providers.
 Supports multiple backends (OpenAI, LM Studio, Ollama) with extensive customization.
 """
 
+import base64
 from enum import Enum
 from typing import Any, Optional
 
@@ -28,11 +29,33 @@ class MessageRole(str, Enum):
     ASSISTANT = "assistant"
 
 
+class ImageContent(BaseModel):
+    """
+    An image attached to a message.
+
+    Sent to OpenAI-compatible endpoints as a base64 data URL inside an
+    ``image_url`` content part (the OpenAI vision format, also supported by
+    LM Studio and Ollama's /v1 compatibility endpoint).
+    """
+
+    data: bytes = Field(repr=False, description="Raw image bytes")
+    media_type: str = Field(description='MIME type, e.g. "image/png"')
+
+    def to_data_url(self) -> str:
+        """Encode the image as a base64 data URL."""
+        encoded = base64.b64encode(self.data).decode("ascii")
+        return f"data:{self.media_type};base64,{encoded}"
+
+
 class Message(BaseModel):
     """A single message in a conversation."""
 
     role: MessageRole
     content: str
+    images: list[ImageContent] = Field(
+        default_factory=list,
+        description="Images attached to this message (vision models only)",
+    )
 
     @classmethod
     def system(cls, content: str) -> "Message":
@@ -43,6 +66,11 @@ class Message(BaseModel):
     def user(cls, content: str) -> "Message":
         """Create a user message."""
         return cls(role=MessageRole.USER, content=content)
+
+    @classmethod
+    def user_with_images(cls, content: str, images: list[ImageContent]) -> "Message":
+        """Create a user message with attached images."""
+        return cls(role=MessageRole.USER, content=content, images=images)
 
     @classmethod
     def assistant(cls, content: str) -> "Message":
@@ -248,6 +276,13 @@ class DummyProviderConfig(BaseModel):
     response_text: str = Field(
         default="This is a dummy response for testing purposes.",
         description="Static text to return for complete() calls",
+    )
+    response_queue: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "If set, complete() returns these responses in call order, "
+            "falling back to response_text once exhausted"
+        ),
     )
     stream_chunks: list[str] = Field(
         default_factory=lambda: [

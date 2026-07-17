@@ -36,6 +36,7 @@ Example:
 from computor_agent.llm.base import LLMProvider, LLMResponse, StreamChunk
 from computor_agent.llm.config import (
     DummyProviderConfig,
+    ImageContent,
     LLMConfig,
     Message,
     MessageRole,
@@ -71,6 +72,7 @@ __all__ = [
     "ProviderType",
     "Message",
     "MessageRole",
+    "ImageContent",
     # Base classes
     "LLMProvider",
     "LLMResponse",

@@ -33,6 +33,34 @@ from computor_agent.llm.exceptions import (
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_messages_for_log(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a copy of messages with base64 image data URLs truncated.
+
+    A single attached image is megabytes of base64 — logging it verbatim
+    would produce unusable debug logs.
+    """
+    sanitized: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            sanitized.append(msg)
+            continue
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                url = part.get("image_url", {}).get("url", "")
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"{url[:64]}...({len(url)} chars)"},
+                    }
+                )
+            else:
+                parts.append(part)
+        sanitized.append({**msg, "content": parts})
+    return sanitized
+
+
 class OpenAIProvider(LLMProvider):
     """
     OpenAI-compatible LLM provider.
@@ -188,7 +216,7 @@ class OpenAIProvider(LLMProvider):
         }
 
         logger.debug(f"Sending completion request to {self.config.base_url}/chat/completions")
-        logger.debug(f"LLM Request messages:\n{json.dumps(messages, indent=2)}")
+        logger.debug(f"LLM Request messages:\n{json.dumps(_sanitize_messages_for_log(messages), indent=2)}")
 
         last_error: Exception | None = None
         for attempt in range(self.config.max_retries + 1):
@@ -333,7 +361,7 @@ class OpenAIProvider(LLMProvider):
         }
 
         logger.debug(f"Sending streaming request to {self.config.base_url}/chat/completions")
-        logger.debug(f"LLM Request messages:\n{json.dumps(messages, indent=2)}")
+        logger.debug(f"LLM Request messages:\n{json.dumps(_sanitize_messages_for_log(messages), indent=2)}")
 
         try:
             async with client.stream(
