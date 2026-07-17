@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
+    from computor_agent.tutor.figures.models import FigureFile, FigureReviewSummary
     from computor_agent.tutor.services.test_results import TestResult
     from computor_agent.tutor.services.history import SubmissionHistory
     from computor_agent.tutor.services.reference import ReferenceComparison
@@ -102,6 +103,9 @@ class CodeContext:
     is_submission: bool = False
     """Whether this code was downloaded from a submission artifact."""
 
+    images: list["FigureFile"] = field(default_factory=list)
+    """Image files (figures) found in the submission, for figure review."""
+
 
 @dataclass
 class ConversationContext:
@@ -179,6 +183,9 @@ class ConversationContext:
     artifact_content: Optional["ExtractedSubmissionContent"] = None
     """Extracted content from submission artifact."""
 
+    figure_review: Optional["FigureReviewSummary"] = None
+    """Vision-LLM review of figures found in the submission."""
+
     # Submission availability
     no_submission_available: bool = False
     """Whether we tried to download submission but none was found."""
@@ -228,6 +235,11 @@ class ConversationContext:
     def has_reference_comparison(self) -> bool:
         """Check if reference comparison is available."""
         return self.reference_comparison is not None
+
+    @property
+    def has_figure_review(self) -> bool:
+        """Check if figure review results are available."""
+        return self.figure_review is not None and self.figure_review.has_content
 
     @property
     def has_student_progress(self) -> bool:
@@ -418,15 +430,18 @@ class ConversationContext:
 
         if self.student_code:
             self.student_code.files.clear()
+            self.student_code.images.clear()
 
         if self.reference_code:
             self.reference_code.files.clear()
+            self.reference_code.images.clear()
 
         # Clear enhanced context
         self.test_results = None
         self.submission_history = None
         self.reference_comparison = None
         self.student_progress = None
+        self.figure_review = None
 
         if self.artifact_content:
             self.artifact_content.files.clear()

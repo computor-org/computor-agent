@@ -319,6 +319,151 @@ class TestBuildFigureReviewer:
             build_figure_reviewer(config, tutor_config, main_provider=None)
 
 
+class TestZipImageExtraction:
+    """Tests for image collection in ArtifactsService._extract_zip."""
+
+    def _make_zip(self, entries: dict[str, bytes]) -> bytes:
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for name, data in entries.items():
+                zf.writestr(name, data)
+        return buf.getvalue()
+
+    def _artifact_meta(self):
+        from datetime import datetime
+
+        from computor_types.artifacts import SubmissionArtifactGet
+
+        return SubmissionArtifactGet(
+            id="test",
+            submission_group_id="group",
+            file_size=0,
+            bucket_name="bucket",
+            object_key="key",
+            uploaded_at=datetime.now(),
+        )
+
+    def _service(self):
+        from computor_agent.tutor.services.artifacts import ArtifactsService
+
+        return ArtifactsService(client=None)
+
+    def test_images_stay_binary_by_default(self):
+        """Without collect_images, behavior is unchanged (regression)."""
+        buffer = self._make_zip({"main.py": b"print('hi')", "plot.png": PNG_BYTES})
+
+        content = self._service()._extract_zip(buffer, self._artifact_meta())
+
+        assert list(content.files) == ["main.py"]
+        assert content.binary_files == ["plot.png"]
+        assert content.image_files == []
+
+    def test_collect_images(self):
+        buffer = self._make_zip(
+            {"main.py": b"print('hi')", "plot.png": PNG_BYTES, "data.bin": b"\x00\x01"}
+        )
+
+        content = self._service()._extract_zip(
+            buffer, self._artifact_meta(), collect_images=True
+        )
+
+        assert list(content.files) == ["main.py"]
+        assert content.binary_files == ["data.bin"]
+        assert [f.path for f in content.image_files] == ["plot.png"]
+        assert content.image_files[0].data == PNG_BYTES
+        assert content.image_files[0].media_type == "image/png"
+        assert content.total_files == 3
+        assert "Figures (reviewed separately): plot.png" in content.format_for_prompt()
+
+    def test_collect_images_caps(self):
+        buffer = self._make_zip(
+            {
+                "big.png": b"x" * 2048,
+                "plot1.png": PNG_BYTES,
+                "plot2.png": PNG_BYTES,
+            }
+        )
+
+        content = self._service()._extract_zip(
+            buffer,
+            self._artifact_meta(),
+            collect_images=True,
+            max_figures=1,
+            max_image_bytes=1024,
+        )
+
+        assert [f.path for f in content.image_files] == ["plot1.png"]
+        # Oversized and over-count images fall back to the binary list
+        assert set(content.binary_files) == {"big.png", "plot2.png"}
+
+
+class TestScenarioLoaderImages:
+    """Tests for figure loading in the dev-mode scenario loader."""
+
+    def _make_scenario(self, tmp_path):
+        (tmp_path / "scenario.yaml").write_text(
+            "student:\n  name: Test\nassignment:\n  title: Plots\n"
+        )
+        sub_dir = tmp_path / "submission"
+        sub_dir.mkdir()
+        (sub_dir / "main.py").write_text("print('hi')")
+        (sub_dir / "plot.png").write_bytes(PNG_BYTES)
+        return tmp_path
+
+    def test_scenario_collects_images(self, tmp_path):
+        from computor_agent.tutor.scenario_loader import load_scenario
+
+        scenario = load_scenario(self._make_scenario(tmp_path))
+
+        assert list(scenario.submission_files) == ["main.py"]
+        assert [f.path for f in scenario.submission_images] == ["plot.png"]
+        assert scenario.submission_images[0].data == PNG_BYTES
+
+    @pytest.mark.asyncio
+    async def test_mock_endpoint_zips_images(self, tmp_path):
+        import io
+        import zipfile
+
+        from computor_agent.tutor.dev_mode import MockSubmissionsEndpoint
+        from computor_agent.tutor.scenario_loader import load_scenario
+
+        scenario = load_scenario(self._make_scenario(tmp_path))
+        endpoint = MockSubmissionsEndpoint(scenario=scenario)
+
+        buffer = await endpoint.artifacts_download()
+
+        with zipfile.ZipFile(io.BytesIO(buffer)) as zf:
+            assert set(zf.namelist()) == {"main.py", "plot.png"}
+            assert zf.read("plot.png") == PNG_BYTES
+
+
+class TestGradingSubmissionImages:
+    """Tests for figure loading in the grading dev-mode loader."""
+
+    def test_load_student_submission_scans_images(self, tmp_path):
+        from computor_agent.tutor.assignment_loader import AssignmentFile
+        from computor_agent.tutor.grading.dev_mode import load_student_submission
+
+        (tmp_path / "main.py").write_text("print('hi')")
+        (tmp_path / "output.png").write_bytes(PNG_BYTES)
+        reference = [
+            AssignmentFile(path="main.py", content="ref", is_submission_file=True)
+        ]
+
+        # Disabled (default): no images collected
+        submission = load_student_submission(tmp_path, reference)
+        assert submission.images == []
+
+        # Enabled: images scanned independently of the reference file list
+        config = FigureReviewConfig(enabled=True)
+        submission = load_student_submission(tmp_path, reference, figure_config=config)
+        assert [f.path for f in submission.images] == ["output.png"]
+        assert [f.path for f in submission.files] == ["main.py"]
+
+
 class TestFigureReviewPrompt:
     """Tests for the figure review prompt template."""
 

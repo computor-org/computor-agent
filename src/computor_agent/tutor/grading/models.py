@@ -5,9 +5,12 @@ Data models for the grading module.
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from computor_agent.tutor.assignment_loader import AssignmentFile
+
+if TYPE_CHECKING:
+    from computor_agent.tutor.figures.models import FigureFile
 
 
 class GradingStatus(IntEnum):
@@ -96,10 +99,12 @@ class StudentSubmission:
     Attributes:
         files: List of submission files
         submission_path: Path to the submission directory (if local)
+        images: Image files (figures) found in the submission
     """
 
     files: list[AssignmentFile] = field(default_factory=list)
     submission_path: Optional[Path] = None
+    images: list["FigureFile"] = field(default_factory=list)
 
     def get_file(self, path: str) -> Optional[AssignmentFile]:
         """Get a specific file by path."""

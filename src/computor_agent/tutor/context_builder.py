@@ -31,7 +31,7 @@ from computor_agent.tutor.services.progress import ProgressService
 
 if TYPE_CHECKING:
     from computor_agent.tutor.assignment_loader import AssignmentContext
-    from computor_agent.tutor.config import ContextConfig
+    from computor_agent.tutor.config import ContextConfig, FigureReviewConfig
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,7 @@ class ContextBuilder:
         self,
         client: Any,  # ComputorClient from computor-client
         config: "ContextConfig",
+        figure_config: Optional["FigureReviewConfig"] = None,
     ) -> None:
         """
         Initialize the context builder.
@@ -76,9 +77,12 @@ class ContextBuilder:
         Args:
             client: ComputorClient instance from computor-client package
             config: Context configuration
+            figure_config: Figure review configuration (images are collected
+                from submissions only when this is provided and enabled)
         """
         self.client = client
         self.config = config
+        self.figure_config = figure_config
 
         # Initialize services for enhanced context
         self.test_results_service = TestResultsService(client)
@@ -86,6 +90,11 @@ class ContextBuilder:
         self.reference_service = ReferenceService(client, cache_dir=config.cache_dir)
         self.history_service = HistoryService(client)
         self.progress_service = ProgressService(client)
+
+    @property
+    def _collect_images(self) -> bool:
+        """Whether figure collection is active."""
+        return self.figure_config is not None and self.figure_config.enabled
 
     async def build_for_message(
         self,
@@ -238,6 +247,15 @@ class ContextBuilder:
         Returns:
             CodeContext with submission files, or None if no submission found
         """
+        image_kwargs: dict[str, Any] = {}
+        if self._collect_images:
+            image_kwargs = {
+                "collect_images": True,
+                "image_extensions": self.figure_config.extension_set(),
+                "max_figures": self.figure_config.max_figures,
+                "max_image_bytes": self.figure_config.max_image_bytes,
+            }
+
         artifact_content = await self.artifacts_service.download_latest_submission(
             submission_group_id=submission_group_id,
             course_content_id=course_content_id,
@@ -245,6 +263,7 @@ class ContextBuilder:
             submit_only=submit_only,
             max_files=self.config.max_code_files,
             max_total_size=10 * 1024 * 1024,  # 10MB max
+            **image_kwargs,
         )
 
         if not artifact_content:
@@ -259,6 +278,7 @@ class ContextBuilder:
             repository_path=None,  # No local path for downloaded submissions
             truncated=artifact_content.truncated,
             is_submission=True,  # Mark this as a submission download
+            images=artifact_content.image_files,
         )
 
     async def _add_enhanced_context(
@@ -698,11 +718,26 @@ class ContextBuilder:
         except Exception as e:
             logger.warning(f"Failed to load code from {repo_path}: {e}")
 
+        images: list = []
+        if self._collect_images:
+            from computor_agent.tutor.figures.detection import collect_images_from_dir
+
+            images, skipped = collect_images_from_dir(
+                repo_path,
+                extensions=self.figure_config.extension_set(),
+                max_figures=self.figure_config.max_figures,
+                max_image_bytes=self.figure_config.max_image_bytes,
+                skip_dirs=skip_dirs,
+            )
+            if skipped:
+                logger.info(f"Figures skipped due to limits: {', '.join(skipped)}")
+
         return CodeContext(
             files=files,
             total_lines=total_lines,
             repository_path=repo_path,
             truncated=truncated,
+            images=images,
         )
 
     def save_student_notes(

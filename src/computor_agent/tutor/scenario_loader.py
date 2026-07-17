@@ -26,6 +26,9 @@ from typing import Optional
 
 import yaml
 
+from computor_agent.tutor.figures.detection import collect_images_from_dir, is_image_file
+from computor_agent.tutor.figures.models import FigureFile
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,6 +87,9 @@ class Scenario:
 
     submission_files: dict[str, str] = field(default_factory=dict)
     """Student code: filename -> content."""
+
+    submission_images: list["FigureFile"] = field(default_factory=list)
+    """Student figures (images) from the submission directory."""
 
     reference_files: dict[str, str] = field(default_factory=dict)
     """Reference solution: filename -> content."""
@@ -145,12 +151,15 @@ def load_scenario(scenario_dir: Path) -> Scenario:
                 logger.info(f"Loaded assignment description from {desc_path.name}")
                 break
 
-    # Load student submission files
+    # Load student submission files (text) and figures (images)
     submission_files = {}
+    submission_images: list[FigureFile] = []
     sub_dir = scenario_dir / "submission"
     if sub_dir.is_dir():
         for f in sorted(sub_dir.rglob("*")):
             if f.is_file() and not f.name.startswith("."):
+                if is_image_file(f):
+                    continue  # collected below as figures
                 rel = str(f.relative_to(sub_dir))
                 try:
                     submission_files[rel] = f.read_text(encoding="utf-8")
@@ -158,6 +167,12 @@ def load_scenario(scenario_dir: Path) -> Scenario:
                     logger.warning(f"Skipping binary file: {rel}")
         if submission_files:
             logger.info(f"Loaded {len(submission_files)} submission file(s)")
+
+        submission_images, skipped_images = collect_images_from_dir(sub_dir)
+        if submission_images:
+            logger.info(f"Loaded {len(submission_images)} submission figure(s)")
+        if skipped_images:
+            logger.warning(f"Skipped figures (limits): {', '.join(skipped_images)}")
 
     # Load reference solution files
     reference_files = {}
@@ -202,6 +217,7 @@ def load_scenario(scenario_dir: Path) -> Scenario:
         assignment=assignment,
         description=description,
         submission_files=submission_files,
+        submission_images=submission_images,
         reference_files=reference_files,
         test_results=test_results,
         path=scenario_dir,

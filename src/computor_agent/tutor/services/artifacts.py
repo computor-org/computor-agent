@@ -16,6 +16,9 @@ from typing import Any, Optional
 from computor_client.exceptions import NotFoundError
 from computor_types.artifacts import SubmissionArtifactGet
 
+from computor_agent.tutor.figures.detection import is_image_file, media_type_for
+from computor_agent.tutor.figures.models import FigureFile
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +32,7 @@ class ExtractedSubmissionContent:
     Attributes:
         artifact: The artifact metadata from API
         files: Mapping of file path -> file content
+        image_files: Image files collected for figure review (if enabled)
         total_files: Total number of files extracted
         total_size: Total size of extracted content
         extraction_path: Where files were extracted (if saved to disk)
@@ -37,6 +41,7 @@ class ExtractedSubmissionContent:
     artifact: SubmissionArtifactGet
     files: dict[str, str] = field(default_factory=dict)
     binary_files: list[str] = field(default_factory=list)
+    image_files: list[FigureFile] = field(default_factory=list)
     total_files: int = 0
     total_size: int = 0
     extraction_path: Optional[Path] = None
@@ -94,6 +99,10 @@ class ExtractedSubmissionContent:
 
         if self.binary_files:
             parts.append(f"\n\nBinary files (not shown): {', '.join(self.binary_files)}")
+
+        if self.image_files:
+            names = ", ".join(f.path for f in self.image_files)
+            parts.append(f"\n\nFigures (reviewed separately): {names}")
 
         return "".join(parts)
 
@@ -218,6 +227,10 @@ class ArtifactsService:
         *,
         max_files: int = 50,
         max_total_size: int = 10 * 1024 * 1024,  # 10MB
+        collect_images: bool = False,
+        image_extensions: Optional[set[str]] = None,
+        max_figures: int = 10,
+        max_image_bytes: int = 5 * 1024 * 1024,
     ) -> Optional[ExtractedSubmissionContent]:
         """
         Download an artifact and extract its contents into memory.
@@ -226,6 +239,10 @@ class ArtifactsService:
             artifact_id: Artifact ID
             max_files: Maximum number of files to extract
             max_total_size: Maximum total size to extract
+            collect_images: Also collect image files for figure review
+            image_extensions: Image extensions to collect (default set if None)
+            max_figures: Maximum number of images to collect
+            max_image_bytes: Maximum size per image file
 
         Returns:
             ArtifactContent with extracted files, or None on failure
@@ -255,6 +272,10 @@ class ArtifactsService:
                 artifact_meta,
                 max_files=max_files,
                 max_total_size=max_total_size,
+                collect_images=collect_images,
+                image_extensions=image_extensions,
+                max_figures=max_figures,
+                max_image_bytes=max_image_bytes,
             )
 
         except Exception as e:
@@ -353,10 +374,20 @@ class ArtifactsService:
         *,
         max_files: int = 50,
         max_total_size: int = 10 * 1024 * 1024,
+        collect_images: bool = False,
+        image_extensions: Optional[set[str]] = None,
+        max_figures: int = 10,
+        max_image_bytes: int = 5 * 1024 * 1024,
     ) -> ExtractedSubmissionContent:
-        """Extract ZIP buffer into ExtractedSubmissionContent."""
+        """Extract ZIP buffer into ExtractedSubmissionContent.
+
+        With collect_images=True, image files are read into image_files
+        (for figure review) instead of being listed as binary; images have
+        their own count/size caps and don't count against max_total_size.
+        """
         files: dict[str, str] = {}
         binary_files: list[str] = []
+        image_files: list[FigureFile] = []
         total_size = 0
         truncated = False
 
@@ -370,7 +401,7 @@ class ArtifactsService:
                         continue
 
                     # Check file limit
-                    if len(files) + len(binary_files) >= max_files:
+                    if len(files) + len(binary_files) + len(image_files) >= max_files:
                         truncated = True
                         break
 
@@ -379,13 +410,34 @@ class ArtifactsService:
                         truncated = True
                         break
 
+                    filename = info.filename
+
+                    # Collect image files for figure review
+                    if collect_images and is_image_file(filename, image_extensions):
+                        if (
+                            info.file_size > max_image_bytes
+                            or len(image_files) >= max_figures
+                        ):
+                            binary_files.append(filename)
+                            continue
+                        try:
+                            image_files.append(
+                                FigureFile(
+                                    path=filename,
+                                    data=zf.read(info),
+                                    media_type=media_type_for(filename),
+                                )
+                            )
+                        except Exception:
+                            binary_files.append(filename)
+                        continue
+
                     # Skip very large files
                     if info.file_size > self.MAX_TEXT_FILE_SIZE:
-                        binary_files.append(info.filename)
+                        binary_files.append(filename)
                         continue
 
                     # Check if it's a code/text file
-                    filename = info.filename
                     suffix = Path(filename).suffix.lower()
                     name = Path(filename).name
 
@@ -414,7 +466,8 @@ class ArtifactsService:
             artifact=artifact,
             files=files,
             binary_files=binary_files,
-            total_files=len(files) + len(binary_files),
+            image_files=image_files,
+            total_files=len(files) + len(binary_files) + len(image_files),
             total_size=total_size,
             truncated=truncated,
         )
@@ -429,6 +482,10 @@ class ArtifactsService:
         submit_only: bool = False,
         max_files: int = 50,
         max_total_size: int = 10 * 1024 * 1024,
+        collect_images: bool = False,
+        image_extensions: Optional[set[str]] = None,
+        max_figures: int = 10,
+        max_image_bytes: int = 5 * 1024 * 1024,
     ) -> Optional[ExtractedSubmissionContent]:
         """
         Download the latest submission using the /submissions/artifacts/download endpoint.
@@ -441,6 +498,10 @@ class ArtifactsService:
             submit_only: If True, only download official submissions. If False, include test uploads
             max_files: Maximum number of files to extract
             max_total_size: Maximum total size to extract
+            collect_images: Also collect image files for figure review
+            image_extensions: Image extensions to collect (default set if None)
+            max_figures: Maximum number of images to collect
+            max_image_bytes: Maximum size per image file
 
         Returns:
             ArtifactContent with extracted files, or None if no submission found
@@ -521,6 +582,10 @@ class ArtifactsService:
                 artifact_meta,
                 max_files=max_files,
                 max_total_size=max_total_size,
+                collect_images=collect_images,
+                image_extensions=image_extensions,
+                max_figures=max_figures,
+                max_image_bytes=max_image_bytes,
             )
 
         except Exception as e:

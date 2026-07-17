@@ -363,8 +363,10 @@ class MockSubmissionsEndpoint:
         self._scenario = scenario
 
     async def artifacts_download(self, **kwargs) -> Optional[bytes]:
-        """Return scenario submission files as a ZIP if available."""
-        if not self._scenario or not self._scenario.submission_files:
+        """Return scenario submission files (text + figures) as a ZIP if available."""
+        if not self._scenario:
+            return None
+        if not (self._scenario.submission_files or self._scenario.submission_images):
             return None
 
         import io
@@ -373,6 +375,8 @@ class MockSubmissionsEndpoint:
         with zipfile.ZipFile(buf, "w") as zf:
             for filename, content in self._scenario.submission_files.items():
                 zf.writestr(filename, content)
+            for figure in self._scenario.submission_images:
+                zf.writestr(figure.path, figure.data)
         return buf.getvalue()
 
     async def get_artifacts(self, **kwargs) -> list:
@@ -806,6 +810,8 @@ async def run_development_mode(
                 parts.append(f"  [dim]Description: {len(scenario.description)} chars[/dim]")
             if scenario.submission_files:
                 parts.append(f"  [dim]Submission: {', '.join(scenario.submission_files.keys())}[/dim]")
+            if scenario.submission_images:
+                parts.append(f"  [dim]Figures: {', '.join(f.path for f in scenario.submission_images)}[/dim]")
             if scenario.reference_files:
                 parts.append(f"  [dim]Reference: {', '.join(scenario.reference_files.keys())}[/dim]")
             if scenario.test_results:
