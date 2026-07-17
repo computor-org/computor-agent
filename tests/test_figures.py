@@ -618,15 +618,25 @@ class TestGraderFigureReview:
             )
         return SubmissionGrader(TutorLLMAdapter(main_provider), figure_reviewer=reviewer)
 
+    def _step_responses(self) -> list[str]:
+        return [
+            json.dumps(
+                {"is_functionally_equivalent": True, "differences": [], "severity": "none"}
+            ),
+            json.dumps(
+                {
+                    "same_approach": True,
+                    "reference_approach": "x",
+                    "student_approach": "x",
+                    "issue": None,
+                }
+            ),
+            self.SYNTHESIS_JSON,
+        ]
+
     @pytest.mark.asyncio
     async def test_multi_step_with_figures(self):
-        main_provider = make_dummy_provider(
-            response_queue=[
-                json.dumps({"is_functionally_equivalent": True, "differences": [], "severity": "none"}),
-                json.dumps({"same_approach": True, "reference_approach": "x", "student_approach": "x", "issue": None}),
-                self.SYNTHESIS_JSON,
-            ]
-        )
+        main_provider = make_dummy_provider(response_queue=self._step_responses())
         vision_provider = make_dummy_provider(
             response_text=review_json("Sine curve visible", ["missing legend"], 0.6)
         )
@@ -645,13 +655,7 @@ class TestGraderFigureReview:
 
     @pytest.mark.asyncio
     async def test_multi_step_without_figures(self):
-        main_provider = make_dummy_provider(
-            response_queue=[
-                json.dumps({"is_functionally_equivalent": True, "differences": [], "severity": "none"}),
-                json.dumps({"same_approach": True, "reference_approach": "x", "student_approach": "x", "issue": None}),
-                self.SYNTHESIS_JSON,
-            ]
-        )
+        main_provider = make_dummy_provider(response_queue=self._step_responses())
         vision_provider = make_dummy_provider()
         grader = self._grader(main_provider, vision_provider)
 

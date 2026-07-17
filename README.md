@@ -7,6 +7,7 @@ AI agents for the Computor system.
 - **LLM Abstraction Layer**: Unified interface for multiple LLM providers
 - **Multiple Providers**: Support for OpenAI, LM Studio, Ollama, and custom providers
 - **Streaming Support**: Real-time response streaming
+- **Figure Review**: Vision-LLM review of plots/images in student submissions, used in messaging and grading (see `docs/tutor-agent.md`)
 - **Highly Configurable**: Extensive configuration options via Pydantic models
 - **Testing Support**: Dummy provider for testing without API calls
 - **CLI Tool**: Interactive chat and single-query commands

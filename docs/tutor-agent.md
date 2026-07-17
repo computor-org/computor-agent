@@ -169,6 +169,12 @@ llm:
   base_url: http://localhost:11434/v1
   temperature: 0.7
 
+# Secondary vision-capable LLM, used only for figure review (optional)
+# vision_llm:
+#   provider: ollama
+#   model: llava:13b
+#   base_url: http://localhost:11434/v1
+
 # Git credentials (for repository access)
 credentials:
   - pattern: https://gitlab.example.com
@@ -191,7 +197,60 @@ tutor:
   scheduler:
     poll_interval_seconds: 30
     cooldown_seconds: 5
+
+  # Figure review (see section below)
+  figure_review:
+    enabled: false
 ```
+
+---
+
+## Figure Review
+
+When enabled, the agent automatically detects figures (plots/pictures:
+`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`) in a student submission
+and reviews each one with a vision-capable LLM — one call per figure. The
+findings (labels/units, legend, readability, data plausibility, assignment
+fit) are injected into both the tutor messaging prompt and the grading
+prompts, where they can lower the grade and appear in the feedback.
+
+```yaml
+vision_llm:                 # secondary model, used only for figure review
+  provider: ollama
+  model: llava:13b
+  base_url: http://localhost:11434/v1
+
+tutor:
+  figure_review:
+    enabled: true
+    use_agent_llm: false    # true = reuse the main llm instead of vision_llm
+    max_figures: 10         # figures reviewed per submission (1-50)
+    max_image_bytes: 5242880
+    image_extensions: [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
+    max_response_tokens: 800
+    temperature: 0.2
+```
+
+Notes:
+
+- **Model choice is your responsibility.** With `use_agent_llm: true` the
+  main `llm` model is used and must itself be vision-capable (e.g.
+  `llava`, `qwen2.5-vl`, `gpt-4o`). A text-only model will fail per figure.
+- **Fail fast:** enabling `figure_review` without a `vision_llm` section
+  and without `use_agent_llm: true` is a startup error.
+- **Graceful degradation:** if a vision call fails at runtime, the figure
+  is reported as "could not be reviewed" and messaging/grading continue.
+- **Environment overrides:** `COMPUTOR_VISION_LLM_PROVIDER`,
+  `COMPUTOR_VISION_LLM_MODEL`, `COMPUTOR_VISION_LLM_BASE_URL`,
+  `COMPUTOR_VISION_LLM_API_KEY`.
+- **Custom prompt:** the review prompt can be overridden via
+  `<prompts_dir>/figure_review/review.md` (hot-reloaded in dev mode).
+- **Dev modes:** both `tutor messaging --dev` (scenario `submission/`
+  directory) and `tutor grading --dev` (student submission directory) pick
+  up figures from disk and run the same review pipeline.
+- **Security note:** text rendered inside student images is untrusted; the
+  review prompt instructs the model to ignore embedded instructions, but
+  review output is still LLM-generated from student-controlled input.
 
 ---
 

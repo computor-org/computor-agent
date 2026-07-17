@@ -9,7 +9,8 @@ flow (production and dev modes).
 
 import json
 import logging
-from typing import TYPE_CHECKING, Optional, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from computor_agent.llm.base import LLMProvider
 from computor_agent.llm.config import ImageContent, Message
@@ -201,8 +202,8 @@ def build_figure_reviewer(
     computor_config: "ComputorConfig",
     tutor_config: "TutorConfig",
     *,
-    main_provider: Optional[LLMProvider],
-) -> Optional[FigureReviewService]:
+    main_provider: LLMProvider | None,
+) -> FigureReviewService | None:
     """
     Build a FigureReviewService from configuration.
 

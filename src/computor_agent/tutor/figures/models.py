@@ -3,7 +3,6 @@ Data models for figure review.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -51,8 +50,8 @@ class FigureReview:
     success: bool
     assessment: str = ""
     issues: list[str] = field(default_factory=list)
-    score: Optional[float] = None
-    error: Optional[str] = None
+    score: float | None = None
+    error: str | None = None
 
 
 @dataclass

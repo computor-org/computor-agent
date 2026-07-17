@@ -9,7 +9,6 @@ extraction path (ArtifactsService) and all disk-walking loaders
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from computor_agent.tutor.figures.models import FigureFile
 
@@ -34,7 +33,7 @@ DEFAULT_SKIP_DIRS: set[str] = {
 }
 
 
-def is_image_file(path: str | Path, extensions: Optional[set[str]] = None) -> bool:
+def is_image_file(path: str | Path, extensions: set[str] | None = None) -> bool:
     """
     Check whether a path looks like a reviewable image file.
 
@@ -66,10 +65,10 @@ def media_type_for(path: str | Path) -> str:
 def collect_images_from_dir(
     root: Path,
     *,
-    extensions: Optional[set[str]] = None,
+    extensions: set[str] | None = None,
     max_figures: int = 10,
     max_image_bytes: int = 5 * 1024 * 1024,
-    skip_dirs: Optional[set[str]] = None,
+    skip_dirs: set[str] | None = None,
 ) -> tuple[list[FigureFile], list[str]]:
     """
     Recursively collect image files from a directory.
