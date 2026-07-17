@@ -394,6 +394,7 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
         prompts_dir: Directory to check/create prompt files in
     """
     from computor_agent.tutor.prompts.templates import (
+        FIGURE_REVIEW_SYSTEM_PROMPT,
         PERSONALITY_PROMPTS,
         STRATEGY_PROMPTS,
         SECURITY_DETECTION_PROMPT,
@@ -404,8 +405,9 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
     personality_dir = prompts_dir / "personality"
     strategy_dir = prompts_dir / "strategy"
     security_dir = prompts_dir / "security"
+    figure_review_dir = prompts_dir / "figure_review"
 
-    for dir_path in [personality_dir, strategy_dir, security_dir]:
+    for dir_path in [personality_dir, strategy_dir, security_dir, figure_review_dir]:
         dir_path.mkdir(parents=True, exist_ok=True)
 
     initialized_count = 0
@@ -438,6 +440,15 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
             _write_prompt_file(file_path, content, f"Security: {name}")
             initialized_count += 1
             logger.debug(f"Created prompt file: {file_path}")
+
+    # Check and create figure review prompt
+    figure_review_path = figure_review_dir / "review.md"
+    if not figure_review_path.exists():
+        _write_prompt_file(
+            figure_review_path, FIGURE_REVIEW_SYSTEM_PROMPT, "Figure Review: review"
+        )
+        initialized_count += 1
+        logger.debug(f"Created prompt file: {figure_review_path}")
 
     # Copy documentation files
     import shutil

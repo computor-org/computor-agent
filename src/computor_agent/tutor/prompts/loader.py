@@ -84,6 +84,7 @@ class PromptLoader:
         self._personality_prompts: Dict[str, str] = {}
         self._strategy_prompts: Dict[str, str] = {}
         self._security_prompts: Dict[str, str] = {}
+        self._figure_review_prompts: Dict[str, str] = {}
 
         # File watcher
         self._observer: Optional[Observer] = None
@@ -128,9 +129,16 @@ class PromptLoader:
             for file_path in security_dir.glob("*.md"):
                 self._load_security_prompt(file_path)
 
+        # Load figure review prompts
+        figure_review_dir = self.prompts_dir / "figure_review"
+        if figure_review_dir.exists():
+            for file_path in figure_review_dir.glob("*.md"):
+                self._load_figure_review_prompt(file_path)
+
         logger.info(f"Loaded {len(self._personality_prompts)} personality prompts")
         logger.info(f"Loaded {len(self._strategy_prompts)} strategy prompts")
         logger.info(f"Loaded {len(self._security_prompts)} security prompts")
+        logger.info(f"Loaded {len(self._figure_review_prompts)} figure review prompts")
 
     def reload_file(self, file_path: Path) -> None:
         """Reload a specific prompt file."""
@@ -143,6 +151,8 @@ class PromptLoader:
             self._load_strategy_prompt(file_path)
         elif category == "security":
             self._load_security_prompt(file_path)
+        elif category == "figure_review":
+            self._load_figure_review_prompt(file_path)
         else:
             logger.warning(f"Unknown prompt category: {category}")
 
@@ -178,6 +188,17 @@ class PromptLoader:
         if content:
             self._security_prompts[key] = content
             logger.debug(f"Loaded security prompt: {key}")
+
+    def _load_figure_review_prompt(self, file_path: Path) -> None:
+        """Load a figure review prompt file."""
+        if not file_path.exists():
+            return
+
+        key = file_path.stem
+        content = self._read_prompt_file(file_path)
+        if content:
+            self._figure_review_prompts[key] = content
+            logger.debug(f"Loaded figure review prompt: {key}")
 
     def _read_prompt_file(self, file_path: Path) -> Optional[str]:
         """
@@ -220,6 +241,10 @@ class PromptLoader:
     def get_security_prompt(self, prompt_type: str) -> Optional[str]:
         """Get a security prompt."""
         return self._security_prompts.get(prompt_type)
+
+    def get_figure_review_prompt(self, name: str = "review") -> Optional[str]:
+        """Get a figure review prompt."""
+        return self._figure_review_prompts.get(name)
 
     def get_all_personality_prompts(self) -> Dict[str, str]:
         """Get all personality prompts."""
@@ -310,5 +335,18 @@ def get_strategy_prompt(strategy: str) -> str:
         # Fall back to hardcoded templates
         from computor_agent.tutor.prompts.templates import STRATEGY_PROMPTS
         prompt = STRATEGY_PROMPTS.get(strategy, STRATEGY_PROMPTS["fallback"])
+
+    return prompt
+
+
+def get_figure_review_prompt(name: str = "review") -> str:
+    """Get a figure review prompt, falling back to templates.py if needed."""
+    loader = get_prompt_loader()
+    prompt = loader.get_figure_review_prompt(name)
+
+    if prompt is None:
+        # Fall back to hardcoded templates
+        from computor_agent.tutor.prompts.templates import FIGURE_REVIEW_SYSTEM_PROMPT
+        prompt = FIGURE_REVIEW_SYSTEM_PROMPT
 
     return prompt

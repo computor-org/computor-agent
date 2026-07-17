@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from computor_agent.tutor.prompts.templates import (
+    FIGURE_REVIEW_SYSTEM_PROMPT,
     PERSONALITY_PROMPTS,
     STRATEGY_PROMPTS,
     SECURITY_DETECTION_PROMPT,
@@ -30,8 +31,9 @@ def export_prompts(target_dir: Optional[Path] = None):
     personality_dir = target_dir / "personality"
     strategy_dir = target_dir / "strategy"
     security_dir = target_dir / "security"
+    figure_review_dir = target_dir / "figure_review"
 
-    for dir_path in [personality_dir, strategy_dir, security_dir]:
+    for dir_path in [personality_dir, strategy_dir, security_dir, figure_review_dir]:
         dir_path.mkdir(parents=True, exist_ok=True)
 
     print(f"Exporting prompts to: {target_dir}")
@@ -59,9 +61,17 @@ def export_prompts(target_dir: Optional[Path] = None):
         write_prompt_file(file_path, prompt, f"Security: {name}")
         print(f"  ✓ {file_path.relative_to(target_dir)}")
 
+    # Export figure review prompt
+    figure_review_path = figure_review_dir / "review.md"
+    write_prompt_file(
+        figure_review_path, FIGURE_REVIEW_SYSTEM_PROMPT, "Figure Review: review"
+    )
+    print(f"  ✓ {figure_review_path.relative_to(target_dir)}")
+
     print(f"\nExported {len(PERSONALITY_PROMPTS)} personality prompts")
     print(f"Exported {len(STRATEGY_PROMPTS)} strategy prompts")
     print(f"Exported {len(security_prompts)} security prompts")
+    print("Exported 1 figure review prompt")
     print(f"\nYou can now edit these files, and changes will hot-reload in dev mode!")
 
 
