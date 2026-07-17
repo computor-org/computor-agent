@@ -68,6 +68,7 @@ class AgentRuntime:
         self.metrics = None
         self.llm_config = None
         self.llm_provider = None
+        self.figure_reviewer = None
         self.scheduler_stats = LateBoundSchedulerStats()
         self._api_server = None
         self._api_task = None
@@ -83,8 +84,11 @@ class AgentRuntime:
 
         if not self._build_llm():
             return 1
+        if not self._build_vision_llm():
+            return 1
         self._start_dashboard()
         await self._check_llm_health()
+        await self._check_vision_llm_health()
 
         tutor_llm = TutorLLMAdapter(self.llm_provider)
 
@@ -115,6 +119,8 @@ class AgentRuntime:
             await self._run_until_shutdown(scheduler)
 
         await tutor_llm.close()
+        if self.figure_reviewer:
+            await self.figure_reviewer.close()
         if self._run_state["exit_code"]:
             self.console.print(
                 "[bold red]Tutor agent stopped after an unrecoverable error.[/bold red]"
@@ -175,6 +181,64 @@ class AgentRuntime:
             base_url=self.llm_config.base_url,
         )
         return True
+
+    def _build_vision_llm(self) -> bool:
+        """Create the figure review service (vision LLM). False on misconfig.
+
+        Fails fast when figure review is enabled without a usable LLM
+        source (no vision_llm section and use_agent_llm not set).
+        """
+        from computor_agent.tutor.figures.service import build_figure_reviewer
+
+        try:
+            self.figure_reviewer = build_figure_reviewer(
+                self.config,
+                self.tutor_config,
+                main_provider=self.llm_provider,
+            )
+        except ValueError as e:
+            logger.error(f"Figure review configuration error: {e}")
+            self.console.print(f"[bold red]Error:[/bold red] {e}")
+            return False
+
+        if self.figure_reviewer:
+            fr = self.tutor_config.figure_review
+            source = (
+                "main agent LLM"
+                if fr.use_agent_llm
+                else f"{self.config.vision_llm.provider}/{self.config.vision_llm.model}"
+            )
+            logger.info(f"Figure review enabled (vision model: {source})")
+        return True
+
+    async def _check_vision_llm_health(self) -> None:
+        """Soft-probe a dedicated vision provider.
+
+        Non-fatal like _check_llm_health: figure review degrades
+        gracefully per figure at runtime, and a text probe cannot verify
+        vision capability anyway (that responsibility is the user's).
+        Skipped when the main provider is reused (already probed).
+        """
+        if not self.figure_reviewer or self.tutor_config.figure_review.use_agent_llm:
+            return
+
+        settings = self.config.vision_llm
+        self.console.print(
+            f"[dim]Checking vision LLM connectivity ({settings.provider}/{settings.model})...[/dim]"
+        )
+        try:
+            await self.figure_reviewer.provider.check_health()
+            logger.info(f"Vision LLM health check passed ({settings.provider}/{settings.model})")
+            self.console.print("[green]Vision LLM is ready.[/green]")
+        except Exception as e:
+            logger.warning(
+                f"Vision LLM health check failed ({settings.provider}/{settings.model}): {e} "
+                "— continuing; figure review will report per-figure errors",
+                exc_info=True,
+            )
+            self.console.print(
+                f"[yellow]Warning:[/yellow] vision LLM health check failed: {e}"
+            )
 
     def _start_dashboard(self) -> None:
         """Bring up the optional dashboard *before* any blocking I/O.
@@ -342,6 +406,7 @@ class AgentRuntime:
             config=self.tutor_config,
             llm=tutor_llm,
             client=client,
+            figure_reviewer=self.figure_reviewer,
         )
         scheduler_config = self._scheduler_config()
 

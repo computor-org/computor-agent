@@ -32,6 +32,7 @@ from computor_agent.tutor.strategies import StrategyRegistry, StrategyResponse
 
 if TYPE_CHECKING:
     from computor_agent.tutor.assignment_loader import AssignmentContext
+    from computor_agent.tutor.figures.service import FigureReviewService
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ class TutorAgent:
         config: TutorConfig,
         llm: LLMClient,
         client: Any,  # ComputorClient from computor-client
+        figure_reviewer: Optional["FigureReviewService"] = None,
     ) -> None:
         """
         Initialize the tutor agent.
@@ -143,13 +145,18 @@ class TutorAgent:
             config: Complete tutor configuration
             llm: LLM client for all AI operations
             client: ComputorClient instance from computor-client package
+            figure_reviewer: Service for reviewing submission figures with
+                a vision LLM (None = figure review disabled)
         """
         self.config = config
         self.llm = llm
         self.client = client
+        self.figure_reviewer = figure_reviewer
 
         # Initialize components
-        self.context_builder = ContextBuilder(client, config.context)
+        self.context_builder = ContextBuilder(
+            client, config.context, figure_config=config.figure_review
+        )
         self.security_gate = SecurityGate(config.security, llm)
         self.intent_classifier = IntentClassifier(llm)
         self.strategy_registry = StrategyRegistry(config.personality)
@@ -220,6 +227,9 @@ class TutorAgent:
             # Try to download submission code (always attempt — the LLM
             # can decide itself whether the student needs code help)
             await self._ensure_code_context(context)
+
+            # Review submission figures with the vision LLM (if enabled)
+            await self._maybe_review_figures(context)
 
             # Build unified system prompt with all available context
             system_prompt = self._build_system_prompt(context)
@@ -359,15 +369,7 @@ class TutorAgent:
             template = TUTOR_SYSTEM_PROMPT
 
         # Assignment
-        assignment_section = ""
-        if context.assignment:
-            parts = []
-            if context.assignment.title:
-                parts.append(f"Title: {context.assignment.title}")
-            if context.assignment.description:
-                parts.append(context.assignment.description)
-            if parts:
-                assignment_section = f"Assignment:\n---\n{chr(10).join(parts)}\n---"
+        assignment_section = self._format_assignment_section(context)
 
         # Student code
         code_section = ""
@@ -392,6 +394,11 @@ class TutorAgent:
         if context.has_reference_comparison:
             reference_comparison_section = f"Reference Comparison:\n---\n{context.reference_comparison.format_for_prompt(max_diffs=3, max_lines_per_diff=30)}\n---"
 
+        # Figure review (vision LLM results)
+        figure_review_section = ""
+        if context.has_figure_review:
+            figure_review_section = f"Figure Review:\n---\n{context.figure_review.format_for_prompt()}\n---"
+
         return template.format(
             personality_prompt=personality,
             language=self.config.personality.language,
@@ -400,7 +407,43 @@ class TutorAgent:
             test_results_section=test_results_section,
             previous_messages_section=previous_messages_section,
             reference_comparison_section=reference_comparison_section,
+            figure_review_section=figure_review_section,
         )
+
+    def _format_assignment_section(self, context: ConversationContext) -> str:
+        """Format the assignment context block (shared with figure review)."""
+        if not context.assignment:
+            return ""
+        parts = []
+        if context.assignment.title:
+            parts.append(f"Title: {context.assignment.title}")
+        if context.assignment.description:
+            parts.append(context.assignment.description)
+        if not parts:
+            return ""
+        return f"Assignment:\n---\n{chr(10).join(parts)}\n---"
+
+    async def _maybe_review_figures(self, context: ConversationContext) -> None:
+        """Run figure review over submission images (if enabled)."""
+        if not self.figure_reviewer or not self.config.figure_review.enabled:
+            return
+
+        figures = context.student_code.images if context.student_code else []
+        if not figures:
+            return
+
+        logger.info(f"Reviewing {len(figures)} figure(s) from submission")
+        try:
+            context.figure_review = await self.figure_reviewer.review_all(
+                figures,
+                assignment_section=self._format_assignment_section(context),
+                language=self.config.personality.language,
+            )
+        except Exception as e:
+            # Defensive: the service itself degrades per figure and
+            # shouldn't raise — but figure review must never break the
+            # messaging flow.
+            logger.warning(f"Figure review failed: {e}")
 
     async def _ensure_code_context(self, context: ConversationContext) -> None:
         """Try to download submission code if not already available."""

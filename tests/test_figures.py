@@ -464,6 +464,111 @@ class TestGradingSubmissionImages:
         assert [f.path for f in submission.files] == ["main.py"]
 
 
+class TestAgentFigureReviewFlow:
+    """End-to-end messaging flow with figure review (dev-mode mocks)."""
+
+    def _make_scenario_dir(self, tmp_path):
+        (tmp_path / "scenario.yaml").write_text(
+            "student:\n  name: Test\nassignment:\n  title: Plots\n"
+        )
+        sub_dir = tmp_path / "submission"
+        sub_dir.mkdir()
+        (sub_dir / "main.py").write_text("import matplotlib\n")
+        (sub_dir / "plot.png").write_bytes(PNG_BYTES)
+        return tmp_path
+
+    def _make_agent(self, tmp_path, figure_review_config, vision_provider):
+        from computor_agent.tutor import TutorAgent, TutorLLMAdapter
+        from computor_agent.tutor.dev_mode import MessageSimulator, MockComputorClient
+        from computor_agent.tutor.scenario_loader import load_scenario
+
+        scenario = load_scenario(self._make_scenario_dir(tmp_path))
+        tutor_config = TutorConfig.from_dict(
+            {
+                "security": {"enabled": False},
+                "figure_review": figure_review_config,
+            }
+        )
+        main_provider = make_dummy_provider(response_text="Tutor reply about the plot")
+        reviewer = None
+        if vision_provider is not None:
+            reviewer = FigureReviewService(
+                vision_provider, tutor_config.figure_review, owns_provider=True
+            )
+
+        simulator = MessageSimulator()
+        client = MockComputorClient(simulator, scenario=scenario)
+        agent = TutorAgent(
+            config=tutor_config,
+            llm=TutorLLMAdapter(main_provider),
+            client=client,
+            figure_reviewer=reviewer,
+        )
+        return agent, simulator, main_provider
+
+    @pytest.mark.asyncio
+    async def test_figure_review_injected_into_system_prompt(self, tmp_path):
+        vision_provider = make_dummy_provider(
+            response_queue=[review_json("Nice plot", ["missing legend"], 0.7)]
+        )
+        agent, simulator, main_provider = self._make_agent(
+            tmp_path, {"enabled": True, "use_agent_llm": True}, vision_provider
+        )
+
+        message = simulator.create_message(content="How is my plot?", mention_agent=True)
+        result = await agent.process_message(
+            submission_group_id="dev-group",
+            message=message.to_dict(),
+            send_response=False,
+        )
+
+        assert result.success
+        # One vision call for the one figure in the submission ZIP
+        assert vision_provider.call_count == 1
+        system_prompt = main_provider.last_kwargs["system_prompt"]
+        assert "Figure Review:" in system_prompt
+        assert "missing legend" in system_prompt
+
+    @pytest.mark.asyncio
+    async def test_disabled_figure_review_makes_no_vision_calls(self, tmp_path):
+        vision_provider = make_dummy_provider()
+        agent, simulator, main_provider = self._make_agent(
+            tmp_path, {"enabled": False}, vision_provider
+        )
+
+        message = simulator.create_message(content="Help me", mention_agent=True)
+        result = await agent.process_message(
+            submission_group_id="dev-group",
+            message=message.to_dict(),
+            send_response=False,
+        )
+
+        assert result.success
+        assert vision_provider.call_count == 0
+        assert "Figure Review:" not in main_provider.last_kwargs["system_prompt"]
+
+    @pytest.mark.asyncio
+    async def test_vision_failure_does_not_break_messaging(self, tmp_path):
+        vision_provider = make_dummy_provider(
+            should_fail=True, error_message="vision offline"
+        )
+        agent, simulator, main_provider = self._make_agent(
+            tmp_path, {"enabled": True, "use_agent_llm": True}, vision_provider
+        )
+
+        message = simulator.create_message(content="How is my plot?", mention_agent=True)
+        result = await agent.process_message(
+            submission_group_id="dev-group",
+            message=message.to_dict(),
+            send_response=False,
+        )
+
+        assert result.success
+        # The failed review is still reported to the main LLM
+        system_prompt = main_provider.last_kwargs["system_prompt"]
+        assert "Could not be reviewed" in system_prompt
+
+
 class TestFigureReviewPrompt:
     """Tests for the figure review prompt template."""
 

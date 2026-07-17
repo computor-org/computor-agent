@@ -778,6 +778,32 @@ async def run_development_mode(
         await llm_provider.close()
         return
 
+    # --- Phase 2b: Vision LLM (figure review) ---
+    from computor_agent.tutor.figures.service import build_figure_reviewer
+
+    try:
+        figure_reviewer = build_figure_reviewer(
+            computor_config, tutor_config, main_provider=llm_provider
+        )
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        await llm_provider.close()
+        return
+
+    if figure_reviewer and not tutor_config.figure_review.use_agent_llm:
+        vision = computor_config.vision_llm
+        try:
+            console.print(
+                f"[dim]Checking vision LLM connectivity ({vision.provider}/{vision.model})...[/dim]"
+            )
+            await figure_reviewer.provider.check_health()
+            console.print(f"[green]✓ Vision LLM ready[/green] [dim]({vision.provider}/{vision.model})[/dim]")
+        except Exception as e:
+            console.print(
+                f"[yellow]Warning:[/yellow] vision LLM health check failed: {e}\n"
+                "[dim]Continuing — figure review will report per-figure errors.[/dim]"
+            )
+
     # --- Phase 3: Prompts ---
     if prompts_dir is None:
         prompts_dir = Path.home() / ".computor" / "prompts"
@@ -846,6 +872,7 @@ async def run_development_mode(
         config=tutor_config,
         llm=tutor_llm,
         client=mock_client,
+        figure_reviewer=figure_reviewer,
     )
     scheduler = DevelopmentScheduler(agent, simulator, assignment_context, scenario=scenario)
 
@@ -854,6 +881,8 @@ async def run_development_mode(
         console.print(f"\n[bold]Prompt:[/bold] {prompt}")
         message = simulator.create_message(content=prompt, mention_agent=True)
         await scheduler._process_message(message)
+        if figure_reviewer:
+            await figure_reviewer.close()
         await llm_provider.close()
         return
 
@@ -862,6 +891,13 @@ async def run_development_mode(
         f"LLM: [green]{computor_config.llm.provider}/{computor_config.llm.model}[/green]",
         f"Prompts: [cyan]{prompts_dir}[/cyan] (hot reload enabled)",
     ]
+    if figure_reviewer:
+        vision_label = (
+            f"{computor_config.llm.provider}/{computor_config.llm.model} (main LLM)"
+            if tutor_config.figure_review.use_agent_llm
+            else f"{computor_config.vision_llm.provider}/{computor_config.vision_llm.model}"
+        )
+        info_lines.append(f"Figure review: [green]{vision_label}[/green]")
     if assignment_context:
         info_lines.append(f"Assignment: [cyan]{assignment_context.title}[/cyan]")
     info_lines.extend([
@@ -876,3 +912,5 @@ async def run_development_mode(
         console.print("\n[yellow]Development mode stopped.[/yellow]")
     finally:
         prompt_loader.stop_watching()
+        if figure_reviewer:
+            await figure_reviewer.close()
