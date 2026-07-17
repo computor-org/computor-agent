@@ -170,6 +170,67 @@ class ContextConfig(BaseModel):
     )
 
 
+class FigureReviewConfig(BaseModel):
+    """
+    Configuration for vision-LLM review of figures in submissions.
+
+    When enabled, image files (plots/pictures) found in a student
+    submission are reviewed by a vision-capable LLM and the findings are
+    injected into both the tutor messaging and grading prompts.
+
+    The vision model comes from the top-level ``vision_llm`` config
+    section, or — with ``use_agent_llm: true`` — the main agent LLM is
+    reused (the user is responsible for picking a vision-capable model).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable figure review",
+    )
+    use_agent_llm: bool = Field(
+        default=False,
+        description=(
+            "Reuse the main agent LLM instead of vision_llm "
+            "(the model must have vision capability)"
+        ),
+    )
+    max_figures: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of figures to review per submission",
+    )
+    max_image_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1024,
+        description="Maximum size of a single image file (bytes)",
+    )
+    image_extensions: list[str] = Field(
+        default_factory=lambda: [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"],
+        description="File extensions detected as figures",
+    )
+    max_response_tokens: int = Field(
+        default=800,
+        ge=100,
+        description="Maximum tokens per figure review response",
+    )
+    temperature: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=2.0,
+        description="LLM temperature for figure review",
+    )
+
+    def extension_set(self) -> set[str]:
+        """Return normalized lowercase extensions with leading dots."""
+        return {
+            e.lower() if e.startswith(".") else f".{e.lower()}"
+            for e in self.image_extensions
+        }
+
+
 class StrategyConfig(BaseModel):
     """
     Configuration for individual response strategies.
@@ -566,6 +627,10 @@ class TutorConfig(BaseModel):
     strategies: StrategiesConfig = Field(
         default_factory=StrategiesConfig,
         description="Strategy-specific settings",
+    )
+    figure_review: FigureReviewConfig = Field(
+        default_factory=FigureReviewConfig,
+        description="Vision-LLM figure review settings",
     )
 
     @classmethod

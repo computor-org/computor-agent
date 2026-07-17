@@ -23,6 +23,14 @@ llm:
   # For Docker: use http://host.docker.internal:11434/v1
   temperature: 0.7
 
+# Secondary vision-capable LLM, used only for figure review (optional).
+# Required when tutor.figure_review.enabled is true unless
+# tutor.figure_review.use_agent_llm is set.
+# vision_llm:
+#   provider: ollama
+#   model: llava:13b
+#   base_url: http://localhost:11434/v1
+
 # Git credentials for repository access (optional)
 credentials:
   - pattern: https://gitlab.example.com
@@ -38,6 +46,14 @@ tutor:
     request_tags:
       - "ai"
     response_tag: "ai-response"
+
+  # Review figures (plots/images) in submissions with a vision LLM
+  figure_review:
+    enabled: false
+    # use_agent_llm: true   # reuse the main llm (must be vision-capable)
+    # max_figures: 10
+    # max_image_bytes: 5242880
+    # image_extensions: [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
 
   # Scheduler settings
   scheduler:

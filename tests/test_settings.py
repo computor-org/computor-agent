@@ -664,6 +664,53 @@ class TestComputorConfig:
         data = config.to_dict(include_secrets=True)
         assert data["backend"]["password"] == "secret-password"
 
+    def test_vision_llm_optional(self):
+        """vision_llm defaults to None and accepts LLMSettings."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="user",
+                password="pass",
+            ),
+        )
+        assert config.vision_llm is None
+
+        config = ComputorConfig.from_dict({
+            "backend": {
+                "url": "https://api.example.com",
+                "username": "user",
+                "password": "pass",
+            },
+            "vision_llm": {
+                "provider": "ollama",
+                "model": "llava:13b",
+                "base_url": "http://localhost:11434/v1",
+            },
+        })
+        assert config.vision_llm.provider == "ollama"
+        assert config.vision_llm.model == "llava:13b"
+
+    def test_to_dict_vision_llm_masks_api_key(self):
+        """vision_llm is serialized like llm, with the API key masked."""
+        config = ComputorConfig(
+            backend=BackendConfig(
+                url="https://api.example.com",
+                username="user",
+                password="pass",
+            ),
+            vision_llm=LLMSettings(
+                provider="openai",
+                model="gpt-4o",
+                api_key="sk-vision-secret",
+            ),
+        )
+        data = config.to_dict()
+        assert data["vision_llm"]["model"] == "gpt-4o"
+        assert data["vision_llm"]["api_key"] == "***"
+
+        data = config.to_dict(include_secrets=True)
+        assert data["vision_llm"]["api_key"] == "sk-vision-secret"
+
 
 class TestComputorConfigFile:
     """Tests for file-based ComputorConfig."""
@@ -836,6 +883,31 @@ class TestComputorConfigEnv:
         config = self._base_config()
         assert apply_env_overrides(config, {}) is config
         assert apply_env_overrides(config, {"UNRELATED": "x"}) is config
+
+    def test_apply_env_overrides_vision_llm(self):
+        """COMPUTOR_VISION_LLM_* creates or patches the vision_llm section."""
+        from pydantic import SecretStr
+
+        from computor_agent.settings.config import apply_env_overrides
+
+        # Config without a vision_llm section: env vars create it
+        config = self._base_config()
+        result = apply_env_overrides(
+            config,
+            {
+                "COMPUTOR_VISION_LLM_PROVIDER": "lmstudio",
+                "COMPUTOR_VISION_LLM_MODEL": "qwen2-vl",
+                "COMPUTOR_VISION_LLM_BASE_URL": "http://localhost:1234/v1",
+                "COMPUTOR_VISION_LLM_API_KEY": "sk-vision",
+            },
+        )
+        assert result.vision_llm.provider == "lmstudio"
+        assert result.vision_llm.model == "qwen2-vl"
+        assert result.vision_llm.base_url == "http://localhost:1234/v1"
+        assert isinstance(result.vision_llm.api_key, SecretStr)
+        assert result.vision_llm.get_api_key() == "sk-vision"
+        # Main llm untouched
+        assert result.llm.model == "file-model"
 
 
 class TestSecureRepresentations:

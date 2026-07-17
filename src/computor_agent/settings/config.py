@@ -291,6 +291,13 @@ class ComputorConfig(BaseModel):
         default=None,
         description="LLM provider settings"
     )
+    vision_llm: Optional[LLMSettings] = Field(
+        default=None,
+        description=(
+            "Secondary vision-capable LLM used only for figure review "
+            "(see tutor.figure_review)"
+        )
+    )
     credentials: Optional[list[dict[str, Any]]] = Field(
         default=None,
         description="Git credentials mappings (list of {pattern, token, ...})"
@@ -396,20 +403,28 @@ class ComputorConfig(BaseModel):
             data["agent"]["description"] = self.agent.description
 
         if self.llm:
-            data["llm"] = {
-                "provider": self.llm.provider,
-                "model": self.llm.model,
-            }
-            if self.llm.base_url:
-                data["llm"]["base_url"] = self.llm.base_url
-            if self.llm.api_key:
-                data["llm"]["api_key"] = self.llm.get_api_key() if include_secrets else "***"
-            if self.llm.temperature != 0.7:
-                data["llm"]["temperature"] = self.llm.temperature
-            if self.llm.max_tokens:
-                data["llm"]["max_tokens"] = self.llm.max_tokens
+            data["llm"] = self._llm_settings_to_dict(self.llm, include_secrets)
+        if self.vision_llm:
+            data["vision_llm"] = self._llm_settings_to_dict(self.vision_llm, include_secrets)
 
         return data
+
+    @staticmethod
+    def _llm_settings_to_dict(llm: LLMSettings, include_secrets: bool) -> dict:
+        """Serialize an LLMSettings block, masking the API key by default."""
+        llm_dict = {
+            "provider": llm.provider,
+            "model": llm.model,
+        }
+        if llm.base_url:
+            llm_dict["base_url"] = llm.base_url
+        if llm.api_key:
+            llm_dict["api_key"] = llm.get_api_key() if include_secrets else "***"
+        if llm.temperature != 0.7:
+            llm_dict["temperature"] = llm.temperature
+        if llm.max_tokens:
+            llm_dict["max_tokens"] = llm.max_tokens
+        return llm_dict
 
     def save(self, path: Union[str, Path], format: str = "yaml") -> None:
         """
@@ -483,6 +498,10 @@ _ENV_OVERRIDE_PATHS: dict[str, tuple[str, str]] = {
     "COMPUTOR_LLM_MODEL": ("llm", "model"),
     "COMPUTOR_LLM_BASE_URL": ("llm", "base_url"),
     "COMPUTOR_LLM_API_KEY": ("llm", "api_key"),
+    "COMPUTOR_VISION_LLM_PROVIDER": ("vision_llm", "provider"),
+    "COMPUTOR_VISION_LLM_MODEL": ("vision_llm", "model"),
+    "COMPUTOR_VISION_LLM_BASE_URL": ("vision_llm", "base_url"),
+    "COMPUTOR_VISION_LLM_API_KEY": ("vision_llm", "api_key"),
 }
 
 

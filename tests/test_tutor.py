@@ -4,6 +4,8 @@ Tests for the Tutor AI Agent module.
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from computor_agent.tutor import (
     TutorConfig,
     Intent,
@@ -69,6 +71,40 @@ class TestTutorConfig:
         assert "security" in data
         assert "context" in data
         assert "strategies" in data
+
+    def test_figure_review_defaults(self):
+        """Figure review is disabled by default with sensible limits."""
+        config = TutorConfig()
+
+        assert config.figure_review.enabled is False
+        assert config.figure_review.use_agent_llm is False
+        assert config.figure_review.max_figures == 10
+        assert config.figure_review.max_image_bytes == 5 * 1024 * 1024
+        assert ".png" in config.figure_review.image_extensions
+
+    def test_figure_review_from_dict(self):
+        """Figure review section parses from config dict."""
+        config = TutorConfig.from_dict({
+            "figure_review": {
+                "enabled": True,
+                "use_agent_llm": True,
+                "max_figures": 3,
+                "image_extensions": ["png", ".JPG"],
+            }
+        })
+
+        assert config.figure_review.enabled is True
+        assert config.figure_review.use_agent_llm is True
+        assert config.figure_review.max_figures == 3
+        # extension_set normalizes to lowercase with leading dots
+        assert config.figure_review.extension_set() == {".png", ".jpg"}
+
+    def test_figure_review_rejects_unknown_keys(self):
+        """extra=forbid catches typos in the figure_review section."""
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            TutorConfig.from_dict({"figure_review": {"enabld": True}})
 
 
 class TestIntent:
