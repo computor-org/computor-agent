@@ -32,15 +32,14 @@ llm:
 #   base_url: http://localhost:11434/v1
 
 # Tutor configuration (optional)
+#
+# Activation: the agent responds to messages that @mention it. Its identity is
+# the user it authenticates as (see `backend` above) — the backend resolves the
+# mention server-side (mentions_me), so there is no name/tag to configure here.
 tutor:
   personality:
     name: Tutor AI
     tone: friendly_professional
-
-  triggers:
-    request_tags:
-      - "ai"
-    response_tag: "ai-response"
 
   # Review figures (plots/images) in submissions with a vision LLM
   figure_review:
