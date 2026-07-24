@@ -86,12 +86,13 @@ tutor:
 
   # Triggers - when the agent responds
   triggers:
-    # Tags that trigger the agent (students write #ai in their message title)
-    request_tags:
-      - "ai"
-    # Tag added to agent responses (e.g., #ai-response)
-    response_tag: "ai-response"
-    # Also trigger on new submission artifacts
+    # The agent responds to messages that @mention it. Its identity is the
+    # user it authenticates as (see `backend`); the backend resolves the
+    # mention server-side (mentions_me), so no tag/name is configured here.
+    # Follow-up replies in a thread the agent already joined trigger too.
+    #
+    # Set `enabled: false` to turn the agent off.
+    # Also trigger on new submission artifacts:
     check_submissions: true
 
   # Scheduler - polling and caching configuration

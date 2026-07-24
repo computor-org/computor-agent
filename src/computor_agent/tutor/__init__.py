@@ -113,7 +113,6 @@ from computor_agent.tutor.config import (
     ContextConfig,
     StrategyConfig,
     TriggerConfig,
-    TriggerTag,
     NotesConfig,
 )
 from computor_agent.tutor.intents import Intent, IntentClassification, IntentClassifier
@@ -204,7 +203,6 @@ __all__ = [
     "ContextConfig",
     "StrategyConfig",
     "TriggerConfig",
-    "TriggerTag",
     "NotesConfig",
     # Context
     "ConversationContext",

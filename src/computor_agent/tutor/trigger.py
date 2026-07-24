@@ -2,13 +2,15 @@
 Trigger detection for the Tutor AI Agent.
 
 Determines when the tutor agent should respond based on:
-1. Message triggers: Messages tagged with configured request tags (e.g., #ai::help)
+1. Message triggers: Messages that @mention the agent (``mentions_me``)
 2. Submission triggers: New submission artifact with submit=True
 
-Tag-based response model:
-- The agent responds ONLY to messages that have a request tag in the title
-- User must explicitly add the tag to request help
-- This keeps the agent focused and prevents unwanted responses
+Mention-based response model:
+- The agent responds to messages that @mention it. The backend resolves
+  ``mentions_me`` to the authenticated agent user, so no name/tag matching
+  happens here.
+- Follow-up replies in a thread the agent already participated in trigger
+  too, matched by authorship (``agent_user_id``), not by a marker tag.
 """
 
 import logging
@@ -48,7 +50,7 @@ class MessageTrigger:
 
     # Conversation context
     root_message_id: Optional[str] = None
-    """Root message ID of the conversation (the message with request tag)."""
+    """Root message ID of the conversation (the message that @mentioned the agent)."""
 
     parent_id: Optional[str] = None
     """ID of the message this is replying to (None if root message)."""
@@ -115,15 +117,16 @@ class CourseMembersClientProtocol(Protocol):
 
 class TriggerChecker:
     """
-    Checks if the tutor agent should respond based on message tags and reply chains.
+    Checks if the tutor agent should respond based on @mentions and reply chains.
 
     The tutor should respond when:
-    1. A message has a configured request tag (starts new conversation)
-    2. An unread reply exists to a message chain where AI already responded
+    1. A message @mentions the agent (starts new conversation)
+    2. An unread reply exists in a thread where the agent already responded
     3. A new submission artifact with submit=True is created
 
     No external conversation state is needed - the message chain (parent_id links)
-    defines the conversation, and AI response tags identify where the AI participated.
+    defines the conversation, and the agent's authorship identifies where it
+    participated.
 
     Usage:
         checker = TriggerChecker(messages_client, course_members_client, config)
@@ -160,8 +163,8 @@ class TriggerChecker:
         """
         Check if the tutor should respond to messages.
 
-        Tag-based model: Only responds to messages with request tags.
-        User must explicitly add the tag to request help.
+        Mention-based model: responds to messages that @mention the agent,
+        plus follow-up replies in threads the agent already participated in.
 
         Args:
             submission_group_id: The submission group to check
@@ -278,8 +281,9 @@ class TriggerChecker:
     ) -> TriggerCheckResult:
         """Check for unread follow-up replies in existing AI conversations.
 
-        A follow-up is an unread message whose thread contains an AI response
-        (identified by the response tag) but the message itself has no request tag.
+        A follow-up is an unread reply (``parent_id`` set) whose thread the
+        agent already participated in (matched by authorship), even though the
+        reply itself does not @mention the agent.
         """
         logger.debug(
             f"Checking for follow-up triggers in {submission_group_id}"
