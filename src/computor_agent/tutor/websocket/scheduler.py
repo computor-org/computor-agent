@@ -9,7 +9,6 @@ receive every message the agent has read access to, across every scope.
 import asyncio
 import logging
 import random
-import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -913,16 +912,6 @@ class WebSocketScheduler:
         # Call the callback with result, course_content (None for WS), and channel
         # The callback should handle fetching course_content if needed
         await self.on_message_trigger(result, None, channel)
-
-    @staticmethod
-    def _match_tag(tag_str: str, title: str) -> bool:
-        """Match a tag as a standalone token (not as part of a longer tag like #ai::request-rejected).
-
-        Prevents matching when followed by word chars, hyphens, or colons
-        (which would indicate a continuation like -rejected or ::sub),
-        but allows punctuation like commas, periods, etc.
-        """
-        return bool(re.search(r'(?<!\S)' + re.escape(tag_str) + r'(?![\w:-])', title))
 
     def _is_ai_response(self, message_data: dict) -> bool:
         """Whether this message was authored by the agent itself (its own past

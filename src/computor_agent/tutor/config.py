@@ -292,105 +292,66 @@ class StrategiesConfig(BaseModel):
     )
 
 
-class TriggerTag(str):
-    """
-    A tag that triggers the tutor agent to respond.
-
-    Tags in message titles follow the format: #<tag> where tag is any
-    non-whitespace string. Examples: #ai, #ai-help, #review, #tutor
-
-    The # prefix is NOT included in the tag value — it's added automatically
-    when matching in titles.
-
-    Can be used as a plain string in YAML config:
-        request_tags: ["ai", "tutor"]
-        response_tag: "ai-response"
-    """
-
-    def __new__(cls, value: str = ""):
-        # Strip # prefix if provided, and normalize
-        cleaned = value.strip().lstrip("#")
-        return super().__new__(cls, cleaned)
-
-    def __str__(self) -> str:
-        return f"#{str.__str__(self)}"
-
-    @property
-    def tag(self) -> str:
-        """Return the tag string without # prefix."""
-        return str.__str__(self)
-
-
 class TriggerConfig(BaseModel):
     """
-    Configuration for message trigger detection.
+    Configuration for tutor-agent activation.
 
-    Defines which tags in message titles trigger the tutor agent to respond.
-    Tags are simple strings (without #) that match #<tag> in message titles.
+    The agent activates on messages that **@mention it**. A mention is written
+    inline in the message content as ``@[Display Name](<user-uuid>)``; the
+    backend resolves ``mentions_me`` to the authenticated agent user, so the
+    agent's identity comes from its backend account (``backend`` config), not
+    from any name/tag configured here. Follow-up replies in a thread the agent
+    already participated in are matched by authorship (``agent_user_id``).
 
-    If request_tags are defined, triggers are enabled automatically.
-    Set enabled=False explicitly to disable triggers even with tags defined.
+    Activation is on by default. Set ``enabled: false`` to turn the agent off.
 
     Example YAML configuration:
         ```yaml
         triggers:
-          request_tags:
-            - "ai"
-            - "tutor"
-          response_tag: "ai-response"
           check_submissions: true
         ```
-
-    Legacy scope::value format (e.g., "ai::request") still works — it's just
-    a string containing "::". No special handling needed.
     """
 
     model_config = {"extra": "forbid"}
 
     enabled: Optional[bool] = Field(
         default=None,
-        description="Enable tag-based trigger detection. If not set, enabled when request_tags are defined.",
-    )
-    request_tags: list[str] = Field(
-        default_factory=list,
-        description="Tags that trigger the agent to respond (e.g., ['ai', 'tutor']). Without # prefix.",
-    )
-    response_tag: str = Field(
-        default="ai-response",
-        description="Tag added to agent responses (e.g., 'ai-response'). Without # prefix.",
+        description="Enable mention-based activation. If unset, defaults to enabled.",
     )
     check_submissions: bool = Field(
         default=True,
         description="Also trigger on submission artifacts with submit=True",
     )
-    require_all_tags: bool = Field(
-        default=False,
-        description="If True, message must have ALL request_tags. If False, ANY tag triggers.",
-    )
     agent_user_id: Optional[str] = Field(
         default=None,
         description="The agent's own backend user id, resolved at startup. Used to "
         "self-exclude the agent's own messages and to detect threads it "
-        "participates in (follow-ups) — replacing the legacy response_tag marker.",
+        "participates in (follow-ups).",
+    )
+
+    # --- Deprecated (pre-@mention tag model) -------------------------------
+    # Kept so existing config files still load, but no longer used for
+    # activation. Safe to delete from your config.yaml.
+    request_tags: list[str] = Field(
+        default_factory=list,
+        description="Deprecated, ignored (superseded by @mention activation).",
+    )
+    response_tag: str = Field(
+        default="ai-response",
+        description="Deprecated, ignored (superseded by @mention activation).",
+    )
+    require_all_tags: bool = Field(
+        default=False,
+        description="Deprecated, ignored (superseded by @mention activation).",
     )
 
     @property
     def is_enabled(self) -> bool:
-        """Triggers are on by default (mention-based activation). Set
-        ``enabled: false`` in config to turn the agent off."""
+        """Activation is on by default (mention-based). Set ``enabled: false``
+        in config to turn the agent off."""
         if self.enabled is not None:
             return self.enabled
         return True
-
-    @property
-    def request_tag_strings(self) -> list[str]:
-        """Return list of tag strings for API queries (without # prefix)."""
-        return [t.lstrip("#") for t in self.request_tags]
-
-    @property
-    def response_tag_string(self) -> str:
-        """Return the response tag string (without # prefix)."""
-        return self.response_tag.lstrip("#")
 
 
 def parse_timeout(timeout_str: str) -> int:
@@ -578,10 +539,7 @@ class TutorConfig(BaseModel):
           student_notes_dir: "/var/lib/computor/student-notes"
 
         triggers:
-          request_tags:
-            - "ai"
-            - "tutor"
-          response_tag: "ai-response"
+          check_submissions: true
 
         notes:
           enabled: true
@@ -614,7 +572,7 @@ class TutorConfig(BaseModel):
     )
     triggers: TriggerConfig = Field(
         default_factory=TriggerConfig,
-        description="Tag-based trigger detection settings",
+        description="Mention-based activation settings",
     )
     scheduler: Optional[dict] = Field(
         default=None,
