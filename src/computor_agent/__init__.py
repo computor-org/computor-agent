@@ -23,34 +23,12 @@ from computor_agent.llm import (
     list_providers,
 )
 
-from computor_agent.git import (
-    GitRepository,
-    GitCredentials,
-    GitProvider,
-    GitError,
-    RepositoryNotFoundError,
-    CloneError,
-    CommitError,
-    FileStatus,
-    FileChange,
-    RepoStatus,
-    Commit,
-    Branch,
-    Diff,
-    Author,
-)
-
 from computor_agent.settings import (
-    GitCredentialsStore,
-    CredentialMapping,
-    CredentialScope,
     BackendConfig,
     AgentConfig,
     LLMSettings,
     ComputorConfig,
 )
-
-from computor_agent.services import RepositoryService
 
 __all__ = [
     # Version
@@ -72,30 +50,9 @@ __all__ = [
     "get_provider",
     "create_provider",
     "list_providers",
-    # Git
-    "GitRepository",
-    "GitCredentials",
-    "GitProvider",
-    "GitError",
-    "RepositoryNotFoundError",
-    "CloneError",
-    "CommitError",
-    "FileStatus",
-    "FileChange",
-    "RepoStatus",
-    "Commit",
-    "Branch",
-    "Diff",
-    "Author",
-    # Settings - Credentials
-    "GitCredentialsStore",
-    "CredentialMapping",
-    "CredentialScope",
     # Settings - Configuration
     "BackendConfig",
     "AgentConfig",
     "LLMSettings",
     "ComputorConfig",
-    # Services
-    "RepositoryService",
 ]

@@ -31,11 +31,6 @@ llm:
 #   model: llava:13b
 #   base_url: http://localhost:11434/v1
 
-# Git credentials for repository access (optional)
-credentials:
-  - pattern: https://gitlab.example.com
-    token: glpat-your-token
-
 # Tutor configuration (optional)
 tutor:
   personality:
@@ -64,3 +59,23 @@ tutor:
     poll_interval_seconds: 60
     # Minimum seconds between processing the same submission group
     cooldown_seconds: 5
+
+# Environment overrides
+# ---------------------
+# Any value below is the base; a set (non-empty) COMPUTOR_* environment variable
+# wins over the file (useful for Docker / launchd secrets). Each override is
+# re-validated through the same schema as file values.
+#
+#   COMPUTOR_BACKEND_URL          -> backend.url
+#   COMPUTOR_BACKEND_API_TOKEN    -> backend.api_token
+#   COMPUTOR_BACKEND_USERNAME     -> backend.username
+#   COMPUTOR_BACKEND_PASSWORD     -> backend.password
+#   COMPUTOR_LLM_PROVIDER         -> llm.provider
+#   COMPUTOR_LLM_MODEL            -> llm.model
+#   COMPUTOR_LLM_BASE_URL         -> llm.base_url
+#   COMPUTOR_LLM_API_KEY          -> llm.api_key
+#   COMPUTOR_VISION_LLM_PROVIDER  -> vision_llm.provider
+#   COMPUTOR_VISION_LLM_MODEL     -> vision_llm.model
+#   COMPUTOR_VISION_LLM_BASE_URL  -> vision_llm.base_url
+#   COMPUTOR_VISION_LLM_API_KEY   -> vision_llm.api_key
+#   COMPUTOR_WORKERS              -> tutor.scheduler.max_concurrent_processing (1-50)

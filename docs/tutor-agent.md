@@ -175,11 +175,6 @@ llm:
 #   model: llava:13b
 #   base_url: http://localhost:11434/v1
 
-# Git credentials (for repository access)
-credentials:
-  - pattern: https://gitlab.example.com
-    token: glpat-your-token
-
 # Tutor behavior
 tutor:
   personality:

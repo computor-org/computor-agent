@@ -208,7 +208,6 @@ __marimo__/
 
 # Computor Agent - sensitive config files
 config.yaml
-credentials.yaml
 
 prompts/*
 

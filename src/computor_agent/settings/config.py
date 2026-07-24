@@ -7,11 +7,14 @@ including backend API settings, user credentials, and agent identity.
 
 import os
 import json
+import logging
 from pathlib import Path
 from typing import Any, Optional, Union
 
 import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 def load_config_data(path: Union[str, Path]) -> dict:
@@ -262,9 +265,6 @@ class ComputorConfig(BaseModel):
                 model="gpt-oss-120b",
                 base_url="http://localhost:11434/v1",
             ),
-            credentials=[
-                {"pattern": "https://gitlab.example.com", "token": "glpat-xxx"},
-            ],
             tutor={
                 "grading": {"enabled": True, "auto_submit_grade": True},
             },
@@ -297,10 +297,6 @@ class ComputorConfig(BaseModel):
             "Secondary vision-capable LLM used only for figure review "
             "(see tutor.figure_review)"
         )
-    )
-    credentials: Optional[list[dict[str, Any]]] = Field(
-        default=None,
-        description="Git credentials mappings (list of {pattern, token, ...})"
     )
     tutor: Optional[dict[str, Any]] = Field(
         default=None,
@@ -361,12 +357,25 @@ class ComputorConfig(BaseModel):
         """
         Create configuration from a dictionary.
 
+        A legacy top-level ``credentials`` block (Git access tokens used by the
+        removed repository-cloning path) is ignored with a warning: submissions
+        are now fetched as artifact ZIPs through the backend API, so no Git
+        credentials are needed. It is stripped here rather than rejected so that
+        older config files keep loading under ``extra: forbid``.
+
         Args:
             data: Configuration dictionary
 
         Returns:
             ComputorConfig instance
         """
+        if isinstance(data, dict) and "credentials" in data:
+            data = {k: v for k, v in data.items() if k != "credentials"}
+            logger.warning(
+                "Ignoring obsolete 'credentials' section in config: Git "
+                "credentials are no longer used (submissions are fetched via "
+                "the backend API). Remove this section to silence this warning."
+            )
         return cls(**data)
 
     def to_dict(self, include_secrets: bool = False) -> dict:
@@ -468,21 +477,6 @@ class ComputorConfig(BaseModel):
         if self.tutor:
             return TutorConfig.from_dict(self.tutor)
         return TutorConfig()
-
-    def get_credentials_store(self) -> Any:
-        """
-        Get GitCredentialsStore from the credentials section.
-
-        Returns:
-            GitCredentialsStore instance (empty if credentials not present)
-
-        Note: Import is done lazily to avoid circular imports.
-        """
-        from computor_agent.settings.credentials import GitCredentialsStore
-
-        if self.credentials:
-            return GitCredentialsStore.from_dict({"credentials": self.credentials})
-        return GitCredentialsStore()
 
 
 # Environment variables the container/start-script path can use to override
