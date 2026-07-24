@@ -297,11 +297,6 @@ llm:
   model: qwen2.5-coder:7b
   base_url: http://localhost:11434/v1
 
-# Git credentials for accessing repositories
-credentials:
-  - pattern: https://gitlab.example.com
-    token: glpat-your-token
-
 # Tutor agent behavior
 tutor:
   personality:

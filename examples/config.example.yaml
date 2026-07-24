@@ -6,7 +6,6 @@
 # This is the single configuration file for the entire agent, including:
 # - Backend API authentication
 # - LLM provider settings
-# - Git credentials for repository access
 # - Tutor agent behavior and settings
 
 # =============================================================================
@@ -50,27 +49,6 @@ llm:
 #   provider: ollama
 #   model: llava:13b
 #   base_url: http://localhost:11434/v1
-
-# =============================================================================
-# GIT CREDENTIALS (required for accessing student repositories)
-# =============================================================================
-# Scope is automatically inferred from the pattern:
-#   - No path (e.g., https://gitlab.com) -> matches ALL repos on that host
-#   - One path segment (e.g., https://gitlab.com/group) -> matches repos in that group
-#   - Two+ segments (e.g., https://gitlab.com/group/repo) -> matches exact repository
-# More specific patterns always take precedence over less specific ones.
-credentials:
-  # Host-level: matches all repos on gitlab.example.com
-  - pattern: https://gitlab.example.com
-    token: glpat-your-gitlab-token-here
-
-  # Group-level: matches repos in the course-2024-ws group
-  - pattern: https://gitlab.example.com/course-2024-ws
-    token: glpat-course-specific-token
-
-  # GitHub (provider auto-detected from hostname)
-  - pattern: https://github.com
-    token: ghp-your-github-token-here
 
 # =============================================================================
 # TUTOR AGENT CONFIGURATION
