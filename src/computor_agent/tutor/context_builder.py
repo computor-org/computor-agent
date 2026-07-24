@@ -195,9 +195,10 @@ class ContextBuilder:
                 max_files=self.config.max_code_files,
             )
 
-        # Load reference code if enabled and path provided
+        # Load reference code if a reference path was provided. The reference
+        # solution is always included in context.
         reference_code: Optional[CodeContext] = None
-        if self.config.include_reference_solution and reference_path and reference_path.exists():
+        if reference_path and reference_path.exists():
             reference_code = self._load_code_from_path(
                 reference_path,
                 max_lines=self.config.max_code_lines,

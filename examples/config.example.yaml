@@ -72,7 +72,6 @@ tutor:
   context:
     include_previous_messages: 3  # Number of previous messages (0-20)
     include_course_member_comments: true
-    include_reference_solution: false
     max_code_lines: 1000
     max_code_files: 20
 
