@@ -674,9 +674,6 @@ def messaging(
         # Validate the tutor section here so config errors surface as a clean
         # message instead of a traceback from inside the runtime.
         computor_config.get_tutor_config()
-        git_credentials = computor_config.get_credentials_store()
-
-        logger.info(f"Git credentials: {len(git_credentials)} mapping(s)")
 
     except FileNotFoundError as e:
         logger.error(f"Config file not found: {e}", exc_info=True)
@@ -694,7 +691,6 @@ def messaging(
             f"Auth: [green]{computor_config.backend.auth_method}[/green]\n"
             f"LLM: [green]{computor_config.llm.provider if computor_config.llm else 'not configured'}[/green] "
             f"([green]{computor_config.llm.model if computor_config.llm else 'n/a'}[/green])\n"
-            f"Git credentials: [green]{len(git_credentials)} mapping(s)[/green]\n"
             f"Dry run: [yellow]{dry_run}[/yellow]\n\n"
             f"Press [yellow]Ctrl+C[/yellow] to stop.",
             title="Starting",

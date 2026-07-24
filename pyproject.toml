@@ -29,7 +29,6 @@ dependencies = [
     "click>=8.0,<9.0",
     "rich>=13.0,<14.0",
     "python-dotenv>=1.0,<2.0",
-    "GitPython>=3.1.40,<4.0",
     "PyYAML>=6.0,<7.0",
     "computor-client @ git+https://github.com/computor-org/computor-backend.git@main#subdirectory=computor-client",
     "computor-types @ git+https://github.com/computor-org/computor-backend.git@main#subdirectory=computor-types",
