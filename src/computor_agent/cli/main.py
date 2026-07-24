@@ -181,7 +181,6 @@ def chat(
         model=model,
         base_url=base_url,
         api_key=api_key,
-        temperature=temperature,
         max_tokens=max_tokens,
         system_prompt=system,
     )
@@ -199,10 +198,10 @@ def chat(
         )
     )
 
-    asyncio.run(_chat_loop(config, stream))
+    asyncio.run(_chat_loop(config, stream, temperature))
 
 
-async def _chat_loop(config: LLMConfig, stream: bool):
+async def _chat_loop(config: LLMConfig, stream: bool, temperature: float):
     """Main chat loop."""
     provider = get_provider(config)
 
@@ -244,9 +243,9 @@ async def _chat_loop(config: LLMConfig, stream: bool):
                 console.print("\n[bold green]Assistant[/bold green]")
 
                 if stream:
-                    await _stream_response(provider, user_input)
+                    await _stream_response(provider, user_input, temperature)
                 else:
-                    await _complete_response(provider, user_input)
+                    await _complete_response(provider, user_input, temperature)
 
             except KeyboardInterrupt:
                 console.print("\n[yellow]Interrupted. Type 'exit' to quit.[/yellow]")
@@ -259,11 +258,11 @@ async def _chat_loop(config: LLMConfig, stream: bool):
         await provider.close()
 
 
-async def _stream_response(provider, prompt: str):
+async def _stream_response(provider, prompt: str, temperature: float):
     """Stream a response from the provider."""
     try:
         full_response = ""
-        async for chunk in provider.stream(prompt):
+        async for chunk in provider.stream(prompt, temperature=temperature):
             console.print(chunk.content, end="")
             full_response += chunk.content
         console.print()  # Newline at end
@@ -271,11 +270,11 @@ async def _stream_response(provider, prompt: str):
         console.print(f"\n[bold red]LLM Error:[/bold red] {e}")
 
 
-async def _complete_response(provider, prompt: str):
+async def _complete_response(provider, prompt: str, temperature: float):
     """Get a complete response from the provider."""
     try:
         with console.status("[bold green]Thinking..."):
-            response = await provider.complete(prompt)
+            response = await provider.complete(prompt, temperature=temperature)
 
         # Try to render as markdown
         try:

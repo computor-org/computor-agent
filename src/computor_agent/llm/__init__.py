@@ -19,12 +19,11 @@ Example:
         provider=ProviderType.LMSTUDIO,
         model="gpt-oss-120b",
         base_url="http://localhost:1234/v1",
-        temperature=0.7,
     )
     provider = get_provider(config)
 
-    # Complete response
-    response = await provider.complete("What is Python?")
+    # Complete response (temperature is a per-call parameter)
+    response = await provider.complete("What is Python?", temperature=0.7)
     print(response.content)
 
     # Streaming response

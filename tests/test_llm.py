@@ -28,7 +28,6 @@ class TestLLMConfig:
         config = LLMConfig()
         assert config.provider == ProviderType.LMSTUDIO
         assert config.model == "gpt-oss-120b"
-        assert config.temperature == 0.7
         assert config.base_url == "http://localhost:1234/v1"
 
     def test_custom_config(self):
@@ -37,13 +36,15 @@ class TestLLMConfig:
             provider=ProviderType.OLLAMA,
             model="devstral-small",
             base_url="http://localhost:11434/v1",
-            temperature=0.5,
             max_tokens=1000,
         )
         assert config.provider == ProviderType.OLLAMA
         assert config.model == "devstral-small"
-        assert config.temperature == 0.5
         assert config.max_tokens == 1000
+
+    def test_temperature_is_not_a_config_field(self):
+        """Temperature is a per-call parameter, not part of the provider config."""
+        assert "temperature" not in LLMConfig.model_fields
 
     def test_base_url_trailing_slash_removed(self):
         """Test that trailing slash is removed from base_url."""
@@ -51,25 +52,32 @@ class TestLLMConfig:
         assert config.base_url == "http://localhost:1234/v1"
 
     def test_to_generation_params(self):
-        """Test generation params extraction."""
+        """Test generation params extraction (temperature is not included)."""
         config = LLMConfig(
             model="test-model",
-            temperature=0.8,
             max_tokens=500,
             top_p=0.9,
         )
         params = config.to_generation_params()
         assert params["model"] == "test-model"
-        assert params["temperature"] == 0.8
+        assert "temperature" not in params
         assert params["max_tokens"] == 500
         assert params["top_p"] == 0.9
 
+    def test_merge_generation_params_temperature(self):
+        """Provider merge injects DEFAULT_TEMPERATURE unless the call overrides."""
+        from computor_agent.llm.base import DEFAULT_TEMPERATURE
+        from computor_agent.llm.dummy_provider import DummyProvider
+
+        provider = DummyProvider(LLMConfig())
+        assert provider._merge_generation_params()["temperature"] == DEFAULT_TEMPERATURE
+        assert provider._merge_generation_params(temperature=0.3)["temperature"] == 0.3
+
     def test_with_overrides(self):
         """Test creating new config with overrides."""
-        config = LLMConfig(temperature=0.5)
-        new_config = config.with_overrides(temperature=0.9, max_tokens=100)
-        assert config.temperature == 0.5  # Original unchanged
-        assert new_config.temperature == 0.9
+        config = LLMConfig(max_tokens=50)
+        new_config = config.with_overrides(max_tokens=100)
+        assert config.max_tokens == 50  # Original unchanged
         assert new_config.max_tokens == 100
 
 

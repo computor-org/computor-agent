@@ -129,12 +129,10 @@ class LLMConfig(BaseModel):
     )
 
     # Generation parameters
-    temperature: float = Field(
-        default=0.7,
-        ge=0.0,
-        le=2.0,
-        description="Sampling temperature (0.0 = deterministic, higher = more random)",
-    )
+    #
+    # NOTE: temperature is intentionally NOT a provider-config field — it is a
+    # per-call parameter passed to complete()/stream() (see DEFAULT_TEMPERATURE
+    # in llm.base for the fallback used when a call omits it).
     max_tokens: Optional[int] = Field(
         default=None,
         gt=0,
@@ -234,7 +232,6 @@ class LLMConfig(BaseModel):
         """
         params: dict[str, Any] = {
             "model": self.model,
-            "temperature": self.temperature,
         }
 
         if self.max_tokens is not None:

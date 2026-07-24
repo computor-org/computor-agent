@@ -10,6 +10,11 @@ from typing import Any, AsyncIterator, Optional
 
 from computor_agent.llm.config import LLMConfig, Message
 
+# Fallback sampling temperature used when a call does not specify one.
+# Temperature is a per-call parameter, not a provider-config field, so this
+# constant is the last-resort default (e.g. for the health probe).
+DEFAULT_TEMPERATURE = 0.7
+
 
 @dataclass
 class LLMResponse:
@@ -244,6 +249,10 @@ class LLMProvider(ABC):
         for key, value in kwargs.items():
             if value is not None:
                 params[key] = value
+
+        # Temperature is a per-call parameter; fall back to the module default
+        # when neither the call nor its callers supplied one.
+        params.setdefault("temperature", DEFAULT_TEMPERATURE)
 
         return params
 
