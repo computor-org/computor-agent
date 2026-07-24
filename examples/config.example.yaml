@@ -84,14 +84,6 @@ tutor:
     max_code_lines: 1000
     max_code_files: 20
 
-  # Grading - automated grade assignment
-  # IMPORTANT: Set enabled and auto_submit_grade to true for automatic grading!
-  grading:
-    enabled: true               # Enable grading for submissions
-    auto_submit_grade: true     # Automatically submit grade via API
-    default_status: 1           # 0=NOT_REVIEWED, 1=CORRECTED, 2=CORRECTION_NECESSARY, 3=IMPROVEMENT_POSSIBLE
-    require_human_review: false # Flag for human review after grading
-
   # Triggers - when the agent responds
   triggers:
     # The agent responds to messages that @mention it. Its identity is the
@@ -141,17 +133,12 @@ tutor:
       max_response_tokens: 1500
       temperature: 0.5
 
-    submission_review:
-      enabled: true
-      max_response_tokens: 2000
-      temperature: 0.5
-
     clarification:
       enabled: true
       max_response_tokens: 800
       temperature: 0.7
 
-    other:
+    fallback:
       enabled: true
       max_response_tokens: 1000
       temperature: 0.7

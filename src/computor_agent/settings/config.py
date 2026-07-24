@@ -340,7 +340,7 @@ class ComputorConfig(BaseModel):
                 base_url="http://localhost:11434/v1",
             ),
             tutor={
-                "grading": {"enabled": True, "auto_submit_grade": True},
+                "triggers": {"check_submissions": True},
             },
         )
 
