@@ -169,7 +169,6 @@ class AgentRuntime:
             model=self.config.llm.model,
             base_url=self.config.llm.base_url,
             api_key=self.config.llm.get_api_key(),
-            temperature=self.config.llm.temperature,
             busy_retry_delay_seconds=self.config.llm.busy_retry_delay_seconds,
         )
         self.llm_provider = get_provider(self.llm_config)

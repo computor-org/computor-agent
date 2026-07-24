@@ -21,7 +21,8 @@ llm:
   model: devstral-small
   base_url: http://localhost:11434/v1
   # For Docker: use http://host.docker.internal:11434/v1
-  temperature: 0.7
+  # Temperature is set per call (tutor.strategies[*].temperature,
+  # tutor.figure_review.temperature), not here.
 
 # Secondary vision-capable LLM, used only for figure review (optional).
 # Required when tutor.figure_review.enabled is true unless

@@ -250,7 +250,6 @@ def build_figure_reviewer(
         "provider": ProviderType(settings.provider),
         "model": settings.model,
         "api_key": settings.get_api_key(),
-        "temperature": settings.temperature,
         "busy_retry_delay_seconds": settings.busy_retry_delay_seconds,
     }
     if settings.base_url:

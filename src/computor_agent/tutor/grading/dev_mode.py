@@ -284,7 +284,6 @@ async def run_grading_dev_mode(
         model=computor_config.llm.model,
         base_url=computor_config.llm.base_url,
         api_key=computor_config.llm.get_api_key(),
-        temperature=computor_config.llm.temperature,
     )
     llm_provider = get_provider(llm_config)
     tutor_llm = TutorLLMAdapter(llm_provider)

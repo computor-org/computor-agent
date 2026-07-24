@@ -131,8 +131,11 @@ class TestLLMSettings:
         assert settings.model == "gpt-4"
         assert settings.base_url is None
         assert settings.api_key is None
-        assert settings.temperature == 0.7
         assert settings.max_tokens is None
+
+    def test_temperature_is_not_a_settings_field(self):
+        """Temperature is a per-call parameter, not part of the LLM settings."""
+        assert "temperature" not in LLMSettings.model_fields
 
     def test_custom_llm_settings(self):
         """Test creating LLM settings with custom values."""
@@ -140,13 +143,11 @@ class TestLLMSettings:
             provider="ollama",
             model="llama3",
             base_url="http://localhost:11434/v1",
-            temperature=0.5,
             max_tokens=4096,
         )
         assert settings.provider == "ollama"
         assert settings.model == "llama3"
         assert settings.base_url == "http://localhost:11434/v1"
-        assert settings.temperature == 0.5
         assert settings.max_tokens == 4096
 
     def test_api_key_handling(self):
@@ -321,7 +322,6 @@ agent:
 llm:
   provider: openai
   model: gpt-4
-  temperature: 0.5
 """
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".yaml", delete=False
@@ -336,7 +336,6 @@ llm:
                 assert config.backend.get_password() == "secret123"
                 assert config.agent.name == "Tutor AI"
                 assert config.llm.provider == "openai"
-                assert config.llm.temperature == 0.5
             finally:
                 os.unlink(f.name)
 

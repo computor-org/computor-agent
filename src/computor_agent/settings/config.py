@@ -203,12 +203,8 @@ class LLMSettings(BaseModel):
         default=None,
         description="API key (if required)"
     )
-    temperature: float = Field(
-        default=0.7,
-        ge=0.0,
-        le=2.0,
-        description="Sampling temperature"
-    )
+    # NOTE: temperature is intentionally not configured here — it is a per-call
+    # parameter (see tutor.strategies[*].temperature, tutor.figure_review.temperature).
     max_tokens: Optional[int] = Field(
         default=None,
         description="Maximum tokens to generate"
@@ -416,7 +412,6 @@ class ComputorConfig(BaseModel):
               provider: openai
               model: gpt-oss-120b
               base_url: http://localhost:11434/v1
-              temperature: 0.7
             ```
 
         Args:
@@ -507,8 +502,6 @@ class ComputorConfig(BaseModel):
             llm_dict["base_url"] = llm.base_url
         if llm.api_key:
             llm_dict["api_key"] = llm.get_api_key() if include_secrets else "***"
-        if llm.temperature != 0.7:
-            llm_dict["temperature"] = llm.temperature
         if llm.max_tokens:
             llm_dict["max_tokens"] = llm.max_tokens
         return llm_dict

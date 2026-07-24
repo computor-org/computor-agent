@@ -36,7 +36,7 @@ llm:
   model: gpt-4
   base_url: http://localhost:11434/v1  # For local providers (Ollama, LMStudio)
   # api_key: sk-xxx  # Required for OpenAI, optional for local providers
-  temperature: 0.7
+  # Temperature is set per call (see tutor.strategies / tutor.figure_review below)
   # max_tokens: 4096  # Optional token limit
 
 # =============================================================================
