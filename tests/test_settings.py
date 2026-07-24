@@ -420,19 +420,19 @@ class TestComputorConfigEnv:
         return ComputorConfig.from_dict({
             "backend": {"url": "https://api.example.com", "api_token": "ctp_" + "a" * 32},
             "llm": {"provider": "openai", "model": "file-model"},
-            "tutor": {"scheduler": {"cooldown_seconds": 42}},
+            "scheduler": {"cooldown_seconds": 42},
         })
 
     def test_apply_env_overrides_workers(self):
-        """COMPUTOR_WORKERS maps to tutor.scheduler.max_concurrent_processing
+        """COMPUTOR_WORKERS maps to scheduler.max_concurrent_processing
         without disturbing the rest of the config."""
         from computor_agent.settings.config import apply_env_overrides
 
         config = self._base_config()
         result = apply_env_overrides(config, {"COMPUTOR_WORKERS": "8"})
 
-        assert result.tutor["scheduler"]["max_concurrent_processing"] == 8
-        assert result.tutor["scheduler"]["cooldown_seconds"] == 42
+        assert result.scheduler.max_concurrent_processing == 8
+        assert result.scheduler.cooldown_seconds == 42
         assert result.backend.get_api_token() == "ctp_" + "a" * 32
 
     def test_apply_env_overrides_secrets_stay_secret(self):

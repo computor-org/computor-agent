@@ -134,7 +134,6 @@ from computor_agent.tutor.trigger import (
     should_tutor_respond,
     STAFF_ROLES,
 )
-from computor_agent.tutor.config import SchedulerConfig
 from computor_agent.tutor.client_adapter import TutorLLMAdapter
 from computor_agent.tutor.summary_store import SummaryStore, AgentNote
 
@@ -180,7 +179,6 @@ __all__ = [
     "TutorAgent",
     "ProcessingResult",
     # Scheduler configuration
-    "SchedulerConfig",
     # WebSocket (real-time)
     "ComputorWebSocket",
     "WebSocketScheduler",

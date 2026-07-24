@@ -337,11 +337,11 @@ class AgentRuntime:
             )
 
     def _scheduler_config(self):
-        """Validate the tutor.scheduler config section (or defaults)."""
-        from computor_agent.tutor import SchedulerConfig
+        """Return the top-level scheduler config section (or defaults)."""
+        from computor_agent.settings.config import SchedulerConfig
 
-        if self.tutor_config.scheduler:
-            scheduler_config = SchedulerConfig.model_validate(self.tutor_config.scheduler)
+        if self.config.scheduler:
+            scheduler_config = self.config.scheduler
             logger.info(
                 f"Scheduler config: catchup={scheduler_config.poll_interval_seconds}s, "
                 f"workers={scheduler_config.max_concurrent_processing}"

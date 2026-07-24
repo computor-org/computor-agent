@@ -49,15 +49,15 @@ tutor:
     # max_image_bytes: 5242880
     # image_extensions: [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
 
-  # Scheduler settings
-  scheduler:
-    # Worker count: how many messages are processed concurrently (1-50).
-    # Overridable per deployment via COMPUTOR_WORKERS / ./start.sh --workers N.
-    max_concurrent_processing: 5
-    # Interval of the periodic REST catch-up scan backing the WebSocket (seconds)
-    poll_interval_seconds: 60
-    # Minimum seconds between processing the same submission group
-    cooldown_seconds: 5
+# Scheduler settings (top-level, optional)
+scheduler:
+  # Worker count: how many messages are processed concurrently (1-50).
+  # Overridable per deployment via COMPUTOR_WORKERS / ./start.sh --workers N.
+  max_concurrent_processing: 5
+  # Interval of the periodic REST catch-up scan backing the WebSocket (seconds)
+  poll_interval_seconds: 60
+  # Minimum seconds between processing the same submission group
+  cooldown_seconds: 5
 
 # Environment overrides
 # ---------------------

@@ -464,7 +464,7 @@ class TestSchedulerConfig:
 
     def test_default_config(self):
         """Test default scheduler config."""
-        from computor_agent.tutor import SchedulerConfig
+        from computor_agent.settings.config import SchedulerConfig
 
         config = SchedulerConfig()
 
@@ -476,7 +476,7 @@ class TestSchedulerConfig:
 
     def test_custom_config(self):
         """Test custom scheduler config."""
-        from computor_agent.tutor import SchedulerConfig
+        from computor_agent.settings.config import SchedulerConfig
 
         config = SchedulerConfig(
             poll_interval_seconds=60,

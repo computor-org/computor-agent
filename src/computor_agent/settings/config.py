@@ -241,6 +241,80 @@ class LLMSettings(BaseModel):
         return f"LLMSettings(provider={self.provider}, model={self.model})"
 
 
+class CacheConfig(BaseModel):
+    """Configuration for data caching.
+
+    Deprecated: the HTTP-polling scheduler that used this cache was removed.
+    The section is still accepted in config files for compatibility but is
+    ignored at runtime.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = Field(
+        default=True,
+        description="Deprecated, ignored",
+    )
+    course_members_ttl_seconds: int = Field(
+        default=10800,  # 3 hours
+        ge=60,
+        le=86400,
+        description="Deprecated, ignored",
+    )
+    course_content_ttl_seconds: int = Field(
+        default=300,  # 5 minutes
+        ge=30,
+        le=3600,
+        description="Deprecated, ignored",
+    )
+    persist_to_file: bool = Field(
+        default=False,
+        description="Deprecated, ignored",
+    )
+    cache_dir: Optional[Path] = Field(
+        default=None,
+        description="Deprecated, ignored",
+    )
+
+
+class SchedulerConfig(BaseModel):
+    """Configuration for the agent scheduler (top-level config key: scheduler)."""
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable the scheduler",
+    )
+    poll_interval_seconds: int = Field(
+        default=60,
+        ge=5,
+        le=3600,
+        description=(
+            "Interval of the periodic REST catch-up scan that backstops the "
+            "WebSocket event stream (seconds)"
+        ),
+    )
+    max_concurrent_processing: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description=(
+            "Maximum concurrent message groups being processed (the worker "
+            "count; overridable via COMPUTOR_WORKERS)"
+        ),
+    )
+    cooldown_seconds: int = Field(
+        default=60,
+        ge=0,
+        description="Minimum seconds between processing the same submission group",
+    )
+    cache: CacheConfig = Field(
+        default_factory=CacheConfig,
+        description="Deprecated (polling-scheduler cache), accepted but ignored",
+    )
+
+
 class ComputorConfig(BaseModel):
     """
     Complete Computor Agent configuration.
@@ -301,6 +375,10 @@ class ComputorConfig(BaseModel):
     tutor: Optional[dict[str, Any]] = Field(
         default=None,
         description="Tutor agent configuration (nested under 'tutor' key)"
+    )
+    scheduler: Optional[SchedulerConfig] = Field(
+        default=None,
+        description="Scheduler settings (worker count, catch-up interval, cooldown)"
     )
 
     def __repr__(self) -> str:
@@ -507,7 +585,7 @@ def apply_env_overrides(
     Overlay COMPUTOR_* environment variables onto a loaded configuration.
 
     Supported variables (see _ENV_OVERRIDE_PATHS), plus:
-        COMPUTOR_WORKERS -> tutor.scheduler.max_concurrent_processing
+        COMPUTOR_WORKERS -> scheduler.max_concurrent_processing
             (the worker count: how many messages are processed concurrently)
 
     Args:
@@ -549,11 +627,9 @@ def apply_env_overrides(
             raise ValueError(
                 f"COMPUTOR_WORKERS must be between 1 and 50, got {workers_int}"
             )
-        tutor = data.get("tutor") or {}
-        scheduler = tutor.get("scheduler") or {}
+        scheduler = data.get("scheduler") or {}
         scheduler["max_concurrent_processing"] = workers_int
-        tutor["scheduler"] = scheduler
-        data["tutor"] = tutor
+        data["scheduler"] = scheduler
         changed = True
 
     if not changed:
