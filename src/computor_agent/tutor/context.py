@@ -261,9 +261,12 @@ class ConversationContext:
         Returns:
             Formatted string of previous messages
         """
-        if not self.previous_messages:
+        if not self.previous_messages or max_messages <= 0:
             return "(No previous messages)"
 
+        # Tail slice - the list is ordered "most recent last". Note the guard
+        # above is load-bearing: `list[-0:]` is the whole list, so a configured
+        # limit of 0 would otherwise include everything.
         messages = self.previous_messages[-max_messages:]
         formatted = []
 

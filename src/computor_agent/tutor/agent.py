@@ -385,7 +385,12 @@ class TutorAgent:
 
         # Previous messages
         previous_messages_section = ""
-        prev = context.get_formatted_previous_messages()
+        # Pass the configured limit through: the default of 3 in the formatter
+        # otherwise silently capped every thread at three turns, no matter what
+        # include_previous_messages was set to.
+        prev = context.get_formatted_previous_messages(
+            max_messages=self.config.context.include_previous_messages
+        )
         if prev and prev.strip():
             previous_messages_section = f"Previous Conversation:\n---\n{prev}\n---"
 

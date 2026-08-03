@@ -36,6 +36,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def take_recent_messages(messages: list, limit: int) -> list:
+    """The last ``limit`` messages of a conversation.
+
+    ``previous_messages`` is ordered "most recent last", so truncation has to
+    take the TAIL. Slicing from the front (as this used to) handed the agent the
+    opening turns of a long thread and dropped everything the student had just
+    said - the wrong half for answering a follow-up.
+
+    ``limit <= 0`` means "no history"; note that ``messages[-0:]`` would return
+    the entire list, so the guard is not redundant.
+    """
+    if limit <= 0:
+        return []
+    return messages[-limit:]
+
+
 class ContextBuilder:
     """
     Builds ConversationContext from API data.
@@ -212,7 +228,9 @@ class ContextBuilder:
             trigger_message=trigger_message,
             student=student_info,
             assignment=assignment_info,
-            previous_messages=previous_messages[: self.config.include_previous_messages],
+            previous_messages=take_recent_messages(
+                previous_messages, self.config.include_previous_messages
+            ),
             course_member_comments=[],  # Not implemented - endpoint not available
             student_notes=student_notes,
             student_code=student_code,
