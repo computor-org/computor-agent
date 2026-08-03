@@ -362,19 +362,86 @@ class ContextBuilder:
         # if self.config.include_submission_history:
         #     ...
 
-        # Get reference comparison if enabled and we have both student and reference code
-        if self.config.include_reference_comparison and context.has_code and context.has_reference:
-            try:
-                context.reference_comparison = self.reference_service.compare_code(
-                    student_files=context.student_code.files,
-                    reference_files=context.reference_code.files,
-                )
-            except Exception as e:
-                logger.debug(f"Failed to generate reference comparison: {e}")
+        # Reference comparison, when both sides are already in hand (dev mode
+        # passes local paths for both). In the messaging flow the student's code
+        # is downloaded later, so the agent calls ensure_reference_comparison()
+        # once it has it.
+        self._compare_against_reference(context)
 
         # Student progress — disabled (not used in prompt currently)
         # if self.config.include_student_progress and assignment_info and course_member_id:
         #     ...
+
+    def _compare_against_reference(self, context: ConversationContext) -> None:
+        """Diff student code against the reference, when both are available."""
+        if not self.config.include_reference_comparison:
+            return
+        if context.reference_comparison is not None:
+            return
+        if not (context.has_code and context.has_reference):
+            return
+
+        try:
+            context.reference_comparison = self.reference_service.compare_code(
+                student_files=context.student_code.files,
+                reference_files=context.reference_code.files,
+            )
+        except Exception as e:
+            logger.debug(f"Failed to generate reference comparison: {e}")
+
+    async def ensure_reference_comparison(self, context: ConversationContext) -> None:
+        """Fetch the reference solution if needed, then diff the student's code.
+
+        The messaging flow never passes a local reference path, and it downloads
+        the student's submission only *after* the context is built — so the
+        comparison could never come together there and
+        ``include_reference_comparison`` had no effect in production no matter
+        how it was configured. The agent calls this once the submission is in
+        hand; ``ReferenceService`` caches the download, so repeated messages on
+        the same assignment do not re-fetch it.
+        """
+        if not self.config.include_reference_comparison:
+            return
+        if context.reference_comparison is not None:
+            return
+        # Nothing to compare against yet — skip the download entirely rather
+        # than fetching a reference we cannot use.
+        if not context.has_code:
+            return
+
+        if not context.has_reference:
+            context.reference_code = await self._download_reference_code(context)
+
+        self._compare_against_reference(context)
+
+    async def _download_reference_code(
+        self, context: ConversationContext
+    ) -> Optional[CodeContext]:
+        """Download and load the assignment's reference solution."""
+        course_content_id = (
+            context.assignment.course_content_id if context.assignment else None
+        )
+        if not course_content_id:
+            logger.debug("No course content id — cannot fetch a reference solution")
+            return None
+
+        destination = self.reference_service.cache_dir / str(course_content_id) / "reference"
+        try:
+            path = await self.reference_service.download_reference(
+                str(course_content_id), destination
+            )
+        except Exception as e:
+            logger.debug(f"Failed to download reference for {course_content_id}: {e}")
+            return None
+
+        if not path or not Path(path).exists():
+            return None
+
+        return self._load_code_from_path(
+            Path(path),
+            max_lines=self.config.max_code_lines,
+            max_files=self.config.max_code_files,
+        )
 
     async def _get_student_info(self, submission_group_id: str) -> StudentInfo:
         """Get student information from submission group."""
