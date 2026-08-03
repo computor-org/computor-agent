@@ -403,6 +403,7 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
         STRATEGY_PROMPTS,
         SECURITY_DETECTION_PROMPT,
         SECURITY_CONFIRMATION_PROMPT,
+        TUTOR_SYSTEM_PROMPT,
     )
 
     # Create directory structure
@@ -423,6 +424,19 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
             _write_prompt_file(file_path, content, f"Personality: {tone}")
             initialized_count += 1
             logger.debug(f"Created prompt file: {file_path}")
+
+    # The prompt used for every live tutor reply. Written out so it can be
+    # found and edited at all — it is the ONE supported override for the
+    # unified messaging prompt, and nothing created it before.
+    tutor_prompt_path = strategy_dir / "tutor.md"
+    if not tutor_prompt_path.exists():
+        _write_prompt_file(
+            tutor_prompt_path,
+            TUTOR_SYSTEM_PROMPT,
+            "Strategy: tutor (the live messaging prompt)",
+        )
+        initialized_count += 1
+        logger.debug(f"Created prompt file: {tutor_prompt_path}")
 
     # Check and create strategy prompts
     for strategy, content in STRATEGY_PROMPTS.items():

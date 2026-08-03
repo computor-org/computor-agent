@@ -1,5 +1,15 @@
 # Variable Reference Card
 
+> **Which of these actually reach the LLM?**
+>
+> Live replies use only the placeholders of `strategy/tutor.md`:
+> `{personality_prompt}`, `{language}`, `{assignment_section}`,
+> `{code_section}`, `{test_results_section}`, `{previous_messages_section}`,
+> `{reference_comparison_section}`, `{figure_review_section}`.
+>
+> The per-intent strategy variables documented below belong to the retired
+> intent→strategy model and are not substituted for live replies.
+
 ## Quick Reference - Available Variables by Prompt Type
 
 ### ✅ ALL Strategy Prompts Can Use:

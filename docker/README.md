@@ -36,7 +36,7 @@ semaphore). Precedence, highest first:
 
 1. `computor-agent tutor messaging --workers N` (CLI flag)
 2. `COMPUTOR_WORKERS` environment variable — what `./start.sh --workers N` sets
-3. `tutor.scheduler.max_concurrent_processing` in `config.yaml`
+3. `scheduler.max_concurrent_processing` in `config.yaml`
 4. Default: 5 (compose default: 4)
 
 Valid range: 1–50.
@@ -48,7 +48,7 @@ Any of these can be set in the `environment:` section of
 
 | Variable | Overrides |
 |---|---|
-| `COMPUTOR_WORKERS` | `tutor.scheduler.max_concurrent_processing` |
+| `COMPUTOR_WORKERS` | `scheduler.max_concurrent_processing` |
 | `COMPUTOR_BACKEND_URL` | `backend.url` |
 | `COMPUTOR_BACKEND_API_TOKEN` | `backend.api_token` |
 | `COMPUTOR_BACKEND_USERNAME` | `backend.username` |

@@ -97,18 +97,27 @@ class PromptLoader:
             self.start_watching()
 
     def _get_default_prompts_dir(self) -> Path:
-        """Get the default prompts directory."""
-        # Try config directory first
-        config_dir = Path.home() / ".computor" / "prompts"
-        if config_dir.exists():
-            return config_dir
+        """Get the default prompts directory.
 
-        # Fall back to package directory
-        package_dir = Path(__file__).parent / "templates"
-        return package_dir
+        ``~/.computor/prompts`` is the canonical location — `computor-agent`'s
+        dev mode bootstraps it. It is returned whether or not it exists yet;
+        ``load_all`` copes with a missing directory and the built-in prompts in
+        ``templates.py`` remain the fallback.
+
+        (This used to fall back to ``<package>/templates``, a directory that has
+        never existed — the prompts live in ``templates.py``, a module. The
+        result was a confusing "Loaded 0 prompts" on every start.)
+        """
+        return Path.home() / ".computor" / "prompts"
 
     def load_all(self) -> None:
         """Load all prompt files."""
+        if not self.prompts_dir.exists():
+            logger.debug(
+                f"No prompt overrides at {self.prompts_dir}; using built-in prompts"
+            )
+            return
+
         logger.info(f"Loading prompts from: {self.prompts_dir}")
 
         # Load personality prompts
@@ -232,11 +241,21 @@ class PromptLoader:
         )
 
     def get_strategy_prompt(self, strategy: str) -> Optional[str]:
-        """Get a strategy prompt."""
+        """Get a strategy prompt, falling back to ``fallback.md``."""
         return self._strategy_prompts.get(
             strategy,
             self._strategy_prompts.get("fallback")
         )
+
+    def get_strategy_prompt_exact(self, strategy: str) -> Optional[str]:
+        """A strategy prompt by exact name, with NO fallback.
+
+        The live tutor prompt needs this: ``get_strategy_prompt`` falls back to
+        ``fallback.md``, one of the retired intent→strategy prompts, so asking
+        it for a missing ``tutor`` would silently answer with the old
+        architecture's text instead of the current built-in.
+        """
+        return self._strategy_prompts.get(strategy)
 
     def get_security_prompt(self, prompt_type: str) -> Optional[str]:
         """Get a security prompt."""
@@ -350,3 +369,26 @@ def get_figure_review_prompt(name: str = "review") -> str:
         prompt = FIGURE_REVIEW_SYSTEM_PROMPT
 
     return prompt
+
+
+def get_tutor_prompt() -> str:
+    """The system prompt used for every live tutor reply.
+
+    Override it by editing ``strategy/tutor.md`` in the prompts directory
+    (``~/.computor/prompts`` by default); dev mode creates the file with the
+    built-in text so it can be found and edited. Without an override the
+    built-in ``TUTOR_SYSTEM_PROMPT`` is returned.
+
+    The retired intent→strategy prompts (``help_debug.md`` and friends) are NOT
+    consulted for live replies — this one file is the whole surface.
+    """
+    from computor_agent.tutor.prompts.templates import TUTOR_SYSTEM_PROMPT
+
+    try:
+        loader = get_prompt_loader()
+        override = loader.get_strategy_prompt_exact("tutor")
+    except Exception as e:  # pragma: no cover - loader construction failure
+        logger.debug(f"Prompt loader unavailable, using built-in tutor prompt: {e}")
+        return TUTOR_SYSTEM_PROMPT
+
+    return override or TUTOR_SYSTEM_PROMPT

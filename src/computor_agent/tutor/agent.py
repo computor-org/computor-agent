@@ -26,7 +26,7 @@ from computor_agent.tutor.config import TutorConfig
 from computor_agent.tutor.context import ConversationContext
 from computor_agent.tutor.context_builder import ContextBuilder
 from computor_agent.tutor.intents import IntentClassification, IntentClassifier
-from computor_agent.tutor.prompts.templates import TUTOR_SYSTEM_PROMPT, PERSONALITY_PROMPTS
+from computor_agent.tutor.prompts.templates import PERSONALITY_PROMPTS
 from computor_agent.tutor.security import SecurityCheckResult, SecurityGate
 from computor_agent.tutor.strategies import StrategyRegistry, StrategyResponse
 
@@ -363,16 +363,11 @@ class TutorAgent:
             personality = PERSONALITY_PROMPTS.get(tone, PERSONALITY_PROMPTS["friendly_professional"])
         personality = personality.format(tutor_name=self.config.personality.name)
 
-        # Try custom "tutor" prompt from loader, fall back to built-in
-        try:
-            from computor_agent.tutor.prompts.loader import get_prompt_loader
-            loader = get_prompt_loader()
-            # Only use loader if there's an explicit tutor.md — don't fall back to old prompts
-            template = loader._strategy_prompts.get("tutor")
-        except Exception:
-            template = None
-        if not template:
-            template = TUTOR_SYSTEM_PROMPT
+        # strategy/tutor.md if the operator wrote one, else the built-in prompt.
+        # (This used to reach into a private loader attribute, which is why the
+        # override was impossible to discover.)
+        from computor_agent.tutor.prompts.loader import get_tutor_prompt
+        template = get_tutor_prompt()
 
         # Assignment
         assignment_section = self._format_assignment_section(context)
