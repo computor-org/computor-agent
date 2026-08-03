@@ -6,7 +6,8 @@ The Tutor AI Agent responds to student questions and grades submissions using an
 
 ### Messaging Agent
 
-Responds to student messages tagged with `#ai::request`.
+Responds when a student **@mentions the agent** in a course message, and to
+follow-up replies in a thread the agent is already part of.
 
 ```bash
 # Production mode
@@ -122,30 +123,47 @@ computor-agent tutor messaging --prompts-dir ./my-prompts
 computor-agent tutor messaging --dev --prompts-dir ./my-prompts
 ```
 
+The default location is `~/.computor/prompts`.
+
 **Directory structure:**
 
 ```
 prompts/
-├── personality/           # Tone and style
+├── personality/           # Tone and style, prepended to the tutor prompt
 │   ├── friendly_professional.md
 │   ├── strict.md
 │   └── casual.md
-├── strategy/              # Response strategies
-│   ├── question_example.md
-│   ├── question_howto.md
+├── strategy/
+│   ├── tutor.md           # THE live messaging prompt — edit this one
+│   ├── question_example.md    # retired: intent→strategy model, not used
+│   ├── question_howto.md      #   for live replies
 │   ├── help_debug.md
 │   ├── help_review.md
 │   ├── clarification.md
 │   └── fallback.md
-└── security/              # Security prompts
-    ├── detection.md
-    └── confirmation.md
+├── grading/
+│   └── grading.md         # rubric for `tutor grading`
+├── security/              # Security prompts
+│   ├── detection.md
+│   └── confirmation.md
+└── figure_review/
+    └── review.md
 ```
 
+**Which file actually runs?**
+
+- **Live replies** use exactly two files: `personality/<tone>.md` and
+  `strategy/tutor.md`. Everything else in `strategy/` belongs to the retired
+  intent→strategy architecture and is ignored by the messaging agent.
+- **Grading** uses `grading/grading.md` when present. Supplying it selects
+  single-step grading, because that is the path a custom rubric applies to;
+  without it, grading runs its more accurate multi-step analysis.
+
 **Features:**
-- Missing files are auto-created with defaults
+- Missing files are auto-created with defaults (including `strategy/tutor.md`)
 - Existing files are never overwritten
 - Hot reload in dev mode (changes apply immediately)
+- With no prompts directory at all, the built-in prompts are used
 
 ---
 
@@ -182,20 +200,22 @@ tutor:
     tone: "friendly_professional"
 
   triggers:
-    request_tags:
-      - scope: "ai"
-        value: "request"
-    response_tag:
-      scope: "ai"
-      value: "response"
-
-  scheduler:
-    poll_interval_seconds: 30
-    cooldown_seconds: 5
+    # Activation is @mention-based and on by default; set enabled: false to
+    # switch the agent off. Also react to submitted artifacts:
+    check_submissions: true
 
   # Figure review (see section below)
   figure_review:
     enabled: false
+
+# Scheduler is a TOP-LEVEL key, not part of `tutor:`. Putting it under `tutor:`
+# is rejected outright (unknown keys are errors).
+scheduler:
+  # Interval of the periodic REST catch-up scan that backstops the WebSocket
+  # event stream. Not a polling transport - see "Transport" below.
+  poll_interval_seconds: 60
+  cooldown_seconds: 60
+  max_concurrent_processing: 5
 ```
 
 ---
@@ -253,22 +273,16 @@ Notes:
 
 ### Messaging Flow
 
-1. **Trigger Detection**: Student message has `#ai::request` tag or is a reply in an AI conversation
-2. **Context Gathering**: Fetch conversation history, student info, assignment description
+1. **Trigger Detection**: the student @mentions the agent, or replies in a thread
+   the agent has already answered in
+2. **Context Gathering**: recent conversation turns, student info, assignment
+   description, the latest submission, test results
 3. **Security Check**: Scan for prompt injection (optional)
-4. **Intent Classification**: Determine what the student needs
-5. **Response Generation**: Generate LLM response based on intent
-6. **Send Response**: Post reply with `#ai::response` tag
+4. **Response Generation**: one LLM call against a single unified prompt
+5. **Send Response**: reply in the thread
 
-**Intent types:**
-
-| Intent | Description |
-|--------|-------------|
-| `question_example` | About assignment requirements |
-| `question_howto` | General programming how-to |
-| `help_debug` | Debugging assistance |
-| `help_review` | Code review request |
-| `clarification` | Follow-up question |
+The agent identifies its own messages by author id, so no response tag is
+needed or written.
 
 ### Grading Flow
 
@@ -287,27 +301,24 @@ Notes:
 
 ---
 
-## Transport Modes
+## Transport
 
-The messaging agent supports two transport modes:
-
-### WebSocket (Preferred)
-
-Real-time message delivery. Requires API token authentication.
+The messaging agent is **WebSocket-only**. It needs a token to connect and
+exits with an error if it cannot get one — there is no HTTP-polling fallback.
 
 ```yaml
 backend:
   api_token: ctp_your_token_here
+  # or username / password, from which a token is obtained at startup
 ```
 
-### HTTP Polling (Fallback)
-
-Polls for messages at regular intervals. Used when WebSocket is unavailable.
+A periodic REST **catch-up scan** backstops the event stream, so a message that
+arrives while the socket is down is still picked up once it reconnects. That is
+a safety net, not a transport:
 
 ```yaml
-tutor:
-  scheduler:
-    poll_interval_seconds: 30
+scheduler:
+  poll_interval_seconds: 60   # top-level key, NOT under `tutor:`
 ```
 
 ---
@@ -333,6 +344,8 @@ cat config.yaml | grep -A5 backend
 
 ### No Messages Detected
 
-- Verify message has `#ai::request` tag in title
-- Check `--verbose` output for polling activity
+- Verify the message actually @mentions the agent's user (a plain message in a
+  thread the agent has never replied to is not a trigger)
+- Confirm `triggers.enabled` is not set to `false`
+- Check `--verbose` output for the WebSocket connection and the catch-up scan
 - Ensure backend URL is correct

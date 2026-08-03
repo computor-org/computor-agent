@@ -1,5 +1,34 @@
 # Prompt Engineering Guide for Tutor Agent
 
+> **Read this first — which prompt actually runs?**
+>
+> Live tutor replies are generated from **one** unified prompt:
+> `strategy/tutor.md`, with `personality/<tone>.md` substituted into it. That is
+> the whole surface for the messaging agent.
+>
+> The intent→strategy composition described further down
+> (`question_example.md`, `help_debug.md`, `fallback.md`, …) belongs to a
+> **retired** architecture. Those files are still created and still load, but the
+> messaging agent does not consult them. Editing them has no effect on replies.
+>
+> | I want to change… | Edit |
+> |---|---|
+> | how the tutor answers students | `strategy/tutor.md` |
+> | its tone / persona | `personality/<tone>.md` (`tone:` in config) |
+> | the grading rubric | `grading/grading.md` |
+> | prompt-injection screening | `security/detection.md`, `security/confirmation.md` |
+> | figure review | `figure_review/review.md` |
+>
+> Placeholders available in `strategy/tutor.md`: `{personality_prompt}`,
+> `{language}`, `{assignment_section}`, `{code_section}`,
+> `{test_results_section}`, `{previous_messages_section}`,
+> `{reference_comparison_section}`, `{figure_review_section}`. Sections are
+> empty strings when the corresponding context is unavailable.
+>
+> Note on grading: supplying `grading/grading.md` switches grading to its
+> single-step path, because that is the path a custom rubric is applied on.
+> Without it, grading uses the more accurate multi-step analysis.
+
 ## Overview
 
 This guide explains how to create and modify prompts for the Tutor Agent. Prompts use template variables (in `{variable}` notation) that are replaced with actual values at runtime.
@@ -9,8 +38,10 @@ This guide explains how to create and modify prompts for the Tutor Agent. Prompt
 ```
 prompts/
 ├── personality/      # Define the agent's tone and behavior
-├── strategy/        # Define response strategies for different intents
+├── strategy/        # tutor.md = the live prompt; the rest are retired
+├── grading/         # Grading rubric (`grading.md`)
 ├── security/        # Security check prompts
+├── figure_review/   # Figure review prompt (`review.md`)
 └── README.md        # This guide (auto-copied)
 ```
 
@@ -81,6 +112,10 @@ IMPORTANT: Keep your responses CONCISE and TO THE POINT:
 
 ### 2. Strategy Prompts (`strategy/*.md`)
 
+> Only `strategy/tutor.md` affects live replies. The per-intent files below
+> are retired.
+
+
 **Purpose**: Define how to handle specific types of student requests.
 
 **Template Structure**:
@@ -131,7 +166,11 @@ Respond with JSON:
 }
 ```
 
-## Prompt Composition Flow
+## Prompt Composition Flow (retired intent→strategy model)
+
+> Kept for reference. Live replies do **not** compose prompts this way —
+> see the note at the top of this guide.
+
 
 The agent builds the final prompt by combining multiple pieces:
 

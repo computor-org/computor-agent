@@ -78,4 +78,4 @@ scheduler:
 #   COMPUTOR_VISION_LLM_MODEL     -> vision_llm.model
 #   COMPUTOR_VISION_LLM_BASE_URL  -> vision_llm.base_url
 #   COMPUTOR_VISION_LLM_API_KEY   -> vision_llm.api_key
-#   COMPUTOR_WORKERS              -> tutor.scheduler.max_concurrent_processing (1-50)
+#   COMPUTOR_WORKERS              -> scheduler.max_concurrent_processing (1-50)

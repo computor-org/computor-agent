@@ -207,7 +207,7 @@ class SubmissionGrader:
         llm: LLMClient,
         prompt_template: Optional[str] = None,
         max_retries: int = 2,
-        use_multi_step: bool = True,
+        use_multi_step: Optional[bool] = None,
         figure_reviewer: Optional["FigureReviewService"] = None,
     ):
         """
@@ -217,13 +217,26 @@ class SubmissionGrader:
             llm: LLM client for generating grades
             prompt_template: Custom grading prompt template (uses default if None)
             max_retries: Maximum retries for LLM JSON parsing failures
-            use_multi_step: Use multi-step grading (default True, more accurate)
+            use_multi_step: Use multi-step grading (more accurate). Defaults to
+                True, except when a custom ``prompt_template`` is supplied —
+                only the single-step path consumes a template, so a caller that
+                provides one is asking for that rubric to be used. Pass an
+                explicit value to override either way.
             figure_reviewer: Service for reviewing submission figures with a
                 vision LLM (None = figure review disabled)
         """
         self.llm = llm
         self.prompt_template = prompt_template or GRADING_PROMPT
         self.max_retries = max_retries
+        if use_multi_step is None:
+            # Silently ignoring a custom rubric is worse than switching mode:
+            # prompts/grading/grading.md never reached the LLM before this.
+            use_multi_step = prompt_template is None
+            if not use_multi_step:
+                logger.info(
+                    "Custom grading prompt supplied — using single-step grading "
+                    "so the template is actually applied"
+                )
         self.use_multi_step = use_multi_step
         self.figure_reviewer = figure_reviewer
 
