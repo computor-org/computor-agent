@@ -28,6 +28,17 @@ logger = logging.getLogger(__name__)
 MAX_AUTH_FAILURES = 3
 STATE_MAX_AGE = timedelta(hours=24)
 
+# Retry policy for a message whose processing raised.
+#
+# A failed message is neither marked read nor recorded as last-processed, so
+# without this it stays eligible forever: every `message:new` event and every
+# periodic catch-up scan re-selects it. With the LLM unreachable that is a tight
+# loop against both the backend and the provider, and a message that reliably
+# crashes the pipeline retries until someone notices.
+FAILURE_BACKOFF_SECONDS = 30.0
+MAX_FAILURE_BACKOFF_SECONDS = 900.0  # 15 minutes
+MAX_MESSAGE_ATTEMPTS = 5
+
 
 @dataclass
 class ProcessingState:
@@ -36,6 +47,20 @@ class ProcessingState:
     submission_group_id: str
     last_processed: Optional[datetime] = None
     last_message_id: Optional[str] = None
+
+
+@dataclass
+class MessageFailure:
+    """Retry bookkeeping for a single message that failed to process."""
+
+    attempts: int = 0
+    retry_after: Optional[datetime] = None
+    last_attempt: Optional[datetime] = None
+
+    @property
+    def parked(self) -> bool:
+        """Given up on until the agent restarts (or the entry ages out)."""
+        return self.attempts >= MAX_MESSAGE_ATTEMPTS
 
 
 class ComputorClientProtocol(Protocol):
@@ -118,6 +143,9 @@ class WebSocketScheduler:
 
         # State tracking
         self._states: dict[str, ProcessingState] = {}
+        # Per-message retry bookkeeping. Entries are dropped on success, so this
+        # only ever holds messages that are currently failing.
+        self._failures: dict[str, MessageFailure] = {}
         self._locks: dict[str, asyncio.Lock] = {}  # Per-submission-group locks
         self._course_locks: dict[str, asyncio.Lock] = {}  # Per-course locks
         self._course_ids: list[str] = []
@@ -577,6 +605,10 @@ class WebSocketScheduler:
                     self._metrics.message_skipped(course_id)
                     continue
 
+                if self._is_backing_off(message_id):
+                    self._metrics.message_skipped(course_id)
+                    continue
+
                 trigger_type = "follow-up" if is_follow_up else "direct"
                 logger.info(f"Processing unread {trigger_type} message: {message_id}")
                 self._metrics.message_seen(course_id)
@@ -617,11 +649,16 @@ class WebSocketScheduler:
                         except Exception as e:
                             logger.error(f"Failed to process message {message_id}: {e}")
                             self._metrics.message_failed(course_id)
+                            # Neither mark_read nor the state update below is
+                            # reached on this path, so without recording the
+                            # failure the message is immediately eligible again.
+                            self._record_failure(message_id, state, e)
                             continue
 
                     await self._ws.mark_read(typing_channel, message_id)
                     state.last_message_id = message_id
                     state.last_processed = datetime.now()
+                    self._failures.pop(message_id, None)
 
                     # Our reply just landed in the thread — flip cached
                     # siblings so they classify as triggers on the next poll
@@ -637,6 +674,11 @@ class WebSocketScheduler:
                     f"{course_id}: {e}"
                 )
                 self._metrics.message_failed(course_id)
+                # Same reasoning as the inner handler: back this message off so a
+                # deterministic failure here cannot spin on every scan either.
+                self._record_failure(
+                    message_id, self._states.get(submission_group_id), e
+                )
 
         return processed_count
 
@@ -928,6 +970,72 @@ class WebSocketScheduler:
         cooldown = timedelta(seconds=self._cooldown_seconds)
         return datetime.now() - state.last_processed < cooldown
 
+    def _is_backing_off(self, message_id: str) -> bool:
+        """Whether this message is waiting out a retry delay, or given up on."""
+        failure = self._failures.get(message_id)
+        if failure is None:
+            return False
+
+        if failure.parked:
+            logger.debug(
+                f"Skipping message {message_id}: parked after "
+                f"{failure.attempts} failed attempts"
+            )
+            return True
+
+        if failure.retry_after and datetime.now() < failure.retry_after:
+            logger.debug(
+                f"Skipping message {message_id}: retry not due until "
+                f"{failure.retry_after.isoformat()}"
+            )
+            return True
+
+        return False
+
+    def _record_failure(
+        self,
+        message_id: str,
+        state: Optional[ProcessingState],
+        error: Exception,
+    ) -> None:
+        """Back a failed message off, and park it once attempts run out.
+
+        Exponential delay so a provider outage costs a handful of attempts
+        rather than one per event, and a permanent park so a message that always
+        crashes the pipeline stops consuming attempts entirely. Parking is
+        in-memory on purpose: the message stays unread, so a restart (or a fix)
+        gives it a fresh chance instead of burying it.
+        """
+        if not message_id:
+            return
+
+        failure = self._failures.setdefault(message_id, MessageFailure())
+        failure.attempts += 1
+        failure.last_attempt = datetime.now()
+
+        if failure.parked:
+            failure.retry_after = None
+            logger.error(
+                f"Giving up on message {message_id} after {failure.attempts} "
+                f"failed attempts (last error: {error}). It stays unread and will "
+                f"be retried when the agent restarts."
+            )
+        else:
+            delay = min(
+                FAILURE_BACKOFF_SECONDS * (2 ** (failure.attempts - 1)),
+                MAX_FAILURE_BACKOFF_SECONDS,
+            )
+            failure.retry_after = datetime.now() + timedelta(seconds=delay)
+            logger.info(
+                f"Message {message_id} failed (attempt {failure.attempts}); "
+                f"retrying no sooner than in {delay:.0f}s"
+            )
+
+        # Also apply the ordinary per-group cooldown, so a failure cannot be
+        # retried faster than a success would have been.
+        if state is not None:
+            state.last_processed = datetime.now()
+
     def _get_or_create_state(self, submission_group_id: str) -> ProcessingState:
         """Get or create processing state for a submission group."""
         if submission_group_id not in self._states:
@@ -1020,6 +1128,17 @@ class WebSocketScheduler:
         if stale_ids:
             logger.debug(f"Evicted {len(stale_ids)} stale processing state(s)")
 
+        # Parked messages hold their entry indefinitely (that is the point), so
+        # age them out on the same schedule to keep the map bounded. An aged-out
+        # park simply gets a fresh set of attempts.
+        stale_messages = [
+            mid for mid, failure in self._failures.items()
+            if failure.last_attempt is not None
+            and (now - failure.last_attempt) > STATE_MAX_AGE
+        ]
+        for mid in stale_messages:
+            del self._failures[mid]
+
     def get_stats(self) -> dict:
         """Get scheduler statistics."""
         return {
@@ -1028,6 +1147,8 @@ class WebSocketScheduler:
             "courses": len(self._course_ids),
             "tracked_groups": len(self._states),
             "active_typing": self._typing_manager.active_channels,
+            "failing_messages": len(self._failures),
+            "parked_messages": sum(1 for f in self._failures.values() if f.parked),
         }
 
     def reset_state(self, submission_group_id: Optional[str] = None) -> None:
@@ -1042,3 +1163,6 @@ class WebSocketScheduler:
                 del self._states[submission_group_id]
         else:
             self._states.clear()
+            # A full reset means "try everything again", including messages that
+            # were parked after repeated failures.
+            self._failures.clear()
