@@ -228,6 +228,12 @@ class TutorAgent:
             # can decide itself whether the student needs code help)
             await self._ensure_code_context(context)
 
+            # Now that the student's code is in hand, fetch the reference and
+            # diff against it. Has to happen here rather than during context
+            # building: there is no code to compare before this point, which is
+            # why the feature never activated in the messaging flow.
+            await self.context_builder.ensure_reference_comparison(context)
+
             # Review submission figures with the vision LLM (if enabled)
             await self._maybe_review_figures(context)
 
