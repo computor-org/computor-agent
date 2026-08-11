@@ -110,9 +110,7 @@ class TutorAgent:
     Usage:
         from computor_client import ComputorClient
 
-        async with ComputorClient(base_url=url) as client:
-            await client.login(username=user, password=password)
-
+        async with ComputorClient(base_url=url, api_token=token) as client:
             agent = TutorAgent(
                 config=config,
                 llm=llm_client,

@@ -453,13 +453,8 @@ class ComputorConfig(BaseModel):
             "timeout": self.backend.timeout,
         }
 
-        # Include auth credentials based on method used
         if self.backend.api_token:
             backend_dict["api_token"] = self.backend.get_api_token() if include_secrets else "***"
-        if self.backend.username:
-            backend_dict["username"] = self.backend.username
-        if self.backend.password:
-            backend_dict["password"] = self.backend.get_password() if include_secrets else "***"
 
         data = {
             "backend": backend_dict,

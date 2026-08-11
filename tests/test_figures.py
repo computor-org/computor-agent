@@ -255,8 +255,7 @@ class TestBuildFigureReviewer:
         data = {
             "backend": {
                 "url": "https://api.example.com",
-                "username": "u",
-                "password": "p",
+                "api_token": "ctp_test_token",
             },
         }
         if vision_llm:

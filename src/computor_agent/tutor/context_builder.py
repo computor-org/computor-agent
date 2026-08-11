@@ -70,8 +70,7 @@ class ContextBuilder:
     Usage:
         from computor_client import ComputorClient
 
-        async with ComputorClient(base_url=url) as client:
-            await client.login(...)
+        async with ComputorClient(base_url=url, api_token=token) as client:
             builder = ContextBuilder(client, config)
             context = await builder.build_for_message(
                 submission_group_id="...",
