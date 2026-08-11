@@ -33,7 +33,7 @@ async def main(config_path: Path) -> None:
                 password=backend["password"],
             )
 
-        courses = await client.tutors.get_courses()
+        courses = await client.tutors.list_courses()
         if not courses:
             print("No tutored courses.")
             return

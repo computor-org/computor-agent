@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from computor_types.messages import MessageThread
+from computor_client.exceptions import ComputorClientError
 from computor_types.student_course_contents import CourseContentStudentGet
 
 from computor_agent.tutor.context import (
@@ -70,8 +70,7 @@ class ContextBuilder:
     Usage:
         from computor_client import ComputorClient
 
-        async with ComputorClient(base_url=url) as client:
-            await client.login(...)
+        async with ComputorClient(base_url=url, api_token=token) as client:
             builder = ContextBuilder(client, config)
             context = await builder.build_for_message(
                 submission_group_id="...",
@@ -330,15 +329,14 @@ class ContextBuilder:
         # Use pre-fetched course content data if available, otherwise fetch from API
         if course_content_data is None and course_member_id and course_content_id:
             try:
-                if hasattr(self.client, 'tutors'):
-                    course_content_data = await self.client.tutors.get_course_members_course_contents(
-                        course_member_id, course_content_id
-                    )
-                    logger.debug(
-                        f"Fetched course content data for member={course_member_id}, "
-                        f"content={course_content_id}"
-                    )
-            except Exception as e:
+                course_content_data = await self.client.tutors.get_course_members_course_contents(
+                    course_member_id, course_content_id
+                )
+                logger.debug(
+                    f"Fetched course content data for member={course_member_id}, "
+                    f"content={course_content_id}"
+                )
+            except ComputorClientError as e:
                 logger.debug(f"Failed to fetch course content data: {e}")
 
         # Get test results from course content data
@@ -539,8 +537,7 @@ class ContextBuilder:
         context for follow-up messages.
         """
         try:
-            thread_raw = await self.client.messages.thread(thread_root_id)
-            thread = MessageThread.model_validate(thread_raw)
+            thread = await self.client.messages.get_thread(thread_root_id)
 
             result = []
             for msg in thread.messages:

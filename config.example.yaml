@@ -7,13 +7,9 @@
 backend:
   url: https://api.computor.example.com
 
-  # Authentication - choose one:
-  # Option 1: API token (recommended)
+  # Authentication: an API token, sent as the X-API-Token header.
+  # The backend has no username/password login.
   api_token: ctp_your_api_token_here
-
-  # Option 2: Username/password
-  # username: tutor-agent
-  # password: your-password
 
 # LLM provider (required)
 llm:
@@ -68,8 +64,6 @@ scheduler:
 #
 #   COMPUTOR_BACKEND_URL          -> backend.url
 #   COMPUTOR_BACKEND_API_TOKEN    -> backend.api_token
-#   COMPUTOR_BACKEND_USERNAME     -> backend.username
-#   COMPUTOR_BACKEND_PASSWORD     -> backend.password
 #   COMPUTOR_LLM_PROVIDER         -> llm.provider
 #   COMPUTOR_LLM_MODEL            -> llm.model
 #   COMPUTOR_LLM_BASE_URL         -> llm.base_url

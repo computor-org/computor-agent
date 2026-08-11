@@ -8,13 +8,9 @@ from computor_agent.tutor import TutorLLMAdapter
 API_TOKEN = "ctp_" + "a" * 32
 
 
-def make_config(with_llm=True, with_token=True, extra=None) -> ComputorConfig:
+def make_config(with_llm=True, extra=None) -> ComputorConfig:
     data = {
-        "backend": (
-            {"url": "https://api.example.com", "api_token": API_TOKEN}
-            if with_token
-            else {"url": "https://api.example.com", "username": "u", "password": "p"}
-        ),
+        "backend": {"url": "https://api.example.com", "api_token": API_TOKEN},
     }
     if with_llm:
         data["llm"] = {
@@ -27,20 +23,29 @@ def make_config(with_llm=True, with_token=True, extra=None) -> ComputorConfig:
     return ComputorConfig.from_dict(data)
 
 
-class StubAuthProvider:
+class StubClient:
+    """Stands in for ComputorClient's public token surface."""
+
     def __init__(self, access_token=None):
-        self._access_token = access_token
+        self.access_token = access_token
 
-    async def get_access_token(self):
-        return self._access_token
-
-    async def refresh_token(self):
+    async def refresh_access_token(self):
         return None
 
 
-class StubClient:
-    def __init__(self, access_token=None):
-        self._auth_provider = StubAuthProvider(access_token)
+class TokenlessBackend:
+    """A backend config with no API token.
+
+    BackendConfig itself rejects that now, but ``get_ws_token`` is duck-typed
+    and must still fall back to the session bearer token for a caller that
+    authenticated some other way.
+    """
+
+    url = "https://api.example.com"
+
+    @staticmethod
+    def get_api_token():
+        return None
 
 
 async def test_run_returns_1_without_llm_config():
@@ -60,7 +65,8 @@ async def test_build_scheduler_with_api_token():
 
 
 async def test_build_scheduler_without_token_fails_cleanly():
-    runtime = AgentRuntime(make_config(with_token=False), RuntimeOptions())
+    runtime = AgentRuntime(make_config(), RuntimeOptions())
+    runtime.config.backend.api_token = None  # simulate a token that went missing
     assert runtime._build_llm() is True
 
     tutor_llm = TutorLLMAdapter(runtime.llm_provider)
@@ -114,8 +120,7 @@ async def test_get_ws_token_prefers_static_api_token():
 
 
 async def test_get_ws_token_falls_back_to_session():
-    config = make_config(with_token=False)
-    token = await get_ws_token(StubClient(access_token="session-token"), config.backend)
+    token = await get_ws_token(StubClient(access_token="session-token"), TokenlessBackend())
     assert token == "session-token"
 
 

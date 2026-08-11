@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
+from computor_client.exceptions import ComputorClientError
+
 logger = logging.getLogger(__name__)
 
 
@@ -379,12 +381,8 @@ class ReferenceService:
 
         logger.info(f"Fetching description for course content {course_content_id}")
 
-        if not hasattr(self.client, 'tutors') or not hasattr(self.client.tutors, 'course_contents_description'):
-            logger.error("tutors.course_contents_description method not available in client")
-            return None
-
         try:
-            response = await self.client.tutors.course_contents_description(
+            response = await self.client.tutors.get_course_contents_description(
                 course_content_id=course_content_id
             )
 
@@ -503,20 +501,16 @@ class ReferenceService:
                 return cached
 
         try:
-            if hasattr(self.client, 'tutors') and hasattr(self.client.tutors, 'course_contents_reference'):
-                buffer = await self.client.tutors.course_contents_reference(
-                    course_content_id=course_content_id
-                )
-                # Cache the result
-                if buffer and use_cache:
-                    self._write_cached_reference(course_content_id, buffer)
-                return buffer
-            else:
-                logger.debug("tutors.course_contents_reference not available")
-                return None
-        except Exception as e:
-            logger.debug(f"Failed to get reference from tutor API for {course_content_id}: {e}")
+            buffer = await self.client.tutors.get_course_contents_reference(
+                course_content_id=course_content_id
+            )
+        except ComputorClientError as e:
+            logger.debug(f"No reference from the tutor API for {course_content_id}: {e}")
             return None
+
+        if buffer and use_cache:
+            self._write_cached_reference(course_content_id, buffer)
+        return buffer
 
     async def download_reference(
         self,
@@ -547,20 +541,9 @@ class ReferenceService:
                 import shutil
                 shutil.rmtree(destination)
 
-            # Download the reference ZIP - try multiple endpoints
-            buffer = None
-
-            # Try tutor API endpoint first (new endpoint)
+            # GET /tutors/course-contents/{id}/reference is the only route that
+            # serves this; there is no course-contents equivalent.
             buffer = await self.get_reference_from_tutor_api(course_content_id)
-
-            # Fallback to course_contents endpoint
-            if not buffer and hasattr(self.client, 'course_contents'):
-                try:
-                    buffer = await self.client.course_contents.download_reference(
-                        id=course_content_id,
-                    )
-                except Exception as e:
-                    logger.debug(f"course_contents.download_reference failed: {e}")
 
             if not buffer:
                 logger.warning(f"No reference available for {course_content_id}")
@@ -593,17 +576,7 @@ class ReferenceService:
             Dict of file_path -> content, or None on failure
         """
         try:
-            buffer = None
-
-            # Try course_contents endpoint first
-            if hasattr(self.client, 'course_contents'):
-                try:
-                    buffer = await self.client.course_contents.download_reference(
-                        id=course_content_id,
-                    )
-                except Exception as e:
-                    logger.debug(f"course_contents.download_reference failed: {e}")
-
+            buffer = await self.get_reference_from_tutor_api(course_content_id)
             if not buffer:
                 return None
 

@@ -22,20 +22,17 @@ class TestBackendConfig:
         """Test creating a backend configuration."""
         config = BackendConfig(
             url="https://api.computor.example.com",
-            username="tutor-agent",
-            password="secret-password",
+            api_token="ctp_test_token",
         )
         assert config.url == "https://api.computor.example.com"
-        assert config.username == "tutor-agent"
-        assert config.get_password() == "secret-password"
+        assert config.get_api_token() == "ctp_test_token"
         assert config.timeout == 30.0  # Default value
 
     def test_url_normalization(self):
         """Test that trailing slashes are removed from URLs."""
         config = BackendConfig(
             url="https://api.computor.example.com/",
-            username="user",
-            password="pass",
+            api_token="ctp_test_token",
         )
         assert config.url == "https://api.computor.example.com"
 
@@ -43,8 +40,7 @@ class TestBackendConfig:
         """Test setting a custom timeout."""
         config = BackendConfig(
             url="https://api.example.com",
-            username="user",
-            password="pass",
+            api_token="ctp_test_token",
             timeout=60.0,
         )
         assert config.timeout == 60.0
@@ -61,35 +57,28 @@ class TestBackendConfig:
         assert config.username is None
         assert config.password is None
 
-    def test_basic_auth(self):
-        """Test creating config with basic authentication."""
-        config = BackendConfig(
-            url="https://api.example.com",
-            username="user",
-            password="pass",
-        )
-        assert config.auth_method == "basic"
-        assert config.api_token is None
+    def test_username_password_are_ignored(self):
+        """The backend has no username/password login; the fields do nothing.
 
-    def test_api_token_takes_precedence(self):
-        """Test that API token takes precedence when both are provided."""
+        They are still accepted so existing config files keep loading.
+        """
         config = BackendConfig(
             url="https://api.example.com",
-            api_token="ctp_token123",
+            api_token="ctp_test_token",
             username="user",
             password="pass",
         )
         assert config.auth_method == "api_token"
 
-    def test_missing_auth_raises_error(self):
-        """Test that missing authentication raises an error."""
-        with pytest.raises(ValueError, match="Either api_token or both username and password"):
+    def test_missing_api_token_raises_error(self):
+        """Test that a missing API token raises an error."""
+        with pytest.raises(ValueError, match="backend.api_token is required"):
             BackendConfig(url="https://api.example.com")
 
-    def test_partial_basic_auth_raises_error(self):
-        """Test that providing only username (no password) raises an error."""
-        with pytest.raises(ValueError, match="Either api_token or both username and password"):
-            BackendConfig(url="https://api.example.com", username="user")
+    def test_username_password_alone_raises_error(self):
+        """Credentials without a token are not a usable configuration."""
+        with pytest.raises(ValueError, match="backend.api_token is required"):
+            BackendConfig(url="https://api.example.com", username="user", password="pass")
 
     def test_api_token_repr_hides_token(self):
         """Test that repr hides API token."""
@@ -168,8 +157,7 @@ class TestComputorConfig:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="user",
-                password="pass",
+                api_token="ctp_test_token",
             )
         )
         assert config.backend.url == "https://api.example.com"
@@ -181,8 +169,7 @@ class TestComputorConfig:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="tutor",
-                password="secret",
+                api_token="ctp_test_token",
                 timeout=60.0,
             ),
             agent=AgentConfig(
@@ -195,7 +182,7 @@ class TestComputorConfig:
                 api_key="sk-xxx",
             ),
         )
-        assert config.backend.username == "tutor"
+        assert config.backend.get_api_token() == "ctp_test_token"
         assert config.agent.name == "Tutor AI"
         assert config.llm.model == "gpt-4"
 
@@ -204,8 +191,7 @@ class TestComputorConfig:
         data = {
             "backend": {
                 "url": "https://api.example.com",
-                "username": "user",
-                "password": "pass",
+                "api_token": "ctp_test_token",
             },
             "agent": {
                 "name": "Test Agent",
@@ -233,15 +219,14 @@ class TestComputorConfig:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="user",
-                password="secret-password",
+                api_token="ctp_test_token",
             ),
             llm=LLMSettings(
                 api_key="sk-secret-key",
             ),
         )
         data = config.to_dict()
-        assert data["backend"]["password"] == "***"
+        assert data["backend"]["api_token"] == "***"
         assert data["llm"]["api_key"] == "***"
 
     def test_to_dict_includes_secrets(self):
@@ -249,20 +234,18 @@ class TestComputorConfig:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="user",
-                password="secret-password",
+                api_token="ctp_test_token",
             ),
         )
         data = config.to_dict(include_secrets=True)
-        assert data["backend"]["password"] == "secret-password"
+        assert data["backend"]["api_token"] == "ctp_test_token"
 
     def test_vision_llm_optional(self):
         """vision_llm defaults to None and accepts LLMSettings."""
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="user",
-                password="pass",
+                api_token="ctp_test_token",
             ),
         )
         assert config.vision_llm is None
@@ -270,8 +253,7 @@ class TestComputorConfig:
         config = ComputorConfig.from_dict({
             "backend": {
                 "url": "https://api.example.com",
-                "username": "user",
-                "password": "pass",
+                "api_token": "ctp_test_token",
             },
             "vision_llm": {
                 "provider": "ollama",
@@ -287,8 +269,7 @@ class TestComputorConfig:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="user",
-                password="pass",
+                api_token="ctp_test_token",
             ),
             vision_llm=LLMSettings(
                 provider="openai",
@@ -312,8 +293,7 @@ class TestComputorConfigFile:
         yaml_content = """
 backend:
   url: https://api.example.com
-  username: tutor-agent
-  password: secret123
+  api_token: ctp_test_token
 
 agent:
   name: Tutor AI
@@ -332,8 +312,7 @@ llm:
             try:
                 config = ComputorConfig.from_file(f.name)
                 assert config.backend.url == "https://api.example.com"
-                assert config.backend.username == "tutor-agent"
-                assert config.backend.get_password() == "secret123"
+                assert config.backend.get_api_token() == "ctp_test_token"
                 assert config.agent.name == "Tutor AI"
                 assert config.llm.provider == "openai"
             finally:
@@ -344,8 +323,7 @@ llm:
         json_content = {
             "backend": {
                 "url": "https://api.example.com",
-                "username": "user",
-                "password": "pass",
+                "api_token": "ctp_test_token",
             }
         }
 
@@ -371,8 +349,7 @@ llm:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="user",
-                password="secret",
+                api_token="ctp_test_token",
             ),
             agent=AgentConfig(name="Test Agent"),
         )
@@ -388,15 +365,14 @@ llm:
             # Verify content can be loaded back
             loaded = ComputorConfig.from_file(path)
             assert loaded.backend.url == "https://api.example.com"
-            assert loaded.backend.get_password() == "secret"
+            assert loaded.backend.get_api_token() == "ctp_test_token"
 
     def test_save_json(self):
         """Test saving config to JSON file."""
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="user",
-                password="secret",
+                api_token="ctp_test_token",
             ),
         )
 
@@ -502,30 +478,26 @@ class TestSecureRepresentations:
     """Tests to ensure credentials are never exposed in string representations."""
 
     def test_backend_config_repr_hides_credentials(self):
-        """Test that BackendConfig repr hides password but shows username."""
+        """Test that BackendConfig repr masks the API token."""
         config = BackendConfig(
             url="https://api.example.com",
-            username="secret-user",
-            password="super-secret-password",
+            api_token="ctp_super_secret_token",
         )
         repr_str = repr(config)
-        assert "super-secret-password" not in repr_str
+        assert "ctp_super_secret_token" not in repr_str
         assert "***" in repr_str
         assert "https://api.example.com" in repr_str
-        # Username is shown (it's an identifier, not a secret)
-        assert "secret-user" in repr_str
 
     def test_backend_config_str_hides_credentials(self):
-        """Test that BackendConfig str hides password."""
+        """Test that BackendConfig str hides the token."""
         config = BackendConfig(
             url="https://api.example.com",
-            username="secret-user",
-            password="super-secret-password",
+            api_token="ctp_super_secret_token",
         )
         str_str = str(config)
-        assert "super-secret-password" not in str_str
-        # str shows auth method, not individual credentials
-        assert "basic" in str_str  # auth_method
+        assert "ctp_super_secret_token" not in str_str
+        # str shows the auth method, not the credential
+        assert "api_token" in str_str
 
     def test_llm_settings_repr_hides_api_key(self):
         """Test that LLMSettings repr hides API key."""
@@ -554,17 +526,14 @@ class TestSecureRepresentations:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="secret-user",
-                password="super-secret-password",
+                api_token="ctp_test_token",
             ),
             llm=LLMSettings(
                 api_key="sk-secret-key",
             ),
         )
         repr_str = repr(config)
-        assert "super-secret-password" not in repr_str
-        # Username is shown (it's an identifier, not a secret)
-        assert "secret-user" in repr_str
+        assert "ctp_test_token" not in repr_str
         assert "sk-secret-key" not in repr_str
 
     def test_computor_config_str_hides_all_secrets(self):
@@ -572,29 +541,26 @@ class TestSecureRepresentations:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="secret-user",
-                password="super-secret-password",
+                api_token="ctp_test_token",
             ),
         )
         str_str = str(config)
-        assert "super-secret-password" not in str_str
-        assert "secret-user" not in str_str
+        assert "ctp_test_token" not in str_str
 
     def test_to_dict_masks_by_default(self):
         """Test that to_dict masks secrets by default."""
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="user",
-                password="super-secret",
+                api_token="ctp_test_token",
             ),
             llm=LLMSettings(api_key="sk-secret"),
         )
         data = config.to_dict()
-        assert data["backend"]["password"] == "***"
+        assert data["backend"]["api_token"] == "***"
         assert data["llm"]["api_key"] == "***"
         # Actual values should not appear anywhere
-        assert "super-secret" not in str(data)
+        assert "ctp_test_token" not in str(data)
         assert "sk-secret" not in str(data)
 
     def test_print_does_not_expose_secrets(self):
@@ -605,8 +571,7 @@ class TestSecureRepresentations:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="secret-user",
-                password="super-secret-password",
+                api_token="ctp_test_token",
             ),
         )
 
@@ -625,8 +590,7 @@ class TestSecureRepresentations:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="secret-user",
-                password="super-secret-password",
+                api_token="ctp_test_token",
             ),
         )
         formatted = f"Config: {config}"
@@ -641,8 +605,7 @@ class TestSecureRepresentations:
         config = ComputorConfig(
             backend=BackendConfig(
                 url="https://api.example.com",
-                username="secret-user",
-                password="super-secret-password",
+                api_token="ctp_test_token",
             ),
         )
 

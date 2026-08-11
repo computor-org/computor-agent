@@ -81,16 +81,10 @@ Example:
     config = ComputorConfig.from_file("~/.computor/config.yaml")
     tutor_config = config.get_tutor_config()
 
-    async with ComputorClient(base_url=config.backend.url) as client:
-        # Authenticate (API token or basic auth)
-        if config.backend.auth_method == "api_token":
-            client.headers["X-API-Token"] = config.backend.get_api_token()
-        else:
-            await client.login(
-                username=config.backend.username,
-                password=config.backend.get_password(),
-            )
-
+    async with ComputorClient(
+        base_url=config.backend.url,
+        api_token=config.backend.get_api_token(),
+    ) as client:
         # Create tutor agent
         agent = TutorAgent(
             client=client,

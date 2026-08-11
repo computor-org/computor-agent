@@ -28,8 +28,8 @@ WORKDIR /app
 # rarely, so install them in their own layer to keep rebuilds fast.
 RUN pip install --upgrade pip \
     && pip install \
-        "computor-types @ git+https://github.com/computor-org/computor-backend.git@main#subdirectory=computor-types" \
-        "computor-client @ git+https://github.com/computor-org/computor-backend.git@main#subdirectory=computor-client"
+        "computor-types @ git+https://github.com/computor-org/computor-backend.git@release/2026.10#subdirectory=computor-types" \
+        "computor-client @ git+https://github.com/computor-org/computor-backend.git@release/2026.10#subdirectory=computor-client"
 
 COPY pyproject.toml README.md ./
 COPY src/ ./src/

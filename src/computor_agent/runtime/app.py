@@ -92,18 +92,24 @@ class AgentRuntime:
 
         tutor_llm = TutorLLMAdapter(self.llm_provider)
 
-        # Create Computor client with appropriate authentication
+        # The API authenticates with an API token or an SSO bearer token; it
+        # has no username/password endpoint.
         client_kwargs = {"base_url": self.config.backend.url}
-        if self.config.backend.auth_method == "api_token":
-            # Use X-API-Token header for API token auth
-            client_kwargs["headers"] = {
-                "X-API-Token": self.config.backend.get_api_token()
-            }
+        api_token = self.config.backend.get_api_token()
+        if api_token:
+            client_kwargs["api_token"] = api_token
             logger.info("Using API token authentication")
+        else:
+            logger.error(
+                "No API token configured. Set backend.api_token — the API has "
+                "no username/password login."
+            )
+            self.console.print(
+                "[bold red]Error:[/bold red] backend.api_token is required."
+            )
+            return 1
 
         async with ComputorClient(**client_kwargs) as client:
-            if not await self._login(client):
-                return 1
 
             await self._resolve_agent_user_id(client)
 
@@ -304,22 +310,6 @@ class AgentRuntime:
             )
             self.metrics.llm_probed(ok=False, latency_ms=0, error=str(e))
 
-    async def _login(self, client) -> bool:
-        """Authenticate with username/password if not using an API token."""
-        if self.config.backend.auth_method == "api_token":
-            return True
-        try:
-            await client.login(
-                username=self.config.backend.username,
-                password=self.config.backend.get_password(),
-            )
-            logger.info("Authenticated with username/password")
-            return True
-        except Exception as e:
-            logger.error(f"Authentication failed: {e}", exc_info=True)
-            self.console.print(f"[bold red]Authentication failed:[/bold red] {e}")
-            return False
-
     async def _resolve_agent_user_id(self, client) -> None:
         """Resolve the agent's own backend user id.
 
@@ -327,7 +317,7 @@ class AgentRuntime:
         it participates in (replaces the legacy #ai-response title tag).
         """
         try:
-            me = await client.user.list()
+            me = await client.user.get()
             self.tutor_config.triggers.agent_user_id = str(me.id)
             logger.info(f"Agent backend user id resolved: {me.id}")
         except Exception as e:
@@ -413,7 +403,7 @@ class AgentRuntime:
         if not token:
             logger.error(
                 "No authentication token available for the WebSocket connection. "
-                "Configure backend.api_token or username/password in the config file."
+                "Configure backend.api_token in the config file."
             )
             self.console.print(
                 "[bold red]Error:[/bold red] no authentication token available "

@@ -9,7 +9,10 @@ to track student progress, issues, or other notes.
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
+
+from computor_client.exceptions import ComputorClientError
+from computor_types.course_member_comments import CourseMemberCommentList
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +95,15 @@ class CommentsService:
         """
         self.client = client
 
+    @staticmethod
+    def _newest(
+        comments: Sequence[CourseMemberCommentList],
+    ) -> Optional[CourseMemberCommentList]:
+        """Pick the most recently created row from a refreshed comment list."""
+        if not comments:
+            return None
+        return max(comments, key=lambda c: (c.created_at is not None, c.created_at))
+
     async def get_comments(
         self,
         course_member_id: str,
@@ -111,32 +123,16 @@ class CommentsService:
             List of TutorComment objects, newest first
         """
         try:
-            comments = None
-
-            # Try course_member_comments endpoint
-            if hasattr(self.client, 'course_member_comments'):
-                try:
-                    comments = await self.client.course_member_comments.list(
-                        course_member_id=course_member_id,
-                    )
-                except Exception as e:
-                    logger.debug(f"course_member_comments.list failed: {e}")
-
-            # Try tutor endpoint as fallback
-            if not comments and hasattr(self.client, 'tutors'):
-                try:
-                    comments = await self.client.tutors.course_member_comments(
-                        course_member_id=course_member_id,
-                    )
-                except Exception as e:
-                    logger.debug(f"tutors.course_member_comments failed: {e}")
+            comments = await self.client.course_member_comments.list(
+                course_member_id=course_member_id,
+            )
 
             if not comments:
                 return []
 
             result = []
             for c in comments:
-                content = getattr(c, "content", "") or ""
+                content = c.message or ""
 
                 # Check if AI-generated
                 is_ai = content.startswith(self.AI_COMMENT_PREFIX)
@@ -151,19 +147,20 @@ class CommentsService:
                 created_at = self._parse_datetime(getattr(c, "created_at", None))
                 updated_at = self._parse_datetime(getattr(c, "updated_at", None))
 
-                # Get author info
-                author = getattr(c, "author", None)
+                # The author is the transmitting course member; their name
+                # hangs off the nested user record.
                 author_name = None
-                if author:
-                    given = getattr(author, "given_name", "") or ""
-                    family = getattr(author, "family_name", "") or ""
+                user = getattr(c.transmitter, "user", None) if c.transmitter else None
+                if user:
+                    given = user.given_name or ""
+                    family = user.family_name or ""
                     author_name = f"{given} {family}".strip() or None
 
                 result.append(TutorComment(
                     id=c.id,
                     course_member_id=course_member_id,
                     content=content,
-                    author_id=getattr(c, "author_id", None),
+                    author_id=c.transmitter_id,
                     author_name=author_name,
                     created_at=created_at,
                     updated_at=updated_at,
@@ -201,39 +198,25 @@ class CommentsService:
             Created TutorComment or None on failure
         """
         try:
-            created = None
+            # The API answers writes with the member's *refreshed comment list*,
+            # newest last, rather than the single created row.
+            comments = await self.client.course_member_comments.create(
+                data={
+                    "course_member_id": course_member_id,
+                    "message": content,
+                }
+            )
 
-            # Try course_member_comments endpoint
-            if hasattr(self.client, 'course_member_comments'):
-                try:
-                    created = await self.client.course_member_comments.create(
-                        data={
-                            "course_member_id": course_member_id,
-                            "content": content,
-                        }
-                    )
-                except Exception as e:
-                    logger.debug(f"course_member_comments.create failed: {e}")
-
-            # Try tutor endpoint as fallback
-            if not created and hasattr(self.client, 'tutors'):
-                try:
-                    created = await self.client.tutors.create_course_member_comment(
-                        course_member_id=course_member_id,
-                        content=content,
-                    )
-                except Exception as e:
-                    logger.debug(f"tutors.create_course_member_comment failed: {e}")
-
-            if not created:
-                logger.warning(f"No endpoint available to create comments for {course_member_id}")
+            created = self._newest(comments)
+            if created is None:
+                logger.warning(f"Comment create returned no rows for {course_member_id}")
                 return None
 
             return TutorComment(
                 id=created.id,
                 course_member_id=course_member_id,
-                content=content,
-                created_at=self._parse_datetime(getattr(created, "created_at", None)),
+                content=created.message,
+                created_at=self._parse_datetime(created.created_at),
             )
 
         except Exception as e:
@@ -280,27 +263,21 @@ class CommentsService:
             Updated TutorComment or None on failure
         """
         try:
-            updated = None
+            comments = await self.client.course_member_comments.update(
+                comment_id,
+                data={"message": content},
+            )
 
-            # Try course_member_comments endpoint
-            if hasattr(self.client, 'course_member_comments'):
-                try:
-                    updated = await self.client.course_member_comments.update(
-                        id=comment_id,
-                        data={"content": content},
-                    )
-                except Exception as e:
-                    logger.debug(f"course_member_comments.update failed: {e}")
-
-            if not updated:
-                logger.warning(f"No endpoint available to update comment {comment_id}")
+            updated = next((c for c in comments if str(c.id) == str(comment_id)), None)
+            if updated is None:
+                logger.warning(f"Comment {comment_id} missing from the update response")
                 return None
 
             return TutorComment(
                 id=updated.id,
-                course_member_id=getattr(updated, "course_member_id", ""),
-                content=content,
-                updated_at=self._parse_datetime(getattr(updated, "updated_at", None)),
+                course_member_id=updated.course_member_id,
+                content=updated.message,
+                updated_at=self._parse_datetime(updated.updated_at),
             )
 
         except Exception as e:
@@ -318,17 +295,9 @@ class CommentsService:
             True if deleted successfully
         """
         try:
-            # Try course_member_comments endpoint
-            if hasattr(self.client, 'course_member_comments'):
-                try:
-                    await self.client.course_member_comments.delete(id=comment_id)
-                    return True
-                except Exception as e:
-                    logger.debug(f"course_member_comments.delete failed: {e}")
-
-            logger.warning(f"No endpoint available to delete comment {comment_id}")
-            return False
-        except Exception as e:
+            await self.client.course_member_comments.delete(comment_id)
+            return True
+        except ComputorClientError as e:
             logger.error(f"Failed to delete comment {comment_id}: {e}")
             return False
 

@@ -1,9 +1,8 @@
 """WebSocket authentication helpers.
 
-This module is the only place allowed to touch ComputorClient's private
-``_auth_provider``: computor-client does not expose a public token API yet,
-so the private access is centralized here as the single change point for
-when it does.
+The WebSocket handshake needs the same credential the HTTP client uses, which
+computor-client exposes as ``client.access_token`` /
+``client.refresh_access_token()``.
 """
 
 import logging
@@ -15,13 +14,13 @@ logger = logging.getLogger(__name__)
 async def get_ws_token(client, backend_config) -> Optional[str]:
     """Resolve the token used for the WebSocket handshake.
 
-    API-token auth uses the static token; username/password auth borrows the
-    access token from the authenticated client session.
+    API-token auth uses the static token; SSO auth borrows the bearer token
+    from the client session.
     """
     token = backend_config.get_api_token()
     if token:
         return token
-    token = await client._auth_provider.get_access_token()
+    token = client.access_token
     if token:
         logger.info("Using session access token for WebSocket authentication")
     return token
@@ -37,19 +36,14 @@ def make_token_provider(
         api_token = backend_config.get_api_token()
         if api_token:
             return api_token
-        # For username/password auth, refresh via the client
-        new_token = await client._auth_provider.refresh_token()
-        if new_token:
-            return new_token
-        # Refresh failed — try re-login
-        try:
-            await client.login(
-                username=backend_config.username,
-                password=backend_config.get_password(),
+        # SSO bearer auth: rotate via the refresh token. There is no
+        # username/password fallback — the API has no such endpoint.
+        new_token = await client.refresh_access_token()
+        if not new_token:
+            logger.error(
+                "Token refresh failed and no API token is configured; "
+                "the WebSocket cannot reconnect until a new session token is set."
             )
-            return await client._auth_provider.get_access_token()
-        except Exception as e:
-            logger.error(f"Re-login failed during token refresh: {e}")
-            return None
+        return new_token
 
     return provide_fresh_token
