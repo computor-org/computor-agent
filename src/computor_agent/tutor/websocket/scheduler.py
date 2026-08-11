@@ -277,7 +277,7 @@ class WebSocketScheduler:
         try:
             # Use the tutors API to get courses
             # This should return courses where the authenticated user is a tutor
-            courses = await self.client.tutors.get_courses()
+            courses = await self.client.tutors.list_courses()
             self._course_ids = [c.id for c in courses if c.id]
             logger.info(f"Discovered {len(self._course_ids)} course(s)")
         except Exception as e:
@@ -463,7 +463,7 @@ class WebSocketScheduler:
                     self._reply_decisions.pop(msg_id, None)
 
                 try:
-                    thread_raw = await self.client.messages.thread(msg.id)
+                    thread_raw = await self.client.messages.get_thread(msg.id)
                     thread = MessageThread.model_validate(thread_raw)
                 except Exception as e:
                     thread_errors.append(f"{msg_id}:{type(e).__name__}")

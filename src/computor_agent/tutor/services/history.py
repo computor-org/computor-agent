@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from computor_client.exceptions import ComputorClientError
+
 logger = logging.getLogger(__name__)
 
 
@@ -217,52 +219,51 @@ class HistoryService:
         try:
             attempts = []
 
-            # Try to get history from tutor endpoint (fallback only)
-            if hasattr(self.client, 'tutors'):
-                try:
-                    sg_details = await self.client.tutors.submission_groups(submission_group_id)
-                    if sg_details:
-                        # Get gradings which represent submission attempts
-                        gradings = getattr(sg_details, 'gradings', None) or []
-                        submission_count = getattr(sg_details, 'count', 0) or len(gradings)
+            # Submission history comes from the submission group's gradings.
+            try:
+                sg_details = await self.client.tutors.get_submission_groups(submission_group_id)
+                if sg_details:
+                    # Get gradings which represent submission attempts
+                    gradings = getattr(sg_details, 'gradings', None) or []
+                    submission_count = getattr(sg_details, 'count', 0) or len(gradings)
 
-                        for i, grading in enumerate(gradings):
-                            uploaded_at = None
-                            created_at = getattr(grading, 'created_at', None)
-                            if created_at:
-                                if isinstance(created_at, str):
-                                    try:
-                                        uploaded_at = datetime.fromisoformat(
-                                            created_at.replace("Z", "+00:00")
-                                        )
-                                    except ValueError:
-                                        pass
-                                else:
-                                    uploaded_at = created_at
+                    for i, grading in enumerate(gradings):
+                        uploaded_at = None
+                        created_at = getattr(grading, 'created_at', None)
+                        if created_at:
+                            if isinstance(created_at, str):
+                                try:
+                                    uploaded_at = datetime.fromisoformat(
+                                        created_at.replace("Z", "+00:00")
+                                    )
+                                except ValueError:
+                                    pass
+                            else:
+                                uploaded_at = created_at
 
-                            result = getattr(grading, 'result', None)
-                            if result is not None:
-                                result = float(result)
+                        result = getattr(grading, 'result', None)
+                        if result is not None:
+                            result = float(result)
 
+                        attempts.append(SubmissionAttempt(
+                            artifact_id=getattr(grading, 'id', f'grading-{i}'),
+                            uploaded_at=uploaded_at,
+                            result=result,
+                            has_tests_passed=result is not None and result >= 1.0,
+                        ))
+
+                    # If we have a current result but no gradings with results,
+                    # create a single attempt from the overall result
+                    if not attempts and submission_count > 0:
+                        overall_result = getattr(sg_details, 'result', None)
+                        if overall_result is not None:
                             attempts.append(SubmissionAttempt(
-                                artifact_id=getattr(grading, 'id', f'grading-{i}'),
-                                uploaded_at=uploaded_at,
-                                result=result,
-                                has_tests_passed=result is not None and result >= 1.0,
+                                artifact_id='current',
+                                result=float(overall_result),
+                                has_tests_passed=float(overall_result) >= 1.0,
                             ))
-
-                        # If we have a current result but no gradings with results,
-                        # create a single attempt from the overall result
-                        if not attempts and submission_count > 0:
-                            overall_result = getattr(sg_details, 'result', None)
-                            if overall_result is not None:
-                                attempts.append(SubmissionAttempt(
-                                    artifact_id='current',
-                                    result=float(overall_result),
-                                    has_tests_passed=float(overall_result) >= 1.0,
-                                ))
-                except Exception as e:
-                    logger.debug(f"Tutor endpoint for history failed: {e}")
+            except ComputorClientError as e:
+                logger.debug(f"Could not load submission group history: {e}")
 
             # If no attempts found, return empty history
             if not attempts:

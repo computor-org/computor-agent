@@ -9,6 +9,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from computor_client.exceptions import ComputorClientError
+
 logger = logging.getLogger(__name__)
 
 
@@ -234,7 +236,7 @@ class ProgressService:
             passing_count = 0
 
             # If we have specific course_content_ids, fetch progress for each
-            if course_content_ids and hasattr(self.client, 'tutors'):
+            if course_content_ids:
                 for cc_id in course_content_ids:
                     try:
                         # Use prefetched content if available and matches this course_content_id
@@ -346,17 +348,10 @@ class ProgressService:
             CourseProgress or None on failure
         """
         try:
-            members = None
-
-            # Get course members using correct API: GET /tutors/course-members?course_id=...
-            if hasattr(self.client, 'tutors'):
-                try:
-                    members = await self.client.tutors.get_course_members(
-                        course_id=course_id,
-                    )
-                except Exception as e:
-                    logger.debug(f"tutors.get_course_members failed: {e}")
-
+            # GET /tutors/course-members?course_id=...
+            members = await self.client.tutors.list_course_members(
+                course_id=course_id,
+            )
             if not members:
                 return CourseProgress(course_id=course_id)
 
@@ -478,59 +473,29 @@ class ProgressService:
 
     async def _get_member_info(self, course_member_id: str) -> dict[str, Any]:
         """Get basic member information."""
-        # Try course_members endpoint
-        if hasattr(self.client, 'course_members'):
-            try:
-                member = await self.client.course_members.get(id=course_member_id)
-                if member:
-                    return {
-                        "display_name": getattr(member, "display_name", None),
-                        "email": getattr(member, "email", None),
-                    }
-            except Exception:
-                pass
+        try:
+            member = await self.client.course_members.get(id=course_member_id)
+        except ComputorClientError as e:
+            logger.debug(f"Could not load course member {course_member_id}: {e}")
+            return {}
 
-        # Try tutors endpoint as fallback
-        if hasattr(self.client, 'tutors'):
-            try:
-                member = await self.client.tutors.course_member(course_member_id)
-                if member:
-                    return {
-                        "display_name": getattr(member, "display_name", None),
-                        "email": getattr(member, "email", None),
-                    }
-            except Exception:
-                pass
-
-        return {}
+        return {
+            "display_name": getattr(member, "display_name", None),
+            "email": getattr(member, "email", None),
+        }
 
     async def _get_course_info(self, course_id: str) -> dict[str, Any]:
         """Get basic course information."""
-        # Try courses endpoint
-        if hasattr(self.client, 'courses'):
-            try:
-                course = await self.client.courses.get(id=course_id)
-                if course:
-                    return {
-                        "title": getattr(course, "title", None),
-                        "content_count": getattr(course, "content_count", 0),
-                    }
-            except Exception:
-                pass
+        try:
+            course = await self.client.courses.get(id=course_id)
+        except ComputorClientError as e:
+            logger.debug(f"Could not load course {course_id}: {e}")
+            return {}
 
-        # Try tutors endpoint as fallback
-        if hasattr(self.client, 'tutors'):
-            try:
-                course = await self.client.tutors.course(course_id)
-                if course:
-                    return {
-                        "title": getattr(course, "title", None),
-                        "content_count": getattr(course, "content_count", 0),
-                    }
-            except Exception:
-                pass
-
-        return {}
+        return {
+            "title": getattr(course, "title", None),
+            "content_count": getattr(course, "content_count", 0),
+        }
 
     async def get_struggling_members(
         self,
@@ -551,14 +516,7 @@ class ProgressService:
             List of struggling MemberProgress
         """
         try:
-            members = None
-
-            if hasattr(self.client, 'tutors'):
-                try:
-                    members = await self.client.tutors.get_course_members(course_id=course_id)
-                except Exception as e:
-                    logger.debug(f"tutors.get_course_members failed: {e}")
-
+            members = await self.client.tutors.list_course_members(course_id=course_id)
             if not members:
                 return []
 

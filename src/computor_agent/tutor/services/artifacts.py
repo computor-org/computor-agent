@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from computor_client.exceptions import NotFoundError
+from computor_client.exceptions import ComputorClientError, NotFoundError
 from computor_types.artifacts import SubmissionArtifactGet
 
 from computor_agent.tutor.figures.detection import is_image_file, media_type_for
@@ -177,24 +177,17 @@ class ArtifactsService:
         result = []
 
         try:
-            # Try using submissions endpoint to get artifacts
-            if hasattr(self.client, 'submissions'):
-                try:
-                    # Use the correct endpoint method
-                    artifacts = await self.client.submissions.get_artifacts(
-                        submission_group_id=submission_group_id,
-                    )
-
-                    if artifacts:
-                        # artifacts should be a list of SubmissionArtifactGet objects
-                        result = artifacts
-
-                        # Sort by upload date if available, newest first
-                        if result and hasattr(result[0], 'uploaded_at'):
-                            result.sort(key=lambda x: x.uploaded_at or datetime.min, reverse=True)
-
-                except Exception as e:
-                    logger.debug(f"submissions.get_artifacts failed: {e}")
+            try:
+                artifacts = await self.client.submissions.list_artifacts(
+                    submission_group_id=submission_group_id,
+                )
+                if artifacts:
+                    result = artifacts
+                    # Sort by upload date if available, newest first
+                    if hasattr(result[0], 'uploaded_at'):
+                        result.sort(key=lambda x: x.uploaded_at or datetime.min, reverse=True)
+            except ComputorClientError as e:
+                logger.debug(f"submissions.list_artifacts failed: {e}")
 
             if limit:
                 result = result[:limit]
@@ -332,38 +325,22 @@ class ArtifactsService:
     async def _download_artifact(self, artifact_id: str) -> Optional[bytes]:
         """Download artifact ZIP as bytes."""
         try:
-            buffer = None
-
-            # Use the correct submissions endpoint
-            if hasattr(self.client, 'submissions'):
-                try:
-                    # Use get_artifacts_download method for downloading by artifact ID
-                    buffer = await self.client.submissions.get_artifacts_download(artifact_id)
-                except Exception as e:
-                    logger.debug(f"submissions.get_artifacts_download failed: {e}")
-
-            if not buffer:
-                logger.warning(f"Failed to download artifact {artifact_id}")
-
-            return buffer
-        except Exception as e:
+            buffer = await self.client.submissions.get_artifacts_download_by_artifact_id(
+                artifact_id
+            )
+        except ComputorClientError as e:
             logger.error(f"Failed to download artifact {artifact_id}: {e}")
             return None
+
+        if not buffer:
+            logger.warning(f"Empty download for artifact {artifact_id}")
+        return buffer
 
     async def _get_artifact_metadata(self, artifact_id: str) -> Optional[SubmissionArtifactGet]:
         """Get artifact metadata."""
         try:
-            # Use the correct endpoint for fetching single artifact by ID
-            if hasattr(self.client, 'submissions'):
-                try:
-                    # Use get_missions_artifacts_artifact_id to fetch single artifact metadata
-                    artifact = await self.client.submissions.get_missions_artifacts_artifact_id(artifact_id)
-                    return artifact
-                except Exception as e:
-                    logger.debug(f"submissions.get_missions_artifacts_artifact_id failed: {e}")
-
-            return None
-        except Exception as e:
+            return await self.client.submissions.get_artifacts(artifact_id)
+        except ComputorClientError as e:
             logger.warning(f"Failed to get artifact metadata {artifact_id}: {e}")
             return None
 
@@ -530,36 +507,19 @@ class ArtifactsService:
             if version_identifier:
                 params["version_identifier"] = version_identifier
 
-            # Try to download via the submissions endpoint
             buffer = None
-            if hasattr(self.client, 'submissions'):
-                try:
-                    logger.info(f"Attempting to download submission with params: {params}")
-                    # Use the correct method: artifacts_download
-                    response = await self.client.submissions.artifacts_download(**params)
-
-                    # Check response type - it might be bytes or a response object
-                    if response:
-                        if isinstance(response, bytes):
-                            buffer = response
-                            logger.info(f"Downloaded submission as bytes, size: {len(response)} bytes")
-                        elif hasattr(response, 'read'):
-                            # It might be a file-like object
-                            buffer = await response.read() if asyncio.iscoroutinefunction(response.read) else response.read()
-                            logger.info(f"Downloaded submission from file-like object, size: {len(buffer)} bytes")
-                        elif hasattr(response, 'content'):
-                            # It might have a content attribute
-                            buffer = response.content
-                            logger.info(f"Downloaded submission from response.content, size: {len(buffer)} bytes")
-                        else:
-                            logger.warning(f"Unknown response type: {type(response)}")
-                            buffer = response
-                    else:
-                        logger.warning("artifacts_download returned None/empty response")
-                except NotFoundError:
-                    logger.info("No submission artifact exists yet for the given parameters")
-                except Exception as e:
-                    logger.error(f"submissions.artifacts_download failed: {e}", exc_info=True)
+            try:
+                logger.info(f"Attempting to download submission with params: {params}")
+                # GET /submissions/artifacts/download returns the ZIP bytes.
+                buffer = await self.client.submissions.get_artifacts_download(**params)
+                if buffer:
+                    logger.info(f"Downloaded submission, size: {len(buffer)} bytes")
+                else:
+                    logger.warning("Artifact download returned an empty body")
+            except NotFoundError:
+                logger.info("No submission artifact exists yet for the given parameters")
+            except ComputorClientError as e:
+                logger.error(f"Artifact download failed: {e}", exc_info=True)
 
             if not buffer:
                 logger.info("No submission artifact found for the given parameters")

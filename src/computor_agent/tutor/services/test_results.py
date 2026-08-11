@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
+from computor_client.exceptions import ComputorClientError
+
 logger = logging.getLogger(__name__)
 
 
@@ -295,24 +297,17 @@ class TestResultsService:
             TestResult or None if no results available
         """
         try:
-            # Try to get artifact via direct endpoint if available
-            if hasattr(self.client, 'submission_artifacts'):
-                try:
-                    artifact = await self.client.submission_artifacts.get(id=artifact_id)
-                    if artifact:
-                        result_data = getattr(artifact, "latest_result", None)
-                        if result_data:
-                            return self._parse_result(result_data)
-                except Exception as e:
-                    logger.debug(f"submission_artifacts endpoint not available: {e}")
-
-            # Artifact results are typically accessed via submission group
-            # This method is primarily for direct artifact access which may not be available
-            return None
-
-        except Exception as e:
+            # There is no `submission_artifacts` endpoint client — artifacts live
+            # under /submissions/artifacts/{id}, and the test results for one are
+            # a separate collection.
+            results = await self.client.submissions.list_artifacts_tests(artifact_id)
+        except ComputorClientError as e:
             logger.warning(f"Failed to get test results for artifact {artifact_id}: {e}")
             return None
+
+        if not results:
+            return None
+        return self._parse_result(results[0])
 
     async def get_for_course_content(
         self,
@@ -368,54 +363,35 @@ class TestResultsService:
             TestResult or None if no results available
         """
         try:
-            # Try to get submission group details via tutor endpoint
-            # This provides access to result data
-            if hasattr(self.client, 'tutors'):
-                try:
-                    sg_details = await self.client.tutors.submission_groups(submission_group_id)
-                    if sg_details:
-                        # Check for result on submission group
-                        result_data = getattr(sg_details, 'result', None)
-                        if result_data:
-                            return self._parse_result(result_data)
-
-                        # Check for result_json directly
-                        result_json = getattr(sg_details, 'result_json', None)
-                        result_value = getattr(sg_details, 'result_value', None)
-                        if result_json or result_value is not None:
-                            return self._parse_result({
-                                'result': result_value or 0.0,
-                                'result_json': result_json,
-                            })
-
-                        # Check gradings for result
-                        gradings = getattr(sg_details, 'gradings', None)
-                        if gradings and len(gradings) > 0:
-                            latest = gradings[-1]
-                            result_val = getattr(latest, 'result', None)
-                            if result_val is not None:
-                                return TestResult(result=float(result_val))
-                except Exception as e:
-                    logger.debug(f"Tutor endpoint failed: {e}")
-
-            # Fallback: try via submission_groups.get endpoint
-            if hasattr(self.client, 'submission_groups'):
-                try:
-                    sg = await self.client.submission_groups.get(id=submission_group_id)
-                    if sg:
-                        result_data = getattr(sg, 'result', None)
-                        if result_data:
-                            return self._parse_result(result_data)
-                except Exception as e:
-                    logger.debug(f"Submission groups endpoint failed: {e}")
-
-            return None
-
-        except Exception as e:
+            sg_details = await self.client.tutors.get_submission_groups(submission_group_id)
+        except ComputorClientError as e:
             logger.warning(
                 f"Failed to get test results for submission group {submission_group_id}: {e}"
             )
             return None
+
+        if not sg_details:
+            return None
+
+        result_data = getattr(sg_details, 'result', None)
+        if result_data:
+            return self._parse_result(result_data)
+
+        result_json = getattr(sg_details, 'result_json', None)
+        result_value = getattr(sg_details, 'result_value', None)
+        if result_json or result_value is not None:
+            return self._parse_result({
+                'result': result_value or 0.0,
+                'result_json': result_json,
+            })
+
+        gradings = getattr(sg_details, 'gradings', None)
+        if gradings:
+            result_val = getattr(gradings[-1], 'result', None)
+            if result_val is not None:
+                return TestResult(result=float(result_val))
+
+        return None
 
     def _parse_result(self, result_data: Any) -> Optional[TestResult]:
         """

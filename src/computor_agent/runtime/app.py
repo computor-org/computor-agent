@@ -327,7 +327,7 @@ class AgentRuntime:
         it participates in (replaces the legacy #ai-response title tag).
         """
         try:
-            me = await client.user.list()
+            me = await client.user.get()
             self.tutor_config.triggers.agent_user_id = str(me.id)
             logger.info(f"Agent backend user id resolved: {me.id}")
         except Exception as e:
