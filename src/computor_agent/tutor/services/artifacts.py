@@ -4,7 +4,6 @@ Submission Artifacts Service for the Tutor AI Agent.
 Handles listing, downloading, and extracting submission artifacts (ZIPs).
 """
 
-import asyncio
 import io
 import logging
 import zipfile
