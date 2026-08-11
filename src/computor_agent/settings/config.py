@@ -54,26 +54,16 @@ class BackendConfig(BaseModel):
     SECURITY: Credentials are protected and will not be exposed in
     string representations, logging, or serialization by default.
 
-    Supports two authentication methods:
-    1. API Token (recommended): Set `api_token` field
-    2. Basic Auth: Set `username` and `password` fields
+    Authentication is by API token. The backend has no username/password
+    endpoint — it accepts an ``X-API-Token`` header or an SSO bearer token
+    obtained through the Keycloak browser flow, which a headless agent cannot
+    perform.
 
-    If both are provided, API token takes precedence.
-
-    Example with API token:
+    Example:
         ```python
         config = BackendConfig(
             url="https://api.computor.example.com",
             api_token="ctp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
-        )
-        ```
-
-    Example with username/password:
-        ```python
-        config = BackendConfig(
-            url="https://api.computor.example.com",
-            username="tutor-agent",
-            password="secret",
         )
         ```
     """
@@ -85,15 +75,17 @@ class BackendConfig(BaseModel):
     )
     api_token: Optional[SecretStr] = Field(
         default=None,
-        description="API token for authentication (format: ctp_<32chars>). Preferred over username/password."
+        description="API token for authentication (format: ctp_<32chars>)."
     )
     username: Optional[str] = Field(
         default=None,
-        description="Username for Basic Auth (used if api_token not set)"
+        deprecated="The backend has no username/password login; set api_token.",
+        description="Deprecated and ignored. Kept so existing config files still load."
     )
     password: Optional[SecretStr] = Field(
         default=None,
-        description="Password for Basic Auth (used if api_token not set)"
+        deprecated="The backend has no username/password login; set api_token.",
+        description="Deprecated and ignored. Kept so existing config files still load."
     )
     timeout: float = Field(
         default=30.0,
@@ -115,11 +107,7 @@ class BackendConfig(BaseModel):
     @property
     def auth_method(self) -> str:
         """Return the authentication method being used."""
-        if self.api_token:
-            return "api_token"
-        elif self.username and self.password:
-            return "basic"
-        return "none"
+        return "api_token" if self.api_token else "none"
 
     @field_validator("url")
     @classmethod
@@ -128,17 +116,16 @@ class BackendConfig(BaseModel):
         return v.rstrip("/")
 
     def model_post_init(self, __context) -> None:
-        """Validate that at least one auth method is configured."""
-        if not self.api_token and not (self.username and self.password):
+        """Validate that an API token is configured."""
+        if not self.api_token:
             raise ValueError(
-                "Either api_token or both username and password must be provided"
+                "backend.api_token is required. The backend exposes no "
+                "username/password login, so those fields are ignored."
             )
 
     def __repr__(self) -> str:
         """Safe representation that hides credentials."""
-        if self.api_token:
-            return f"BackendConfig(url={self.url!r}, api_token='***')"
-        return f"BackendConfig(url={self.url!r}, username={self.username!r}, password='***')"
+        return f"BackendConfig(url={self.url!r}, api_token='***')"
 
     def __str__(self) -> str:
         """Safe string representation."""
