@@ -272,7 +272,10 @@ class ConversationContext:
 
         for msg in messages:
             role = "Student" if msg.is_from_student else "Tutor"
-            formatted.append(f"[{role}]: {msg.content}")
+            # Name the speaker when we know them — group threads are unreadable
+            # if every human collapses into the same "[Student]" label.
+            label = f"{msg.author_name} ({role})" if msg.author_name else role
+            formatted.append(f"[{label}]: {msg.content}")
 
         return "\n\n".join(formatted)
 

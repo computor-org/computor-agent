@@ -197,6 +197,7 @@ TUTOR_SYSTEM_PROMPT = """{personality_prompt}
 You are a tutor for a programming course. A student is asking for help.
 Read their message, understand what they need, and respond appropriately.
 
+{student_section}
 {assignment_section}
 {code_section}
 {test_results_section}
