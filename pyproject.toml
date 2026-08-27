@@ -30,8 +30,8 @@ dependencies = [
     "rich>=13.0,<14.0",
     "python-dotenv>=1.0,<2.0",
     "PyYAML>=6.0,<7.0",
-    "computor-client @ git+https://github.com/computor-org/computor-backend.git@release/2026.10#subdirectory=computor-client",
-    "computor-types @ git+https://github.com/computor-org/computor-backend.git@release/2026.10#subdirectory=computor-types",
+    "computor-client @ git+https://github.com/computor-org/computor-backend.git@f33aab9c98e6f3232eec64e062f8cc13e5162391#subdirectory=computor-client",
+    "computor-types @ git+https://github.com/computor-org/computor-backend.git@f33aab9c98e6f3232eec64e062f8cc13e5162391#subdirectory=computor-types",
     "watchdog>=3.0,<5.0",
     "websockets>=12.0,<14.0",
 ]
@@ -61,8 +61,8 @@ api = [
 computor-agent = "computor_agent.cli.main:cli"
 
 [project.urls]
-Homepage = "https://github.com/computor/computor-agent"
-Repository = "https://github.com/computor/computor-agent"
+Homepage = "https://github.com/computor-org/computor-agent"
+Repository = "https://github.com/computor-org/computor-agent"
 
 [tool.setuptools.packages.find]
 where = ["src"]
