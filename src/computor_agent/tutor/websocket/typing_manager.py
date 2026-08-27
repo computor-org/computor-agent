@@ -10,6 +10,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from computor_agent.tutor.websocket.client import WebSocketError
+
 if TYPE_CHECKING:
     from computor_agent.tutor.websocket.client import ComputorWebSocket
 
@@ -70,8 +72,13 @@ class TypingManager:
         if channel in self._active_channels:
             await self.stop_typing(channel)
 
-        # Send initial typing start
-        await self._ws.send_typing_start(channel)
+        # Best-effort: the indicator is cosmetic. A socket that died between
+        # the scan and here (or mid-answer) must never abort processing —
+        # letting this raise costs the student their answer entirely.
+        try:
+            await self._ws.send_typing_start(channel)
+        except WebSocketError as e:
+            logger.debug(f"Could not send typing:start for {channel}: {e}")
 
         # Start refresh task
         task = asyncio.create_task(self._refresh_loop(channel))
@@ -96,8 +103,14 @@ class TypingManager:
             except asyncio.CancelledError:
                 pass
 
-        # Send typing stop
-        await self._ws.send_typing_stop(channel)
+        # Best-effort for the same reason as start_typing, and one more: this
+        # runs in the context manager's `finally`, after the reply is already
+        # posted. Raising here would mark a delivered answer as failed and earn
+        # the student a duplicate on the retry.
+        try:
+            await self._ws.send_typing_stop(channel)
+        except WebSocketError as e:
+            logger.debug(f"Could not send typing:stop for {channel}: {e}")
         logger.debug(f"Stopped typing indicator for {channel}")
 
     async def stop_all(self) -> None:
@@ -138,7 +151,11 @@ class TypingManager:
             while True:
                 await asyncio.sleep(self._refresh_interval)
                 # Re-send typing start to refresh TTL
-                await self._ws.send_typing_start(channel)
+                try:
+                    await self._ws.send_typing_start(channel)
+                except WebSocketError as e:
+                    logger.debug(f"Could not refresh typing for {channel}: {e}")
+                    return
                 logger.debug(f"Refreshed typing indicator for {channel}")
         except asyncio.CancelledError:
             # Task cancelled - this is expected when stop_typing is called
