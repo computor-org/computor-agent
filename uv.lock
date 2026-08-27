@@ -240,8 +240,8 @@ report = [
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0" },
     { name = "click", specifier = ">=8.0,<9.0" },
-    { name = "computor-client", git = "https://github.com/computor-org/computor-backend.git?subdirectory=computor-client&rev=10759025c097bf2187dd9e6137f3919c3be26838" },
-    { name = "computor-types", git = "https://github.com/computor-org/computor-backend.git?subdirectory=computor-types&rev=10759025c097bf2187dd9e6137f3919c3be26838" },
+    { name = "computor-client", git = "https://github.com/computor-org/computor-backend.git?subdirectory=computor-client&rev=f33aab9c98e6f3232eec64e062f8cc13e5162391" },
+    { name = "computor-types", git = "https://github.com/computor-org/computor-backend.git?subdirectory=computor-types&rev=f33aab9c98e6f3232eec64e062f8cc13e5162391" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.109" },
     { name = "httpx", specifier = ">=0.27.0,<1.0" },
     { name = "jinja2", marker = "extra == 'api'", specifier = ">=3.1" },
@@ -268,7 +268,7 @@ provides-extras = ["dev", "report", "api"]
 [[package]]
 name = "computor-client"
 version = "0.2.0"
-source = { git = "https://github.com/computor-org/computor-backend.git?subdirectory=computor-client&rev=10759025c097bf2187dd9e6137f3919c3be26838#10759025c097bf2187dd9e6137f3919c3be26838" }
+source = { git = "https://github.com/computor-org/computor-backend.git?subdirectory=computor-client&rev=f33aab9c98e6f3232eec64e062f8cc13e5162391#f33aab9c98e6f3232eec64e062f8cc13e5162391" }
 dependencies = [
     { name = "computor-types" },
     { name = "httpx" },
@@ -278,7 +278,7 @@ dependencies = [
 [[package]]
 name = "computor-types"
 version = "0.1.0"
-source = { git = "https://github.com/computor-org/computor-backend.git?subdirectory=computor-types&rev=10759025c097bf2187dd9e6137f3919c3be26838#10759025c097bf2187dd9e6137f3919c3be26838" }
+source = { git = "https://github.com/computor-org/computor-backend.git?subdirectory=computor-types&rev=f33aab9c98e6f3232eec64e062f8cc13e5162391#f33aab9c98e6f3232eec64e062f8cc13e5162391" }
 dependencies = [
     { name = "email-validator" },
     { name = "pydantic" },
