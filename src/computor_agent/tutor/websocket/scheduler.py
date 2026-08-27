@@ -39,6 +39,12 @@ FAILURE_BACKOFF_SECONDS = 30.0
 MAX_FAILURE_BACKOFF_SECONDS = 900.0  # 15 minutes
 MAX_MESSAGE_ATTEMPTS = 5
 
+# A message deferred because the WebSocket was down is not a failing message:
+# it never reached the pipeline. It gets a short, uncounted delay instead of the
+# escalating backoff above, so a flapping link costs seconds rather than parking
+# a student's question until the next restart.
+TRANSIENT_RETRY_SECONDS = 5.0
+
 
 @dataclass
 class ProcessingState:
@@ -622,10 +628,20 @@ class WebSocketScheduler:
 
                 typing_channel = f"submission_group:{submission_group_id}"
 
-                # Subscribe to submission_group channel for typing indicators
+                # Subscribe to submission_group channel for typing indicators.
+                # Best-effort: `subscribe` is the one client call that raises
+                # while disconnected instead of no-op'ing, and a typing dot is
+                # not worth dropping a student's question over. Only record the
+                # channel once the server has actually been told about it.
                 if typing_channel not in self._subscribed_channels:
-                    await self._ws.subscribe([typing_channel])
-                    self._subscribed_channels.add(typing_channel)
+                    try:
+                        await self._ws.subscribe([typing_channel])
+                    except WebSocketError as e:
+                        logger.debug(
+                            f"No typing indicators for {typing_channel}: {e}"
+                        )
+                    else:
+                        self._subscribed_channels.add(typing_channel)
 
                 async with lock:
                     # Re-check after acquiring lock
@@ -654,7 +670,7 @@ class WebSocketScheduler:
                             self._record_failure(message_id, state, e)
                             continue
 
-                    await self._ws.mark_read(typing_channel, message_id)
+                    await self._mark_read(typing_channel, message_id)
                     state.last_message_id = message_id
                     state.last_processed = datetime.now()
                     self._failures.pop(message_id, None)
@@ -666,6 +682,23 @@ class WebSocketScheduler:
 
                 processed_count += 1
                 self._metrics.message_succeeded(course_id)
+
+            except WebSocketError as e:
+                # The link died between the scan and this entry, so the message
+                # was never handed to the pipeline — nothing about it failed.
+                # Defer it without counting an attempt and carry on with the
+                # batch: the remaining entries only need REST to be answered.
+                logger.info(
+                    f"Deferring trigger entry {message_id} for course "
+                    f"{course_id}: WebSocket unavailable ({e})"
+                )
+                self._record_failure(
+                    message_id,
+                    self._states.get(submission_group_id),
+                    e,
+                    transient=True,
+                )
+                continue
 
             except Exception as e:
                 logger.warning(
@@ -722,6 +755,10 @@ class WebSocketScheduler:
                 await asyncio.sleep(self._periodic_catchup_interval)
                 if not self._running:
                     break
+                # Deliberately not gated on self._ws.is_connected: listing,
+                # answering and read-marking all go over REST, so the agent
+                # keeps serving students through a WebSocket outage. Only the
+                # typing indicators drop out, and those are best-effort.
                 logger.debug("Periodic catch-up: checking for unread messages")
                 await self._process_unread_messages()
             except asyncio.CancelledError:
@@ -996,6 +1033,8 @@ class WebSocketScheduler:
         message_id: str,
         state: Optional[ProcessingState],
         error: Exception,
+        *,
+        transient: bool = False,
     ) -> None:
         """Back a failed message off, and park it once attempts run out.
 
@@ -1004,8 +1043,27 @@ class WebSocketScheduler:
         crashes the pipeline stops consuming attempts entirely. Parking is
         in-memory on purpose: the message stays unread, so a restart (or a fix)
         gives it a fresh chance instead of burying it.
+
+        `transient=True` marks a deferral rather than a failure — the transport
+        was unavailable, so the message never reached the pipeline. It gets a
+        short fixed delay, no attempt is counted toward parking, and the group
+        cooldown below is left alone: none of those protect against anything
+        here, and together they would hold a student's question back long after
+        the socket recovered.
         """
         if not message_id:
+            return
+
+        if transient:
+            failure = self._failures.setdefault(message_id, MessageFailure())
+            failure.last_attempt = datetime.now()
+            failure.retry_after = datetime.now() + timedelta(
+                seconds=TRANSIENT_RETRY_SECONDS
+            )
+            logger.info(
+                f"Message {message_id} deferred ({error}); retrying no sooner "
+                f"than in {TRANSIENT_RETRY_SECONDS:.0f}s (attempt not counted)"
+            )
             return
 
         failure = self._failures.setdefault(message_id, MessageFailure())
@@ -1079,6 +1137,28 @@ class WebSocketScheduler:
         self._reply_decisions.move_to_end(message_id)
         while len(self._reply_decisions) > self._reply_cache_max:
             self._reply_decisions.popitem(last=False)
+
+    async def _mark_read(self, channel: str, message_id: str) -> None:
+        """Best-effort read-mark for a message the agent has just answered.
+
+        Never raises. By the time this runs the reply is already posted, so a
+        transport hiccup here must not be reported as a failed message — that
+        would skip the `last_message_id` bookkeeping below it and earn the
+        student a second copy of the same answer on the retry.
+
+        `ComputorWebSocket.mark_read` silently no-ops while disconnected, which
+        would leave an answered message unread forever: `last_message_id` skips
+        it on every later scan while it keeps occupying a slot under the unread
+        per-page cap. Fall back to the REST ack so the inbox still drains.
+        """
+        try:
+            if self._ws.is_connected:
+                await self._ws.mark_read(channel, message_id)
+                return
+        except WebSocketError as e:
+            logger.debug(f"WebSocket read-mark for {message_id} failed: {e}")
+
+        await self._ack_unread(message_id)
 
     async def _ack_unread(self, message_id: str) -> None:
         """Best-effort: tell the backend we've seen a non-actionable message.
