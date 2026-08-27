@@ -3,9 +3,16 @@
 > **Which of these actually reach the LLM?**
 >
 > Live replies use only the placeholders of `strategy/tutor.md`:
-> `{personality_prompt}`, `{language}`, `{assignment_section}`,
-> `{code_section}`, `{test_results_section}`, `{previous_messages_section}`,
-> `{reference_comparison_section}`, `{figure_review_section}`.
+> `{personality_prompt}`, `{language}`, `{student_section}`,
+> `{assignment_section}`, `{code_section}`, `{test_results_section}`,
+> `{previous_messages_section}`, `{reference_comparison_section}`,
+> `{figure_review_section}`.
+>
+> `{student_section}` names the student(s) in the submission group (and, in
+> group threads, who wrote the current message) so the tutor can address
+> people and tell group members apart. Names only — emails and ids are never
+> put into the prompt. An override file without this placeholder still works;
+> the section is simply omitted.
 >
 > The per-intent strategy variables documented below belong to the retired
 > intent→strategy model and are not substituted for live replies.

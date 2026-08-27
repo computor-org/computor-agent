@@ -31,7 +31,7 @@ from computor_agent.tutor.services.progress import ProgressService
 
 if TYPE_CHECKING:
     from computor_agent.tutor.assignment_loader import AssignmentContext
-    from computor_agent.tutor.config import ContextConfig, FigureReviewConfig
+    from computor_agent.tutor.config import ContextConfig, FigureReviewConfig, TriggerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,7 @@ class ContextBuilder:
         client: Any,  # ComputorClient from computor-client
         config: "ContextConfig",
         figure_config: Optional["FigureReviewConfig"] = None,
+        trigger_config: Optional["TriggerConfig"] = None,
     ) -> None:
         """
         Initialize the context builder.
@@ -94,10 +95,16 @@ class ContextBuilder:
             config: Context configuration
             figure_config: Figure review configuration (images are collected
                 from submissions only when this is provided and enabled)
+            trigger_config: Trigger configuration; read live (not snapshotted)
+                because ``agent_user_id`` is resolved at startup, after this
+                builder may already exist. Used to attribute conversation
+                history: messages authored by the agent are labeled as tutor
+                messages, everything else as student messages.
         """
         self.client = client
         self.config = config
         self.figure_config = figure_config
+        self.trigger_config = trigger_config
 
         # Initialize services for enhanced context
         self.test_results_service = TestResultsService(client)
@@ -110,6 +117,16 @@ class ContextBuilder:
     def _collect_images(self) -> bool:
         """Whether figure collection is active."""
         return self.figure_config is not None and self.figure_config.enabled
+
+    def _is_agent_author(self, author_id: Any) -> bool:
+        """Whether ``author_id`` is the agent's own backend user.
+
+        ``agent_user_id`` is resolved at startup; until then (or without a
+        trigger config) nobody can be identified as the agent, and every
+        message keeps the historical "student" attribution.
+        """
+        agent_id = getattr(self.trigger_config, "agent_user_id", None)
+        return bool(agent_id) and str(author_id or "") == str(agent_id)
 
     async def build_for_message(
         self,
@@ -195,6 +212,15 @@ class ContextBuilder:
             previous_messages = await self._get_thread_messages(thread_root_id)
         else:
             previous_messages = await self._get_previous_messages(submission_group_id)
+
+        # The scheduler's trigger dict carries no author details, but the fetch
+        # above returns the same message with its author attached — recover the
+        # name so prompts can say who is speaking (matters for group threads).
+        if trigger_message.author_name is None and trigger_message.id:
+            for msg in previous_messages:
+                if msg.id == trigger_message.id:
+                    trigger_message.author_name = msg.author_name
+                    break
 
         # Load student notes if enabled
         student_notes: Optional[str] = None
@@ -515,7 +541,7 @@ class ContextBuilder:
                         content=msg.content or "",
                         author_id=msg.author_id or "",
                         author_name=author_name,
-                        is_from_student=True,  # Determined by checking role if needed
+                        is_from_student=not self._is_agent_author(msg.author_id),
                     )
                 )
 
@@ -554,7 +580,7 @@ class ContextBuilder:
                         content=msg.content or "",
                         author_id=msg.author_id or "",
                         author_name=author_name,
-                        is_from_student=True,  # Determined by checking role if needed
+                        is_from_student=not self._is_agent_author(msg.author_id),
                     )
                 )
 
