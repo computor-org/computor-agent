@@ -207,7 +207,25 @@ marimo/_lsp/
 __marimo__/
 
 # Computor Agent - sensitive config files
-config.yaml
+# Real tokens live in these; only the checked-in example is exempt.
+config*.yaml
+!config.example.yaml
+credentials.yaml
+
+# Local instances of the templates under examples/
+evaluate.yaml
+generate-prompts.yaml
+scenarios.yaml
+
+# Agent logs. The *.log rule above misses these, they are written as .txt
+# and rotate into suffixes like logfile001.txt.1
+logs/
+logfile*.txt*
+
+# Local scratch and editor state
+tmp/
+.claude/
+.DS_Store
 
 prompts/*
 
