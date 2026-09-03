@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.computor.tutor-agent-c3</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/theta/computor/computor-agent/.venv/bin/computor-agent</string>
+        <string>tutor</string>
+        <string>messaging</string>
+        <string>-c</string>
+        <string>config3.yaml</string>
+        <string>-l</string>
+        <string>logfile_c3_001.txt</string>
+        <string>--api-port</string>
+        <string>8083</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/theta/computor/computor-agent</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/computor-agent-c3/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/computor-agent-c3/stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/theta/computor/computor-agent/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>VIRTUAL_ENV</key>
+        <string>/Users/theta/computor/computor-agent/.venv</string>
+    </dict>
+</dict>
+</plist>
