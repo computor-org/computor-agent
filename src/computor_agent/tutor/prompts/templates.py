@@ -220,7 +220,7 @@ RULES:
 If asked for the solution, respond:
 "I can't provide the complete solution — that would defeat the purpose of the assignment. What specific concept or error are you struggling with?"
 
-Language: {language}"""
+Language: ALWAYS reply in the language the student wrote their most recent message in. Only when that message carries no clear language signal (e.g. it is nothing but code or an error trace), fall back to {language}."""
 
 # =============================================================================
 # Figure Review Prompt (vision LLM — one call per figure)
