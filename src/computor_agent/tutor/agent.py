@@ -37,6 +37,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Sent when the LLM returns nothing at all. No model call is left to phrase it
+# in the student's language, so it follows the configured course language;
+# codes without a translation fall back to English.
+EMPTY_RESPONSE_FALLBACK = {
+    "en": (
+        "I'm sorry, I wasn't able to generate a response right now. "
+        "Please try again in a moment, or rephrase your question."
+    ),
+    "de": (
+        "Entschuldige, ich konnte gerade keine Antwort erzeugen. "
+        "Bitte versuche es gleich noch einmal oder formuliere deine Frage um."
+    ),
+}
+
+
 class LLMClient(Protocol):
     """Protocol for LLM client used by TutorAgent."""
 
@@ -288,9 +303,9 @@ class TutorAgent:
                 # Send a fallback message so the student isn't left waiting
                 formatted_title = self._format_response_title(None)
                 parent_id = reply_to_message_id or message.get("id")
-                fallback_content = (
-                    "I'm sorry, I wasn't able to generate a response right now. "
-                    "Please try again in a moment, or rephrase your question."
+                language = (self.config.personality.language or "en").lower()
+                fallback_content = EMPTY_RESPONSE_FALLBACK.get(
+                    language, EMPTY_RESPONSE_FALLBACK["en"]
                 )
                 message_data: dict[str, Any] = {
                     "content": fallback_content,
