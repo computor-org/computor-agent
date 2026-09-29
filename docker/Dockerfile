@@ -3,7 +3,7 @@
 # Build:  docker build -t computor-agent -f docker/Dockerfile .
 # Run:    see docker-compose.yml / start.sh (recommended)
 
-FROM python:3.11-slim-bookworm
+FROM python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b
 
 LABEL maintainer="Computor Team"
 LABEL description="Computor Agent - AI tutor for educational platforms"
@@ -24,19 +24,26 @@ RUN useradd --create-home --uid 1000 agent
 
 WORKDIR /app
 
-# Dependencies from the computor-backend repo (not on PyPI). They change
-# rarely, so install them in their own layer to keep rebuilds fast.
-RUN pip install --upgrade pip \
-    && pip install \
-        "computor-types @ git+https://github.com/computor-org/computor-backend.git@release/2026.10#subdirectory=computor-types" \
-        "computor-client @ git+https://github.com/computor-org/computor-backend.git@release/2026.10#subdirectory=computor-client"
+# Pinned uv binary (digest-pinned image; Dependabot docker updates move it).
+COPY --from=ghcr.io/astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3 /uv /usr/local/bin/uv
 
-COPY pyproject.toml README.md ./
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH=/app/.venv/bin:$PATH
+
+# Dependencies exactly as locked in uv.lock (hash-verified; the
+# computor-backend packages are pinned to a commit SHA there). Installed in
+# their own layer before the sources to keep rebuilds fast.
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --extra api --no-install-project
+
 COPY src/ ./src/
 
-# Non-editable install; the [api] extra provides the dashboard that also
-# serves the /healthz endpoint used by the HEALTHCHECK below.
-RUN pip install ".[api]"
+# Non-editable install of the project itself; the [api] extra provides the
+# dashboard that also serves the /healthz endpoint used by the HEALTHCHECK.
+RUN uv sync --frozen --no-dev --extra api --no-editable
 
 # Workspace for cloned student repositories
 RUN mkdir -p /data/workspace && chown -R agent:agent /data/workspace

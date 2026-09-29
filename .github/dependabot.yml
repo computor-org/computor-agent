@@ -1,0 +1,51 @@
+# Dependabot configuration: supply-chain policy.
+#
+# * Version updates wait out a cooldown after upstream release so that a
+#   compromised release is likely caught and yanked before we pick it up
+#   (7 days default; 30 major / 14 minor / 7 patch where SemVer applies).
+# * Security updates are NOT subject to cooldown (GitHub docs: "The cooldown
+#   option is only available for version updates, not security updates"), so
+#   advisory fixes still arrive immediately.
+# * Everything is pinned (uv.lock, base image tags, action SHAs); Dependabot
+#   is the only path that moves pins, and CI installs with `uv sync --frozen`.
+
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 14
+      semver-patch-days: 7
+    groups:
+      python-dev-tooling:
+        patterns: ["pytest*", "ruff", "mypy", "coverage*"]
+      python-runtime:
+        patterns: ["*"]
+        exclude-patterns: ["pytest*", "ruff", "mypy", "coverage*"]
+
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
+    groups:
+      docker-base-images:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
