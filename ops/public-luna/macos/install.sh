@@ -3,6 +3,10 @@
 set -euo pipefail
 test "$(uname -s)" = Darwin
 test "$(id -u)" = 0
+if launchctl print system/com.computor.public-luna >/dev/null 2>&1; then
+    echo 'Stop com.computor.public-luna before changing its code or credentials.' >&2
+    exit 1
+fi
 source_root=$(cd "$(dirname "$0")/../../.." && pwd)
 assets="$source_root/ops/public-luna/macos"
 runtime=/Library/Computor/PublicLuna

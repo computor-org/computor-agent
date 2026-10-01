@@ -15,7 +15,7 @@ file with exactly these four string fields:
 - `PUBLIC_LUNA_WORKER_KEY`: the dedicated backend key
 - `PUBLIC_LUNA_MODEL_KEY`: the distinct Slopgate `public_luna` credential
 
-Install the pinned worker checkout with:
+Stop any existing public worker before reinstalling; the installer refuses to modify a loaded service. Install the pinned worker checkout with:
 
 ```sh
 sudo bash ops/public-luna/macos/install.sh /private/path/credentials.json
