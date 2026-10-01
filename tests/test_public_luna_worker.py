@@ -5,7 +5,13 @@ import json
 import httpx
 import pytest
 
-from computor_agent.public_luna_worker import _model_body, _validate_config, process_one
+from computor_agent.public_luna_worker import (
+    MAX_CLAIM_RESPONSE_BYTES,
+    _bounded_json,
+    _model_body,
+    _validate_config,
+    process_one,
+)
 
 REQUEST = {
     "course_content_id": "00000000-0000-0000-0000-000000000001",
@@ -33,6 +39,48 @@ def test_worker_requires_https_backend_and_distinct_secrets():
         _validate_config("http://computor.example", "http://10.77.0.20:8080", "a" * 32, "b" * 32)
     with pytest.raises(ValueError):
         _validate_config("https://computor.example", "http://10.77.0.20:8080", "short", "b" * 32)
+    with pytest.raises(ValueError):
+        _validate_config("https://computor.example", "http://10.77.0.20:8080", "a" * 32, "a" * 32)
+    with pytest.raises(ValueError):
+        _validate_config("https://computor.example?token=x", "http://10.77.0.20:8080", "a" * 32, "b" * 32)
+
+
+@pytest.mark.asyncio
+async def test_streaming_limit_stops_reading_and_closes_response():
+    class OversizedStream(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            yield b"x" * 4096
+            yield b"x"
+            pytest.fail("Read beyond the bounded response")
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = OversizedStream()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=stream))
+    ) as client:
+        with pytest.raises(ValueError, match="Response too large"):
+            await _bounded_json(client, "https://computor.example", headers={}, max_bytes=4096)
+    assert stream.closed
+
+
+@pytest.mark.asyncio
+async def test_claim_accepts_maximum_unicode_context():
+    request = {**REQUEST, "assignment": "😀" * 2000, "question": "😀" * 6000,
+               "submitted_text": "😀" * 16000}
+    claim = {"id": "00000000-0000-0000-0000-000000000002", "lease": "7", "request": request}
+    encoded = json.dumps(claim, ensure_ascii=False).encode()
+    assert 65536 < len(encoded) < MAX_CLAIM_RESPONSE_BYTES
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, content=encoded))
+    ) as client:
+        actual = await _bounded_json(client, "https://computor.example", headers={},
+                                     max_bytes=MAX_CLAIM_RESPONSE_BYTES)
+    assert actual == claim
+    _model_body(actual["request"])
 
 
 @pytest.mark.asyncio
