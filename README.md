@@ -234,6 +234,27 @@ The minimum recommended model for the Tutor AI Agent is `mistral:7b` (~4.4GB). L
 
 ## Tutor AI Agent
 
+### Restricted public Luna worker
+
+The public worker is a separate outbound-only process. Start it with
+`python -m computor_agent.public_luna_worker` after the matching backend and
+Slopgate route are deployed. It requires `PUBLIC_LUNA_BACKEND_URL` (HTTPS),
+`PUBLIC_LUNA_MODEL_URL` (private-IP HTTP(S) base URL), a 32-character or longer
+`PUBLIC_LUNA_WORKER_KEY` shared only with the backend, and a distinct
+`PUBLIC_LUNA_MODEL_KEY` for the restricted Slopgate credential. Do not give this
+process a general Computor API token or run the broad tutor scheduler as the
+public worker. The backend flag `PUBLIC_LUNA_ENABLED` remains false until the
+route, egress policy, logs, and synthetic response are verified.
+
+The [native faepmac2 deployment](ops/public-luna/macos/README.md) supplies a
+dedicated non-login account, per-UID firewall and sandbox. Use
+`https://computor.at/api` as the external backend base URL.
+
+The process polls at most four jobs concurrently, keeps request text in memory,
+and logs no prompt or answer content. Its backend lease is reclaimed after a
+worker failure. Keep its network egress restricted to the Computor HTTPS API
+and the private Slopgate address. Existing TU teaching workers remain separate.
+
 The Tutor AI Agent is an autonomous agent that monitors student messages and submissions, responding automatically using an LLM. It has two modes: **messaging** (help conversations) and **grading** (submission review).
 
 ### Commands
