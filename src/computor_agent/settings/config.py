@@ -531,6 +531,22 @@ class ComputorConfig(BaseModel):
             return TutorConfig.from_dict(self.tutor)
         return TutorConfig()
 
+    def validate_public_inference(self) -> None:
+        """Fail closed if a public worker could send learner data elsewhere."""
+        tutor = self.get_tutor_config()
+        if not tutor.public_mode:
+            return
+        if (
+            self.llm is None
+            or self.llm.provider != "openai"
+            or self.llm.model != "luna-public"
+            or self.llm.base_url.rstrip("/") != "http://10.77.0.20:8090/v1"
+            or self.vision_llm is not None
+        ):
+            raise ValueError("Public Luna requires the private luna-public Slopgate route")
+        if tutor.figure_review.enabled and not tutor.figure_review.use_agent_llm:
+            raise ValueError("Public Luna figures must use the same private model")
+
 
 # Environment variables the container/start-script path can use to override
 # values from the config file. YAML stays the base; a set (non-empty) variable

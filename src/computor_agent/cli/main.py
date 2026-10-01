@@ -78,6 +78,18 @@ def setup_logging(verbose: bool = False, log_file: Optional[str] = None) -> None
     logging.getLogger("watchdog.observers.inotify_buffer").setLevel(logging.WARNING)
 
 
+def enforce_public_logging(public_mode: bool, log_file: Optional[str]) -> None:
+    """Keep content-bearing records out of every Python logging handler."""
+    if not public_mode:
+        return
+    if log_file:
+        raise ValueError("Public Luna cannot write a log file")
+    # Backend and Slopgate retain numeric operational metrics. The public
+    # worker must not emit third-party exception text, request bodies, or
+    # generated answers through Python logging or its dashboard.
+    logging.disable(logging.CRITICAL)
+
+
 def get_default_base_url(provider: str) -> str:
     """Get default base URL for a provider."""
     defaults = {
@@ -672,7 +684,9 @@ def messaging(
 
         # Validate the tutor section here so config errors surface as a clean
         # message instead of a traceback from inside the runtime.
-        computor_config.get_tutor_config()
+        tutor_config = computor_config.get_tutor_config()
+        computor_config.validate_public_inference()
+        enforce_public_logging(tutor_config.public_mode, log_file)
 
     except FileNotFoundError as e:
         logger.error(f"Config file not found: {e}", exc_info=True)

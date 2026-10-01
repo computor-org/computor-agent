@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class PersonalityTone(str, Enum):
@@ -480,6 +480,8 @@ class TutorConfig(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    public_mode: bool = Field(default=False, description="Restrict context for the public Luna worker")
+
     personality: PersonalityConfig = Field(
         default_factory=PersonalityConfig,
         description="Personality and communication settings",
@@ -508,6 +510,42 @@ class TutorConfig(BaseModel):
         default_factory=FigureReviewConfig,
         description="Vision-LLM figure review settings",
     )
+
+    @model_validator(mode="after")
+    def validate_public_mode(self) -> "TutorConfig":
+        if not self.public_mode:
+            return self
+        context = self.context
+        forbidden = (
+            context.include_course_member_comments,
+            context.include_test_results,
+            context.include_submission_history,
+            context.include_reference_comparison,
+            context.include_student_progress,
+            context.student_notes_enabled,
+            self.notes.enabled,
+        )
+        if any(forbidden) or context.include_previous_messages > 2:
+            raise ValueError("Public Luna cannot access notes, tests, references or history")
+        if context.max_code_files > 5 or context.max_code_lines > 300:
+            raise ValueError("Public Luna code context exceeds the reviewed limit")
+        figures = self.figure_review
+        if figures.enabled and (
+            figures.max_figures > 2
+            or figures.max_image_bytes > 2 * 1024 * 1024
+            or not figures.extension_set() <= {".png", ".jpg", ".jpeg"}
+            or figures.max_response_tokens > 256
+        ):
+            raise ValueError("Public Luna figure context exceeds the reviewed limit")
+        if self.strategies.fallback.max_response_tokens > 512:
+            raise ValueError("Public Luna response exceeds the reviewed limit")
+        if self.triggers.check_submissions:
+            raise ValueError("Public Luna requires an explicit learner question")
+        if not self.security.enabled or not self.security.block_on_threat:
+            raise ValueError("Public Luna threat checks must remain enabled")
+        if self.security.threat_log_path is not None:
+            raise ValueError("Public Luna cannot write content-bearing threat logs")
+        return self
 
     @classmethod
     def from_file(cls, path: Union[str, Path]) -> "TutorConfig":
