@@ -246,6 +246,10 @@ process a general Computor API token or run the broad tutor scheduler as the
 public worker. The backend flag `PUBLIC_LUNA_ENABLED` remains false until the
 route, egress policy, logs, and synthetic response are verified.
 
+The [native faepmac2 deployment](ops/public-luna/macos/README.md) supplies a
+dedicated non-login account, per-UID firewall and sandbox. Use
+`https://computor.at/api` as the external backend base URL.
+
 The process polls at most four jobs concurrently, keeps request text in memory,
 and logs no prompt or answer content. Its backend lease is reclaimed after a
 worker failure. Keep its network egress restricted to the Computor HTTPS API

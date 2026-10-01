@@ -1,0 +1,13 @@
+(version 1)
+(allow default)
+(deny network-inbound)
+(deny network-bind)
+(deny network-outbound)
+; PF restricts these ports to the two configured IP addresses for this UID.
+(allow network-outbound (remote ip "*:443") (remote ip "*:8090")
+    (literal "/private/var/run/mDNSResponder"))
+(deny file-write*)
+(allow file-write* (literal "/dev/null") (literal "/private/var/run/mDNSResponder"))
+(deny process-fork)
+(deny process-exec)
+(allow process-exec (literal (param "PYTHON_EXECUTABLE")))
