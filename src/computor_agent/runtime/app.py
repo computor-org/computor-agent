@@ -64,6 +64,7 @@ class AgentRuntime:
         self.options = options or RuntimeOptions()
         self.console = console or Console()
         self.tutor_config = config.get_tutor_config()
+        config.validate_public_inference()
 
         self.metrics = None
         self.llm_config = None

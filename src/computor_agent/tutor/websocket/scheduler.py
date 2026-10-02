@@ -892,7 +892,7 @@ class WebSocketScheduler:
 
         # Quick filter: ignore our own AI responses to avoid unnecessary REST calls
         if self._is_ai_response(data):
-            logger.info(f"Ignoring AI response message (title='{data.get('title', '')}')")
+            logger.info("Ignoring AI response message")
             return
 
         # Use the event as a wake-up signal to check all courses for unread messages.

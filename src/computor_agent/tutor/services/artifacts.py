@@ -6,19 +6,53 @@ Handles listing, downloading, and extracting submission artifacts (ZIPs).
 
 import io
 import logging
+import stat
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 from computor_client.exceptions import ComputorClientError, NotFoundError
+from computor_client.urls import quote_path
 from computor_types.artifacts import SubmissionArtifactGet
 
 from computor_agent.tutor.figures.detection import is_image_file, media_type_for
 from computor_agent.tutor.figures.models import FigureFile
 
 logger = logging.getLogger(__name__)
+
+
+def _valid_public_image(data: bytes, filename: str) -> bool:
+    """Admit only small PNG/JPEG plots with bounded declared dimensions."""
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".png":
+        if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+            return False
+        width = int.from_bytes(data[16:20], "big")
+        height = int.from_bytes(data[20:24], "big")
+    elif suffix in {".jpg", ".jpeg"}:
+        if len(data) < 4 or data[:2] != b"\xff\xd8":
+            return False
+        width = height = 0
+        offset = 2
+        while offset + 4 <= len(data):
+            if data[offset] != 0xFF:
+                return False
+            marker = data[offset + 1]
+            length = int.from_bytes(data[offset + 2:offset + 4], "big")
+            if length < 2 or offset + 2 + length > len(data):
+                return False
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                if length < 7:
+                    return False
+                height = int.from_bytes(data[offset + 5:offset + 7], "big")
+                width = int.from_bytes(data[offset + 7:offset + 9], "big")
+                break
+            offset += 2 + length
+    else:
+        return False
+    return 0 < width <= 4096 and 0 < height <= 4096 and width * height <= 4_000_000
 
 
 @dataclass
@@ -146,7 +180,7 @@ class ArtifactsService:
     # Maximum file size to read as text (5MB)
     MAX_TEXT_FILE_SIZE = 5 * 1024 * 1024
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, *, public_mode: bool = False) -> None:
         """
         Initialize the service.
 
@@ -154,6 +188,28 @@ class ArtifactsService:
             client: ComputorClient instance
         """
         self.client = client
+        self.public_mode = public_mode
+
+    async def _download_bounded(self, path: str, params: Optional[dict] = None) -> bytes:
+        """Stream a public artifact without redirects or unbounded buffering."""
+        transport = self.client.submissions._http
+        client = await transport._get_client()
+        headers = await transport._add_auth_header(transport._build_headers())
+        limit = 5 * 1024 * 1024
+        async with client.stream("GET", path, params=params, headers=headers,
+                                 follow_redirects=False) as response:
+            if response.status_code == 404:
+                raise NotFoundError("Submission artifact not found")
+            if response.status_code != 200:
+                raise ComputorClientError("Artifact download refused", status_code=response.status_code)
+            if int(response.headers.get("content-length", "0")) > limit:
+                raise ComputorClientError("Artifact exceeds public Luna limit")
+            chunks = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(chunks) + len(chunk) > limit:
+                    raise ComputorClientError("Artifact exceeds public Luna limit")
+                chunks.extend(chunk)
+            return bytes(chunks)
 
     async def list_artifacts(
         self,
@@ -324,9 +380,12 @@ class ArtifactsService:
     async def _download_artifact(self, artifact_id: str) -> Optional[bytes]:
         """Download artifact ZIP as bytes."""
         try:
-            buffer = await self.client.submissions.get_artifacts_download_by_artifact_id(
-                artifact_id
-            )
+            if self.public_mode:
+                buffer = await self._download_bounded(
+                    f"/submissions/artifacts/{quote_path(artifact_id)}/download")
+            else:
+                buffer = await self.client.submissions.get_artifacts_download_by_artifact_id(
+                    artifact_id)
         except ComputorClientError as e:
             logger.error(f"Failed to download artifact {artifact_id}: {e}")
             return None
@@ -370,6 +429,8 @@ class ArtifactsService:
         try:
             with zipfile.ZipFile(io.BytesIO(buffer)) as zf:
                 infos = zf.infolist()
+                if self.public_mode and len(infos) > 50:
+                    return ExtractedSubmissionContent(artifact=artifact, truncated=True)
 
                 for i, info in enumerate(infos):
                     # Skip directories
@@ -387,6 +448,11 @@ class ArtifactsService:
                         break
 
                     filename = info.filename
+                    parts = PurePosixPath(filename)
+                    if (parts.is_absolute() or ".." in parts.parts or "\\" in filename
+                        or stat.S_ISLNK(info.external_attr >> 16)):
+                        binary_files.append("[unsafe path omitted]")
+                        continue
 
                     # Collect image files for figure review
                     if collect_images and is_image_file(filename, image_extensions):
@@ -397,10 +463,17 @@ class ArtifactsService:
                             binary_files.append(filename)
                             continue
                         try:
+                            data = zf.open(info).read(max_image_bytes + 1)
+                            if len(data) > max_image_bytes:
+                                truncated = True
+                                continue
+                            if self.public_mode and not _valid_public_image(data, filename):
+                                binary_files.append(filename)
+                                continue
                             image_files.append(
                                 FigureFile(
                                     path=filename,
-                                    data=zf.read(info),
+                                    data=data,
                                     media_type=media_type_for(filename),
                                 )
                             )
@@ -428,9 +501,14 @@ class ArtifactsService:
 
                     # Read and decode
                     try:
-                        content = zf.read(info).decode("utf-8", errors="replace")
+                        remaining = min(self.MAX_TEXT_FILE_SIZE, max_total_size - total_size)
+                        data = zf.open(info).read(remaining + 1)
+                        if len(data) > remaining:
+                            truncated = True
+                            continue
+                        content = data.decode("utf-8", errors="replace")
                         files[filename] = content
-                        total_size += len(content)
+                        total_size += len(data)
                     except Exception:
                         binary_files.append(filename)
 
@@ -510,7 +588,10 @@ class ArtifactsService:
             try:
                 logger.info(f"Attempting to download submission with params: {params}")
                 # GET /submissions/artifacts/download returns the ZIP bytes.
-                buffer = await self.client.submissions.get_artifacts_download(**params)
+                if self.public_mode:
+                    buffer = await self._download_bounded("/submissions/artifacts/download", params)
+                else:
+                    buffer = await self.client.submissions.get_artifacts_download(**params)
                 if buffer:
                     logger.info(f"Downloaded submission, size: {len(buffer)} bytes")
                 else:
