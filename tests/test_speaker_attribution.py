@@ -58,14 +58,14 @@ def _builder(messages, agent_user_id=AGENT_ID) -> ContextBuilder:
 
 class TestHistoryAttribution:
     async def test_agent_messages_are_labeled_tutor(self):
-        messages = [_msg(0, "student-1", "Max Mandlez"), _msg(1, AGENT_ID, "Luna Tutor")]
+        messages = [_msg(0, "student-1", "Max Mandlez"), _msg(1, AGENT_ID, "Lena Tutor")]
 
         result = await _builder(messages)._get_previous_messages("sg-1")
 
         assert [m.is_from_student for m in result] == [True, False]
 
     async def test_thread_fetch_attributes_the_same_way(self):
-        messages = [_msg(0, "student-1", "Max Mandlez"), _msg(1, AGENT_ID, "Luna Tutor")]
+        messages = [_msg(0, "student-1", "Max Mandlez"), _msg(1, AGENT_ID, "Lena Tutor")]
 
         result = await _builder(messages)._get_thread_messages("m-0")
 
@@ -73,7 +73,7 @@ class TestHistoryAttribution:
 
     async def test_unresolved_agent_id_keeps_everyone_a_student(self):
         """Before startup resolution nobody can be identified as the agent."""
-        messages = [_msg(0, "student-1", "Max"), _msg(1, AGENT_ID, "Luna")]
+        messages = [_msg(0, "student-1", "Max"), _msg(1, AGENT_ID, "Lena")]
 
         result = await _builder(messages, agent_user_id=None)._get_previous_messages("sg-1")
 
@@ -112,12 +112,12 @@ class TestFormattedLabels:
                 MessageInfo(id="1", title="", content="hi", author_id="s1",
                             author_name="Max Mandlez", is_from_student=True),
                 MessageInfo(id="2", title="", content="hello", author_id=AGENT_ID,
-                            author_name="Luna", is_from_student=False),
+                            author_name="Lena", is_from_student=False),
             ]
         ).get_formatted_previous_messages()
 
         assert "[Max Mandlez (Student)]: hi" in formatted
-        assert "[Luna (Tutor)]: hello" in formatted
+        assert "[Lena (Tutor)]: hello" in formatted
 
     def test_unnamed_speakers_fall_back_to_bare_roles(self):
         formatted = self._context(
