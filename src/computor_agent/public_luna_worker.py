@@ -147,7 +147,7 @@ async def process_one(
         await _bounded_json(
             backend,
             f"{backend_url.rstrip('/')}/public-luna/worker/complete/{job_id}",
-            headers={"X-Public-Lena-Worker-Key": worker_key},
+            headers={"X-Public-Luna-Worker-Key": worker_key},
             body=result,
             max_bytes=4096,
         )
@@ -163,7 +163,7 @@ async def run() -> None:
     worker_key = _required("PUBLIC_LUNA_WORKER_KEY")
     model_key = _required("PUBLIC_LUNA_MODEL_KEY")
     _validate_config(backend_url, model_url, worker_key, model_key)
-    headers = {"X-Public-Lena-Worker-Key": worker_key}
+    headers = {"X-Public-Luna-Worker-Key": worker_key}
     async with (
         httpx.AsyncClient(timeout=15, trust_env=False) as backend,
         httpx.AsyncClient(timeout=540, trust_env=False) as model,
