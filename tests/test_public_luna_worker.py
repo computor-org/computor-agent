@@ -1,4 +1,4 @@
-"""Synthetic network boundary tests for the outbound-only Luna worker."""
+"""Synthetic network boundary tests for the outbound-only Lena worker."""
 
 import json
 
