@@ -196,7 +196,7 @@ llm:
 # Tutor behavior
 tutor:
   personality:
-    name: "Tutor AI"
+    name: "Lena"
     tone: "friendly_professional"
 
   triggers:
