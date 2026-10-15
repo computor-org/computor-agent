@@ -34,31 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 def _sanitize_messages_for_log(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return a copy of messages with base64 image data URLs truncated.
-
-    A single attached image is megabytes of base64 — logging it verbatim
-    would produce unusable debug logs.
-    """
-    sanitized: list[dict[str, Any]] = []
-    for msg in messages:
-        content = msg.get("content")
-        if not isinstance(content, list):
-            sanitized.append(msg)
-            continue
-        parts = []
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "image_url":
-                url = part.get("image_url", {}).get("url", "")
-                parts.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"{url[:64]}...({len(url)} chars)"},
-                    }
-                )
-            else:
-                parts.append(part)
-        sanitized.append({**msg, "content": parts})
-    return sanitized
+    """Keep request shape for diagnostics without retaining learner content."""
+    return [{"role": msg.get("role"), "content": "[redacted]"} for msg in messages]
 
 
 class OpenAIProvider(LLMProvider):
@@ -129,14 +106,12 @@ class OpenAIProvider(LLMProvider):
             error_data = response.json()
             error = error_data.get("error", {})
             if isinstance(error, str):
-                detail = error
                 error_type = None
             else:
-                detail = error.get("message", str(error_data))
                 error_type = error.get("type")
         except (json.JSONDecodeError, KeyError, AttributeError, TypeError):
-            detail = response.text or f"HTTP {status_code}"
             error_type = None
+        detail = f"Provider returned HTTP {status_code}"
 
         common_kwargs = {
             "provider": self.provider_name,
@@ -147,7 +122,7 @@ class OpenAIProvider(LLMProvider):
             raise LLMAuthenticationError(detail, **common_kwargs)
         elif status_code == 404:
             raise LLMModelNotFoundError(
-                f"Model '{self.config.model}' not found: {detail}",
+                f"Configured model was not found (HTTP {status_code})",
                 **common_kwargs,
             )
         elif status_code == 429:
@@ -159,7 +134,7 @@ class OpenAIProvider(LLMProvider):
             )
         elif status_code == 400:
             # Check for context length errors
-            if error_type == "context_length_exceeded" or "context" in detail.lower():
+            if error_type == "context_length_exceeded":
                 raise LLMContextLengthError(detail, **common_kwargs)
             raise LLMResponseError(
                 detail,
@@ -168,7 +143,7 @@ class OpenAIProvider(LLMProvider):
             )
         elif status_code >= 500:
             raise LLMResponseError(
-                f"Server error: {detail}",
+                detail,
                 status_code=status_code,
                 **common_kwargs,
             )
@@ -241,7 +216,7 @@ class OpenAIProvider(LLMProvider):
                 choice = choices[0]
                 content = choice.get("message", {}).get("content", "")
 
-                logger.debug(f"LLM Response:\n{content}")
+                logger.debug("LLM response received: %d characters", len(content))
 
                 return LLMResponse(
                     content=content,
@@ -390,7 +365,7 @@ class OpenAIProvider(LLMProvider):
                     try:
                         data = json.loads(line)
                     except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse SSE line: {line}")
+                        logger.warning("Failed to parse SSE line; content omitted")
                         continue
 
                     # Extract content from the chunk

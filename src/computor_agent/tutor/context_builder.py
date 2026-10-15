@@ -85,6 +85,7 @@ class ContextBuilder:
         client: Any,  # ComputorClient from computor-client
         config: "ContextConfig",
         figure_config: Optional["FigureReviewConfig"] = None,
+        public_mode: bool = False,
     ) -> None:
         """
         Initialize the context builder.
@@ -98,10 +99,11 @@ class ContextBuilder:
         self.client = client
         self.config = config
         self.figure_config = figure_config
+        self.public_mode = public_mode
 
         # Initialize services for enhanced context
         self.test_results_service = TestResultsService(client)
-        self.artifacts_service = ArtifactsService(client)
+        self.artifacts_service = ArtifactsService(client, public_mode=public_mode)
         self.reference_service = ReferenceService(client, cache_dir=config.cache_dir)
         self.history_service = HistoryService(client)
         self.progress_service = ProgressService(client)
@@ -280,7 +282,7 @@ class ContextBuilder:
             course_member_id=course_member_id,
             submit_only=submit_only,
             max_files=self.config.max_code_files,
-            max_total_size=10 * 1024 * 1024,  # 10MB max
+            max_total_size=512 * 1024 if self.public_mode else 10 * 1024 * 1024,
             **image_kwargs,
         )
 

@@ -116,7 +116,7 @@ In development mode, you can see what's being substituted:
 # Run with verbose logging to see prompt construction
 computor-agent tutor --dev -v --prompts-dir ./test
 
-# Check logs for "LLM Request messages:" to see final prompt
+# Provider debug logs show request roles only; learner prompts are redacted.
 ```
 
 ---

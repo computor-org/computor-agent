@@ -153,7 +153,8 @@ class TutorAgent:
 
         # Initialize components
         self.context_builder = ContextBuilder(
-            client, config.context, figure_config=config.figure_review
+            client, config.context, figure_config=config.figure_review,
+            public_mode=config.public_mode,
         )
         self.security_gate = SecurityGate(config.security, llm)
         self.intent_classifier = IntentClassifier(llm)
@@ -196,6 +197,8 @@ class TutorAgent:
         context: Optional[ConversationContext] = None
 
         try:
+            if self.config.public_mode and (repository_path is not None or reference_path is not None):
+                raise ValueError("Public Luna accepts only backend-authorized submission context")
             # Build context (use pre-fetched course_content if available)
             context = await self.context_builder.build_for_message(
                 submission_group_id=submission_group_id,
@@ -239,14 +242,19 @@ class TutorAgent:
             system_prompt = self._build_system_prompt(context)
             user_message = context.trigger_message.content if context.trigger_message else "(No message)"
 
-            # Single LLM call — no intent classification needed
-            logger.info("Generating response via unified prompt")
-            response_content = await self.llm.complete(
-                prompt=user_message,
-                system_prompt=system_prompt,
-                max_tokens=self.config.strategies.fallback.max_response_tokens,
-                temperature=self.config.strategies.fallback.temperature,
-            )
+            # Public bounds are a second line of defence behind API admission.
+            if self.config.public_mode and (len(user_message) > 6_000 or len(system_prompt) > 24_000):
+                response_content = "Please shorten your question or submitted work and try again."
+            else:
+                logger.info("Generating response via unified prompt")
+                response_content = await self.llm.complete(
+                    prompt=user_message,
+                    system_prompt=system_prompt,
+                    max_tokens=self.config.strategies.fallback.max_response_tokens,
+                    temperature=self.config.strategies.fallback.temperature,
+                )
+            if self.config.public_mode:
+                response_content = response_content[:4_000]
 
             response = StrategyResponse(
                 message_content=response_content,
@@ -273,7 +281,7 @@ class TutorAgent:
                 else:
                     message_data["submission_group_id"] = submission_group_id
 
-                logger.info(f"Creating message with data: {message_data}")
+                logger.info("Creating tutor reply for message %s", parent_id)
                 created_message = await self.client.messages.create(data=message_data)
                 message_sent = True
                 response_message_id = created_message.id
@@ -298,7 +306,7 @@ class TutorAgent:
                 else:
                     message_data["submission_group_id"] = submission_group_id
 
-                logger.info(f"Creating fallback message with data: {message_data}")
+                logger.info("Creating fallback tutor reply for message %s", parent_id)
                 created_message = await self.client.messages.create(data=message_data)
                 message_sent = True
                 response_message_id = created_message.id

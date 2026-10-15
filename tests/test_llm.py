@@ -187,9 +187,9 @@ class TestPrepareMessagesMultimodal:
 
 
 class TestSanitizeMessagesForLog:
-    """Tests for the debug-log image sanitizer."""
+    """Learner text and images must never enter provider debug logs."""
 
-    def test_image_urls_truncated(self):
+    def test_request_content_redacted(self):
         from computor_agent.llm.openai_provider import _sanitize_messages_for_log
 
         long_url = "data:image/png;base64," + "A" * 10000
@@ -204,14 +204,12 @@ class TestSanitizeMessagesForLog:
             },
         ]
         sanitized = _sanitize_messages_for_log(messages)
-        # Original untouched, text parts untouched
+        # Preserve only roles; neither the prompt nor image bytes may be logged.
         assert messages[1]["content"][1]["image_url"]["url"] == long_url
-        assert sanitized[0] == {"role": "system", "content": "sys"}
-        assert sanitized[1]["content"][0] == {"type": "text", "text": "look"}
-        # Image URL truncated but annotated with original length
-        logged_url = sanitized[1]["content"][1]["image_url"]["url"]
-        assert len(logged_url) < 100
-        assert f"({len(long_url)} chars)" in logged_url
+        assert sanitized == [
+            {"role": "system", "content": "[redacted]"},
+            {"role": "user", "content": "[redacted]"},
+        ]
 
 
 class TestDummyProvider:
@@ -410,3 +408,38 @@ class TestStreamChunk:
         assert chunk.content == "partial"
         assert chunk.finish_reason is None
         assert chunk.is_final is False
+
+@pytest.mark.asyncio
+async def test_provider_logs_only_metadata_even_when_server_echoes_content(caplog):
+    import logging
+    import httpx
+    from computor_agent.llm.openai_provider import OpenAIProvider
+
+    secret_prompt = "SYNTHETIC_PRIVATE_PROMPT_71"
+    secret_reply = "SYNTHETIC_PRIVATE_REPLY_92"
+    config = LLMConfig(base_url="http://synthetic.invalid/v1", model="synthetic")
+    provider = OpenAIProvider(config)
+    provider._client = httpx.AsyncClient(
+        base_url=config.base_url,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+            "model": "synthetic",
+            "choices": [{"message": {"content": secret_reply}, "finish_reason": "stop"}],
+        })),
+    )
+    with caplog.at_level(logging.DEBUG):
+        result = await provider.complete(secret_prompt)
+    assert result.content == secret_reply
+    assert secret_prompt not in caplog.text
+    assert secret_reply not in caplog.text
+    await provider.close()
+
+    provider._client = httpx.AsyncClient(
+        base_url=config.base_url,
+        transport=httpx.MockTransport(lambda request: httpx.Response(400, json={
+            "error": {"message": secret_prompt, "type": "invalid_request"},
+        })),
+    )
+    with pytest.raises(LLMError) as error:
+        await provider.complete(secret_prompt)
+    assert secret_prompt not in str(error.value)
+    await provider.close()
