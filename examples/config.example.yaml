@@ -65,7 +65,7 @@ scheduler:
 tutor:
   # Personality - how the tutor presents itself
   personality:
-    name: "Tutor AI"
+    name: "Lena"
     tone: "friendly_professional"  # friendly_professional, strict, casual, encouraging
     language: "en"  # ISO 639-1 language code
 

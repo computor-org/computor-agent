@@ -35,7 +35,7 @@ llm:
 # mention server-side (mentions_me), so there is no name/tag to configure here.
 tutor:
   personality:
-    name: Tutor AI
+    name: Lena
     tone: friendly_professional
 
   # Review figures (plots/images) in submissions with a vision LLM

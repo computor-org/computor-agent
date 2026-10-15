@@ -34,7 +34,7 @@ class PersonalityConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     name: str = Field(
-        default="Tutor AI",
+        default="Lena",
         description="Display name of the tutor",
     )
     tone: PersonalityTone = Field(

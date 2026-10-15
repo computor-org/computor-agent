@@ -30,7 +30,7 @@ class TestTutorConfig:
         """Test creating config with defaults."""
         config = TutorConfig()
 
-        assert config.personality.name == "Tutor AI"
+        assert config.personality.name == "Lena"
         assert config.security.enabled is True
         assert config.security.require_confirmation is True
         assert config.context.include_previous_messages == 3
