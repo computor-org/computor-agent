@@ -3,7 +3,7 @@
 # Build:  docker build -t computor-agent -f docker/Dockerfile .
 # Run:    see docker-compose.yml / start.sh (recommended)
 
-FROM python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b
+FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83
 
 LABEL maintainer="Computor Team"
 LABEL description="Computor Agent - AI tutor for educational platforms"
