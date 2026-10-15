@@ -321,7 +321,7 @@ llm:
 # Tutor agent behavior
 tutor:
   personality:
-    name: "Tutor AI"
+    name: "Lena"
     tone: "friendly_professional"
 
   triggers:
@@ -344,6 +344,20 @@ tutor:
 3. Agent generates grade and feedback
 
 See [docs/tutor-agent.md](docs/tutor-agent.md) for detailed documentation.
+
+### Mentioning Lena
+
+The tutor is displayed as Lena. Learners reach her through a structured
+course-message mention of the existing tutor account; with the matching backend
+update, typed or pasted `@lena`, legacy `@luna` and `@ai` all resolve to that
+same account, with or without choosing autocomplete. Set the backend
+`TUTOR_AGENT_USER_ID` to the account already used by this worker and rename
+that existing account; retain its user ID, memberships and credentials. The
+worker continues to consume `mentions_me` and recognize follow-ups by user ID.
+
+The author label and mention dropdown show the backend account's name.
+`tutor.personality.name` only sets how the tutor introduces itself in its
+replies, so keep both set to Lena.
 
 ## Configuration
 
@@ -429,12 +443,3 @@ pytest --cov=computor_agent
 ## License
 
 MIT
-
-### Lena mention aliases
-
-The tutor is displayed as Lena. With the matching backend update, `@lena`,
-legacy `@luna` and `@ai` all resolve to the same existing tutor account, with
-or without choosing autocomplete. Set the backend `TUTOR_AGENT_USER_ID` to
-the account already used by this worker and rename that existing account;
-retain its user ID, memberships and credentials. The worker continues to
-consume `mentions_me` and recognize follow-ups by user ID.
