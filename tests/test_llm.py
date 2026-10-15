@@ -63,6 +63,12 @@ class TestLLMConfig:
         assert "temperature" not in params
         assert params["max_tokens"] == 500
         assert params["top_p"] == 0.9
+        assert "top_k" not in params
+
+    def test_to_generation_params_sends_top_k(self):
+        """A configured top_k reaches the request body."""
+        params = LLMConfig(model="test-model", top_k=20).to_generation_params()
+        assert params["top_k"] == 20
 
     def test_merge_generation_params_temperature(self):
         """Provider merge injects DEFAULT_TEMPERATURE unless the call overrides."""

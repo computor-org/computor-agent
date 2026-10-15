@@ -238,6 +238,10 @@ class LLMConfig(BaseModel):
             params["max_tokens"] = self.max_tokens
         if self.top_p is not None:
             params["top_p"] = self.top_p
+        # Not part of the OpenAI schema, but OpenAI-compatible servers
+        # (omlx, vLLM, llama.cpp) honour it in the request body.
+        if self.top_k is not None:
+            params["top_k"] = self.top_k
         if self.frequency_penalty is not None:
             params["frequency_penalty"] = self.frequency_penalty
         if self.presence_penalty is not None:
