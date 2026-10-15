@@ -1,4 +1,4 @@
-"""Synthetic network boundary tests for the outbound-only Luna worker."""
+"""Synthetic network boundary tests for the outbound-only Lena worker."""
 
 import json
 
@@ -24,6 +24,7 @@ REQUEST = {
 def test_only_explicit_bounded_text_reaches_model():
     body = _model_body(REQUEST)
     assert body["model"] == "luna-public"
+    assert body["messages"][0]["content"].startswith("You are Lena,")
     assert body["max_tokens"] == 1024
     assert len(body["messages"]) == 2
     assert "Why is my answer empty?" in body["messages"][1]["content"]
@@ -117,6 +118,8 @@ async def test_success_sends_one_answer_without_general_api_token():
     assert [kind for kind, _ in seen] == ["model", "backend"]
     assert seen[0][1].headers["Authorization"] == "Bearer " + "b" * 32
     assert seen[1][1].headers.get("X-API-Token") is None
+    assert seen[1][1].headers["X-Public-Luna-Worker-Key"] == "a" * 32
+    assert seen[1][1].url.path == "/public-luna/worker/complete/00000000-0000-0000-0000-000000000002"
     result = json.loads(seen[1][1].content)
     assert result == {"lease": "7", "state": "done", "answer": "Try an input item."}
 

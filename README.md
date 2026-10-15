@@ -234,7 +234,7 @@ The minimum recommended model for the Tutor AI Agent is `mistral:7b` (~4.4GB). L
 
 ## Tutor AI Agent
 
-### Restricted public Luna worker
+### Restricted public Lena worker
 
 The public worker is a separate outbound-only process. Start it with
 `python -m computor_agent.public_luna_worker` after the matching backend and
@@ -321,7 +321,7 @@ llm:
 # Tutor agent behavior
 tutor:
   personality:
-    name: "Tutor AI"
+    name: "Lena"
     tone: "friendly_professional"
 
   triggers:
@@ -344,6 +344,20 @@ tutor:
 3. Agent generates grade and feedback
 
 See [docs/tutor-agent.md](docs/tutor-agent.md) for detailed documentation.
+
+### Mentioning Lena
+
+The tutor is displayed as Lena. Learners reach her through a structured
+course-message mention of the existing tutor account; with the matching backend
+update, typed or pasted `@lena`, legacy `@luna` and `@ai` all resolve to that
+same account, with or without choosing autocomplete. Set the backend
+`TUTOR_AGENT_USER_ID` to the account already used by this worker and rename
+that existing account; retain its user ID, memberships and credentials. The
+worker continues to consume `mentions_me` and recognize follow-ups by user ID.
+
+The author label and mention dropdown show the backend account's name.
+`tutor.personality.name` only sets how the tutor introduces itself in its
+replies, so keep both set to Lena.
 
 ## Configuration
 

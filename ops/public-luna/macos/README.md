@@ -1,4 +1,4 @@
-# Public Luna on faepmac2
+# Public Lena on faepmac2
 
 This is a separate native worker. It has no model tools, general Computor
 credential, listener, writable cache, or learner files. Its dedicated non-login
@@ -44,7 +44,7 @@ stdout and stderr go to `/dev/null`. Monitor process liveness and backend queue
 counts without periodic inference. HTTP redirects and environment proxies are
 disabled. TLS verification remains enabled for the backend.
 
-To stop or roll back, first disable backend public Luna admission, then:
+To stop or roll back, first disable backend public Lena admission, then:
 
 ```sh
 sudo launchctl bootout system/com.computor.public-luna
@@ -54,3 +54,6 @@ sudo pfctl -a com.apple/computor-luna -F rules
 Do not clear the anchor while the worker is running. Keep backend admission
 disabled if the destination IP changes until the new firewall and TLS path pass
 the probe. Existing TU teaching workers and both model services are independent.
+
+The displayed tutor name is Lena. Module, launchd, endpoint, environment and
+`luna-public` gateway names remain compatibility identifiers.

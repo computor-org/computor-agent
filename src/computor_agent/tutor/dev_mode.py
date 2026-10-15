@@ -135,7 +135,7 @@ class MessageSimulator:
         activation signal that replaces the legacy #ai title tag.
         """
         if mention_agent:
-            content = f"{content} @[AI Tutor]({DEV_AGENT_USER_ID})".strip()
+            content = f"{content} @[Lena]({DEV_AGENT_USER_ID})".strip()
 
         message = MockMessage(
             content=content,
