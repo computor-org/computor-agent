@@ -150,3 +150,38 @@ async def test_llm_dump_requires_explicit_opt_in(sinks):
     output = run_all_output(buffer, log_file)
     assert REPLY_MARKER in output  # the opt-in dump works, so the tests above bite
     assert STUDENT_MARKER in output
+
+
+@pytest.mark.parametrize(
+    "args, env, expected",
+    [
+        ([], {}, False),
+        (["-v"], {}, False),
+        (["-v"], {"COMPUTOR_LOG_LLM_CONTENT": "0"}, False),
+        ([], {"COMPUTOR_LOG_LLM_CONTENT": "false"}, False),
+        ([], {"COMPUTOR_LOG_LLM_CONTENT": "1"}, True),
+        (["--log-llm-content"], {}, True),
+    ],
+)
+def test_messaging_cli_opt_in(monkeypatch, args, env, expected):
+    """Only --log-llm-content / a truthy env var enables dumps; -v never does."""
+    from click.testing import CliRunner
+
+    from computor_agent.llm import content_logging
+
+    seen: list[bool] = []
+
+    class StopCliError(Exception):
+        pass
+
+    def spy(enabled: bool) -> None:
+        seen.append(enabled)
+        raise StopCliError  # do not start the agent
+
+    monkeypatch.setattr(content_logging, "set_log_llm_content", spy)
+    monkeypatch.setattr(cli_main, "setup_logging", lambda *a, **k: None)
+    monkeypatch.delenv("COMPUTOR_LOG_LLM_CONTENT", raising=False)
+
+    CliRunner().invoke(cli_main.cli, ["tutor", "messaging", *args], env=env)
+
+    assert seen == [expected]
