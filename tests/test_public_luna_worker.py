@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from computor_agent.public_luna_worker import (
+    FALLBACK_ANSWER,
     MAX_CLAIM_RESPONSE_BYTES,
     _bounded_json,
     _model_body,
@@ -91,7 +92,10 @@ async def test_success_sends_one_answer_without_general_api_token():
     def model_handler(request):
         seen.append(("model", request))
         return httpx.Response(
-            200, json={"choices": [{"message": {"content": "Try an input item."}}]}
+            200,
+            json={
+                "choices": [{"message": {"content": "Try an input item."}, "finish_reason": "stop"}]
+            },
         )
 
     def backend_handler(request):
@@ -182,3 +186,70 @@ async def test_upstream_error_content_is_not_logged_or_returned(caplog):
         )
     assert results == [{"lease": "7", "state": "failed", "answer": ""}]
     assert secret not in caplog.text
+
+
+REASONING = "We need answer to user in English. Need analyze user request. Could be R?"
+
+
+async def _completion_for(model_json: dict) -> dict:
+    results = []
+
+    def model_handler(_request):
+        return httpx.Response(200, json=model_json)
+
+    def backend_handler(request):
+        results.append(json.loads(request.content))
+        return httpx.Response(200, json={"state": "finished"})
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(backend_handler)) as backend,
+        httpx.AsyncClient(transport=httpx.MockTransport(model_handler)) as model,
+    ):
+        await process_one(
+            backend,
+            model,
+            "https://computor.example",
+            "http://10.77.0.20:8080",
+            "a" * 32,
+            "b" * 32,
+            {"id": "00000000-0000-0000-0000-000000000002", "lease": "7", "request": REQUEST},
+        )
+    assert len(results) == 1
+    return results[0]
+
+
+def _choice(finish_reason, content, reasoning=None):
+    message = {"role": "assistant", "content": content}
+    if reasoning is not None:
+        message["reasoning_content"] = reasoning
+    return {"choices": [{"message": message, "finish_reason": finish_reason}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_json", "expected"),
+    [
+        # issues#465: budget exhausted while reasoning, reasoning returned as content.
+        (_choice("length", REASONING), FALLBACK_ANSWER),
+        # Budget exhausted after reasoning: the answer is cut off mid-sentence.
+        (_choice("length", "Use `color=` and then", REASONING), FALLBACK_ANSWER),
+        (_choice("stop", None, REASONING), FALLBACK_ANSWER),
+        (_choice("stop", "<think>" + REASONING), FALLBACK_ANSWER),
+        (_choice("stop", "<think>" + REASONING + "</think>"), FALLBACK_ANSWER),
+        (_choice(None, "Use `color=`."), FALLBACK_ANSWER),
+        (_choice("stop", "Use `color=`.", REASONING), "Use `color=`."),
+        (_choice("stop", "<think>" + REASONING + "</think>\n\nUse `color=`."), "Use `color=`."),
+        (_choice("stop", REASONING + "</think>\nUse `color=`."), "Use `color=`."),
+        (_choice("stop", "x" * 8193), FALLBACK_ANSWER),
+    ],
+)
+async def test_only_final_answer_reaches_students(model_json, expected):
+    result = await _completion_for(model_json)
+    assert result == {"lease": "7", "state": "done", "answer": expected}
+    assert "Need analyze" not in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_model_response_is_a_generic_failure():
+    result = await _completion_for({"choices": []})
+    assert result == {"lease": "7", "state": "failed", "answer": ""}
