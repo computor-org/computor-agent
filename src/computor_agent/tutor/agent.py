@@ -291,10 +291,19 @@ class TutorAgent:
                 else:
                     message_data["submission_group_id"] = submission_group_id
 
-                logger.info(f"Creating message with data: {message_data}")
+                logger.info(
+                    f"Creating message: parent_id={message_data.get('parent_id')} "
+                    f"submission_group_id={message_data.get('submission_group_id')} "
+                    f"title={message_data['title']!r} "
+                    f"content_length={len(message_data['content'])}"
+                )
                 created_message = await self.client.messages.create(data=message_data)
                 message_sent = True
                 response_message_id = created_message.id
+                logger.info(
+                    f"Created message id={response_message_id} "
+                    f"in {(time.perf_counter() - start_time) * 1000:.0f} ms"
+                )
             elif send_response:
                 logger.warning(
                     f"LLM returned empty response for message {message.get('id')} "
@@ -316,10 +325,19 @@ class TutorAgent:
                 else:
                     message_data["submission_group_id"] = submission_group_id
 
-                logger.info(f"Creating fallback message with data: {message_data}")
+                logger.info(
+                    f"Creating fallback message: parent_id={message_data.get('parent_id')} "
+                    f"submission_group_id={message_data.get('submission_group_id')} "
+                    f"title={message_data['title']!r} "
+                    f"content_length={len(message_data['content'])}"
+                )
                 created_message = await self.client.messages.create(data=message_data)
                 message_sent = True
                 response_message_id = created_message.id
+                logger.info(
+                    f"Created message id={response_message_id} "
+                    f"in {(time.perf_counter() - start_time) * 1000:.0f} ms"
+                )
 
             # Mark the original message as read after sending a response
             message_id = message.get("id")

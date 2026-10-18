@@ -549,6 +549,15 @@ def tutor():
     help="[Dev mode] Process a single message and exit (no interactive loop).",
 )
 @click.option(
+    "--log-llm-content",
+    is_flag=True,
+    envvar="COMPUTOR_LOG_LLM_CONTENT",
+    help=(
+        "Dump LLM prompts and replies (student input, code, tutor answers) at "
+        "DEBUG level. Off by default; --verbose alone never logs content."
+    ),
+)
+@click.option(
     "--api-port",
     type=int,
     default=None,
@@ -592,6 +601,7 @@ def messaging(
     api_host: str,
     llm_probe_interval: float,
     workers: Optional[int],
+    log_llm_content: bool,
 ):
     """
     Start the messaging tutor agent.
@@ -613,6 +623,9 @@ def messaging(
         computor-agent tutor messaging -v -l tutor.log
     """
     setup_logging(verbose, log_file=log_file)
+    from computor_agent.llm.content_logging import set_log_llm_content
+
+    set_log_llm_content(log_llm_content)
     logger = logging.getLogger(__name__)
 
     if log_file:
