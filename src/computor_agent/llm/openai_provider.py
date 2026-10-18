@@ -20,6 +20,7 @@ import httpx
 
 from computor_agent.llm.base import LLMProvider, LLMResponse, StreamChunk
 from computor_agent.llm.config import LLMConfig, Message
+from computor_agent.llm.content_logging import log_llm_content_enabled
 from computor_agent.llm.exceptions import (
     LLMAuthenticationError,
     LLMConnectionError,
@@ -216,7 +217,10 @@ class OpenAIProvider(LLMProvider):
         }
 
         logger.debug(f"Sending completion request to {self.config.base_url}/chat/completions")
-        logger.debug(f"LLM Request messages:\n{json.dumps(_sanitize_messages_for_log(messages), indent=2)}")
+        if log_llm_content_enabled():
+            logger.debug(f"LLM Request messages:\n{json.dumps(_sanitize_messages_for_log(messages), indent=2)}")
+        else:
+            logger.debug(f"LLM request: {len(messages)} messages")
 
         last_error: Exception | None = None
         for attempt in range(self.config.max_retries + 1):
@@ -241,7 +245,10 @@ class OpenAIProvider(LLMProvider):
                 choice = choices[0]
                 content = choice.get("message", {}).get("content", "")
 
-                logger.debug(f"LLM Response:\n{content}")
+                if log_llm_content_enabled():
+                    logger.debug(f"LLM Response:\n{content}")
+                else:
+                    logger.debug(f"LLM response: {len(content or '')} chars")
 
                 return LLMResponse(
                     content=content,
@@ -361,7 +368,10 @@ class OpenAIProvider(LLMProvider):
         }
 
         logger.debug(f"Sending streaming request to {self.config.base_url}/chat/completions")
-        logger.debug(f"LLM Request messages:\n{json.dumps(_sanitize_messages_for_log(messages), indent=2)}")
+        if log_llm_content_enabled():
+            logger.debug(f"LLM Request messages:\n{json.dumps(_sanitize_messages_for_log(messages), indent=2)}")
+        else:
+            logger.debug(f"LLM request: {len(messages)} messages")
 
         try:
             async with client.stream(
@@ -390,7 +400,9 @@ class OpenAIProvider(LLMProvider):
                     try:
                         data = json.loads(line)
                     except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse SSE line: {line}")
+                        logger.warning(f"Failed to parse SSE line ({len(line)} chars)")
+                        if log_llm_content_enabled():
+                            logger.debug(f"Unparsable SSE line: {line}")
                         continue
 
                     # Extract content from the chunk
