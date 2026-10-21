@@ -442,4 +442,4 @@ pytest --cov=computor_agent
 
 ## License
 
-MIT
+Code: MIT (see [LICENSE](LICENSE)). Documentation (`docs/` and Markdown guides): CC BY 4.0 (see [LICENSE-DOCS](LICENSE-DOCS)).
