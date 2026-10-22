@@ -7,7 +7,7 @@ backend:
   timeout: 30
 llm:
   provider: openai
-  model: itpcp/local
+  model: luna-public
   base_url: http://10.77.0.20:8090/v1
   api_key: set-by-environment
 scheduler:
