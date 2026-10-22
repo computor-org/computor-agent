@@ -29,7 +29,7 @@ cd "$runtime"
     /usr/bin/sandbox-exec -D "PYTHON_EXECUTABLE=$python_executable" -D "LOG_DIR=$logs" \
     -f "$runtime/tutor.sb" \
     "$python_executable" -I -B -m computor_agent.cli.main tutor messaging \
-    -c "$runtime/tutor.yaml" -l "$logs/tutor.log" --llm-probe-interval 60 \
+    -c "$runtime/tutor.yaml" -l "$logs/tutor.log" --llm-probe-interval 0 \
     >/dev/null &
 tutor_pid=$!
 trap 'kill "$tutor_pid" 2>/dev/null || true; wait "$tutor_pid" 2>/dev/null || true' EXIT

@@ -11,6 +11,8 @@ isolation:
 - a native sandbox that denies listeners, child processes and file writes
   except the log directory `/var/log/computor-lena-tutor` (0700);
 - no tools or code execution, no HTTP dashboard, `--log-llm-content` off;
+  the periodic LLM probe is off too (`--llm-probe-interval 0`): it only feeds
+  the dashboard and calls `GET /models`, which `public_luna` refuses;
   the log holds ids, sizes and timings, not message text;
 - `tutor.yaml` turns off AI notes, student notes, staff comments in the
   prompt, reference comparison and figure review.
@@ -38,7 +40,12 @@ bash ops/lena-tutor/macos/install.sh /private/backend.token /private/llm.key
 ```
 
 Each file holds one secret on its first line: the Computor API token and the
-Slopgate `computor` class key. The installer writes them to the root-only
+Slopgate `public_luna` key, the one the public Lena worker uses. computor.at
+runs on that class rather than on `computor`, so its learners do not queue
+behind the TU tutors; Slopgate admits the tutor's request shape on it with
+tutor-sized limits (131,072 context, 8192 output, inline images) next to the
+Ask Lena form (sloppy-org/slopgate e26722d2, slopcode-infra 5fd6325), always
+for the `luna-public` model. The installer writes them to the root-only
 `/Library/Computor/LenaTutor/tutor.env`; remove the input files afterwards.
 Before the first start, load the anchor and run the public worker's
 `probe.py` (installed next to the tutor) as `_computor_lena` in `tutor.sb`;
