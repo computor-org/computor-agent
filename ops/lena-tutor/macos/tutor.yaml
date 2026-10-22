@@ -1,0 +1,31 @@
+# Course-message tutor for computor.at. Credentials are not in this file:
+# run.sh passes COMPUTOR_BACKEND_API_TOKEN and COMPUTOR_LLM_API_KEY from the
+# root-only tutor.env. Endpoints must match the PF rules written by install.sh.
+backend:
+  url: https://computor.at/api
+  api_token: set-by-environment
+  timeout: 30
+llm:
+  provider: openai
+  model: itpcp/local
+  base_url: http://10.77.0.20:8090/v1
+  api_key: set-by-environment
+scheduler:
+  max_concurrent_processing: 2
+  poll_interval_seconds: 60
+  cooldown_seconds: 5
+tutor:
+  personality:
+    name: Lena
+    tone: friendly_professional
+    language: de
+  context:
+    # Staff comments about a learner stay out of the prompt.
+    include_course_member_comments: false
+    student_notes_enabled: false
+    include_reference_comparison: false
+    include_artifact_content: false
+  notes:
+    enabled: false
+  figure_review:
+    enabled: false
