@@ -113,7 +113,7 @@ class ContextBuilder:
 
     async def build_for_message(
         self,
-        submission_group_id: str,
+        submission_group_id: Optional[str],
         message: dict,
         repository_path: Optional[Path] = None,
         reference_path: Optional[Path] = None,
@@ -146,6 +146,22 @@ class ContextBuilder:
             is_from_student=message.get("is_from_student", True),
             thread_root_id=message.get("thread_root_id"),
         )
+
+        if submission_group_id is None:
+            # Course conversations have no assignment or submission to inspect.
+            # Read only this authorized thread, never other learners' messages.
+            previous = await self._get_thread_messages(
+                trigger_message.thread_root_id or trigger_message.id
+            )
+            return ConversationContext(
+                trigger_type=TriggerType.MESSAGE,
+                submission_group_id=None,
+                trigger_message=trigger_message,
+                student=StudentInfo(user_ids=[trigger_message.author_id]),
+                previous_messages=take_recent_messages(
+                    previous, self.config.include_previous_messages
+                ),
+            )
 
         return await self._build_context(
             submission_group_id=submission_group_id,

@@ -161,7 +161,7 @@ class TutorAgent:
 
     async def process_message(
         self,
-        submission_group_id: str,
+        submission_group_id: Optional[str],
         message: dict,
         repository_path: Optional[Path] = None,
         reference_path: Optional[Path] = None,

@@ -9,6 +9,7 @@ receive every message the agent has read access to, across every scope.
 import asyncio
 import logging
 import random
+import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -357,8 +358,9 @@ class WebSocketScheduler:
         """
         Phase 1: list unread messages and classify them into trigger entries.
 
-        Returns a list of (msg, submission_group_id, root_message_id_or_None)
-        tuples. On error returns [] so the scheduler keeps running.
+        Returns (msg, submission_group_id, root_message_id_or_None) tuples.
+        Direct course replies append False to distinguish them from implicit
+        follow-ups while retaining their root. On error returns [].
         """
         agent_id = self.trigger_config.agent_user_id
 
@@ -381,20 +383,26 @@ class WebSocketScheduler:
             # Each entry: (msg, submission_group_id, root_message_id_or_None).
             # For direct triggers root_id stays None — _process_message uses the
             # message_id itself as root in that case.
-            # Messages without a resolvable submission_group_id are dropped
-            # silently here so they don't show up in "Found N" and spam
-            # skip-logs each poll.
-            dropped_no_sg = 0
             for m in (tagged_messages or []):
                 if agent_id and str(getattr(m, "author_id", "")) == str(agent_id):
                     continue
                 if getattr(m, "is_deleted", False):
                     continue
                 sg = getattr(m, "submission_group_id", None)
-                if not sg:
-                    dropped_no_sg += 1
-                    continue
-                trigger_entries.append((m, sg, None))
+                if sg is None and getattr(m, "parent_id", None):
+                    # Auto-routing also mentions us in replies. Resolve their
+                    # actual root so direct replies share a lock and history.
+                    try:
+                        thread = await self.client.messages.get_thread(m.id)
+                    except ComputorClientError as e:
+                        logger.warning(
+                            "Cannot resolve course reply thread %s: %s",
+                            m.id, type(e).__name__,
+                        )
+                        continue
+                    trigger_entries.append((m, sg, thread.root_message_id, False))
+                else:
+                    trigger_entries.append((m, sg, None))
 
             # Ids of the direct @mention triggers, to skip them in the
             # follow-up (all_unread) pass below.
@@ -436,6 +444,10 @@ class WebSocketScheduler:
                     reject_counts["own-message"] = reject_counts.get("own-message", 0) + 1
                     to_ack.append(msg_id)
                     continue
+                if re.search(r"@\[[^\]]*\]\([^)]+\)", getattr(msg, "content", "") or ""):
+                    # Explicit recipients take precedence over thread follow-ups.
+                    to_ack.append(msg_id)
+                    continue
                 if not parent_id:
                     # Parentless untagged messages are never follow-ups;
                     # remember so we don't re-evaluate them on every poll,
@@ -455,7 +467,7 @@ class WebSocketScheduler:
                         continue
                     sg = getattr(msg, "submission_group_id", None) or cached.get("sg")
                     root_id = cached.get("root_id")
-                    if sg and root_id:
+                    if root_id:
                         accepted_ids.append(msg_id)
                         trigger_entries.append((msg, sg, root_id))
                         continue
@@ -501,9 +513,6 @@ class WebSocketScheduler:
                         if msg_sg:
                             sg = msg_sg
                             break
-                if not sg:
-                    reject_counts["no-sg-in-thread"] = reject_counts.get("no-sg-in-thread", 0) + 1
-                    continue
 
                 accepted_ids.append(msg_id)
                 trigger_entries.append((msg, sg, root_id))
@@ -528,7 +537,6 @@ class WebSocketScheduler:
             log_parts = [
                 f"tagged={len(tagged_messages or [])}",
                 f"all_unread={len(all_unread or [])}",
-                f"dropped_no_sg={dropped_no_sg}",
                 f"cache_hits={cache_hits}",
                 f"acked={acked}",
                 f"triggers={len(trigger_entries)}",
@@ -568,15 +576,23 @@ class WebSocketScheduler:
         """
         processed_count = 0
 
-        for msg, submission_group_id, thread_root_id in trigger_entries:
+        for entry in trigger_entries:
+            msg, submission_group_id, thread_root_id = entry[:3]
             message_id = getattr(msg, "id", "")
+            state_key = submission_group_id or (
+                f"course:{course_id}:thread:{thread_root_id or message_id}"
+            )
             try:
                 # Classification already happened in _classify_unread_for_course:
                 # direct @mention triggers carry root_id=None, follow-ups carry
                 # the thread root id.
-                is_follow_up = thread_root_id is not None
+                # A course reply may directly mention us while retaining the
+                # original root for locking and context. It is still direct.
+                is_follow_up = (
+                    entry[3] if len(entry) == 4 else thread_root_id is not None
+                )
 
-                state = self._get_or_create_state(submission_group_id)
+                state = self._get_or_create_state(state_key)
 
                 if state.last_message_id == message_id:
                     logger.info(
@@ -587,7 +603,7 @@ class WebSocketScheduler:
                     continue
 
                 # Skip if already being processed or in cooldown
-                lock = self._get_or_create_lock(submission_group_id)
+                lock = self._get_or_create_lock(state_key)
                 if lock.locked():
                     logger.info(
                         f"Skipping message {message_id}: submission_group "
@@ -596,7 +612,7 @@ class WebSocketScheduler:
                     self._metrics.message_skipped(course_id)
                     continue
 
-                if self._should_skip(submission_group_id):
+                if self._should_skip(state_key):
                     logger.info(
                         f"Skipping message {message_id}: submission_group "
                         f"{submission_group_id} in cooldown"
@@ -620,9 +636,16 @@ class WebSocketScheduler:
                     "submission_group_id": submission_group_id,
                 }
 
-                typing_channel = f"submission_group:{submission_group_id}"
+                course_member_id = getattr(msg, "course_member_id", None)
+                typing_channel = (
+                    f"submission_group:{submission_group_id}"
+                    if submission_group_id else (
+                        f"course_member:{course_member_id}"
+                        if course_member_id else f"course:{course_id}"
+                    )
+                )
 
-                # Subscribe to submission_group channel for typing indicators
+                # Typing and read receipts stay on the conversation target channel.
                 if typing_channel not in self._subscribed_channels:
                     await self._ws.subscribe([typing_channel])
                     self._subscribed_channels.add(typing_channel)
@@ -676,7 +699,7 @@ class WebSocketScheduler:
                 # Same reasoning as the inner handler: back this message off so a
                 # deterministic failure here cannot spin on every scan either.
                 self._record_failure(
-                    message_id, self._states.get(submission_group_id), e
+                    message_id, self._states.get(state_key), e
                 )
 
         return processed_count
@@ -901,7 +924,7 @@ class WebSocketScheduler:
 
     async def _process_message(
         self,
-        submission_group_id: str,
+        submission_group_id: Optional[str],
         message_data: dict,
         channel: str,
         is_follow_up: bool = False,
@@ -926,7 +949,7 @@ class WebSocketScheduler:
         from computor_agent.tutor.trigger import MessageTrigger, TriggerCheckResult
 
         message_id = message_data.get("id", "")
-        root_id = thread_root_id if is_follow_up else message_id
+        root_id = thread_root_id or message_id
 
         trigger = MessageTrigger(
             message_id=message_id,
