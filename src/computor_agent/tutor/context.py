@@ -130,7 +130,7 @@ class ConversationContext:
     trigger_type: TriggerType
     """What triggered this context (message or submission)."""
 
-    submission_group_id: str
+    submission_group_id: Optional[str]
     """The submission group being processed."""
 
     # Trigger details

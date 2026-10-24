@@ -7,7 +7,10 @@ The Tutor AI Agent responds to student questions and grades submissions using an
 ### Messaging Agent
 
 Responds when a student **@mentions the agent** in a course message, and to
-follow-up replies in a thread the agent is already part of.
+follow-up replies in a thread the agent is already part of. Course-wide
+conversations use their own thread as context, while exercise conversations
+also include the permitted assignment and submission context. Explicit
+mentions of other recipients take precedence over automatic follow-ups.
 
 ```bash
 # Production mode
