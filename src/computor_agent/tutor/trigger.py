@@ -40,7 +40,7 @@ class MessageTrigger:
     """Information about a message that triggers the tutor."""
 
     message_id: str
-    submission_group_id: str
+    submission_group_id: Optional[str]
     author_id: str
     author_course_member_id: str
     author_role: str
