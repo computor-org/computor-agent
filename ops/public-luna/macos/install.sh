@@ -3,6 +3,9 @@
 set -euo pipefail
 test "$(uname -s)" = Darwin
 test "$(id -u)" = 0
+# The venv must stay readable by the service account whatever umask the
+# calling shell has.
+umask 022
 if launchctl print system/com.computor.public-luna >/dev/null 2>&1; then
     echo 'Stop com.computor.public-luna before changing its code or credentials.' >&2
     exit 1
