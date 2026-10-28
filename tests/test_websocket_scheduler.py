@@ -110,3 +110,43 @@ async def test_process_trigger_entries_isolates_failures():
     assert count == 1
     assert [entry[2] for entry in triggers] == ["submission_group:sg-good"]
     assert ws.marked_read == [("submission_group:sg-good", "msg-good")]
+
+
+class FakeMessages:
+    """Backend view in the window after a message commits and before its
+    mention rows do: the unread list has it, the mentions_me list does not."""
+
+    def __init__(self, unread):
+        self.unread = unread
+        self.read: list[str] = []
+
+    async def list(self, course_id, unread=False, mentions_me=False, limit=100):
+        return [] if mentions_me else self.unread
+
+    async def reads(self, id):
+        self.read.append(id)
+
+
+class FakeClient:
+    def __init__(self, unread):
+        self.messages = FakeMessages(unread)
+
+
+async def test_unread_scan_keeps_a_mention_of_the_agent_that_is_not_tagged_yet():
+    from computor_agent.tutor.config import TriggerConfig
+
+    question = FakeMessage(id="msg-q", content="@[Lena](AGENT-1) Wie runde ich?")
+    question.parent_id = None
+    other = FakeMessage(id="msg-o", content="@[Ada Admin](user-9) Frage")
+    other.parent_id = None
+    client = FakeClient([question, other])
+    scheduler = WebSocketScheduler(
+        client=client,
+        ws=FakeWS(),
+        trigger_config=TriggerConfig(agent_user_id="agent-1"),
+        cooldown_seconds=0,
+    )
+
+    await scheduler._classify_unread_for_course("course-1")
+
+    assert client.messages.read == ["msg-o"]

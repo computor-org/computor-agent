@@ -444,7 +444,16 @@ class WebSocketScheduler:
                     reject_counts["own-message"] = reject_counts.get("own-message", 0) + 1
                     to_ack.append(msg_id)
                     continue
-                if re.search(r"@\[[^\]]*\]\([^)]+\)", getattr(msg, "content", "") or ""):
+                content = getattr(msg, "content", "") or ""
+                # The backend can list a message before its mention rows exist,
+                # so the tagged query above misses it. Acking it here would
+                # drop the question for good; leave it for the next scan.
+                if agent_id and re.search(
+                    r"@\[[^\]]*\]\(" + re.escape(str(agent_id)) + r"\)", content, re.IGNORECASE
+                ):
+                    reject_counts["mention-pending"] = reject_counts.get("mention-pending", 0) + 1
+                    continue
+                if re.search(r"@\[[^\]]*\]\([^)]+\)", content):
                     # Explicit recipients take precedence over thread follow-ups.
                     to_ack.append(msg_id)
                     continue
