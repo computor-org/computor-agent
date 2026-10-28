@@ -6,6 +6,9 @@
 set -euo pipefail
 test "$(uname -s)" = Darwin
 test "$(id -u)" = 0
+# The venv must stay readable by the service account whatever umask the
+# calling shell has.
+umask 022
 label=com.computor.lena-tutor
 if launchctl print "system/$label" >/dev/null 2>&1; then
     echo "Stop $label before changing its code or credentials." >&2
