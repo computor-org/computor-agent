@@ -12,6 +12,7 @@ Three separate ways an override silently did nothing:
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,6 +106,54 @@ class TestGradingPromptOverride:
         )
 
         assert grader.use_multi_step is True
+
+
+class TestReplyLanguage:
+    """The tutor answers in the language the student wrote in, not the configured one.
+
+    A German question in an English-configured course came back in English, and a
+    German thread got an English refusal, because the prompt said `Language: de`
+    and quoted the refusal sentence verbatim in English (issues#249).
+    """
+
+    def _prompt(self, tmp_path: Path, language: str) -> str:
+        from computor_agent.tutor.agent import TutorAgent
+        from computor_agent.tutor.config import TutorConfig
+        from computor_agent.tutor.context import ConversationContext, TriggerType
+
+        loader_module._prompt_loader = PromptLoader(
+            prompts_dir=tmp_path, enable_hot_reload=False
+        )
+        agent = TutorAgent(
+            config=TutorConfig(personality={"language": language}),
+            llm=object(),
+            client=SimpleNamespace(),
+        )
+        context = ConversationContext(
+            trigger_type=TriggerType.MESSAGE, submission_group_id="sg-1"
+        )
+        return agent._build_system_prompt(context)
+
+    def test_reply_language_follows_the_latest_student_message(self, tmp_path):
+        prompt = self._prompt(tmp_path, "en")
+
+        assert (
+            "reply in the language the student wrote their most recent message in"
+            in prompt
+        )
+
+    def test_the_configured_language_is_only_the_fallback(self, tmp_path):
+        prompt = self._prompt(tmp_path, "de")
+
+        assert "fall back to de" in prompt
+        assert "\nLanguage: de" not in prompt, (
+            "the configured language must not stand alone as the reply language"
+        )
+
+    def test_the_solution_refusal_is_not_a_quoted_english_sentence(self, tmp_path):
+        prompt = self._prompt(tmp_path, "de")
+
+        assert "I can't provide the complete solution" not in prompt
 
 
 def test_dev_mode_bootstraps_the_tutor_prompt(tmp_path):
