@@ -46,6 +46,14 @@ tutor:
     # max_image_bytes: 5242880
     # image_extensions: [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
 
+  # Write unit description drafts a lecturer asks for (needs a backend that
+  # offers /course-contents/description-drafts; older backends are skipped)
+  unit_descriptions:
+    enabled: true
+    # poll_interval_seconds: 3
+    # max_response_tokens: 2048
+    # temperature: 0.3
+
 # Scheduler settings (top-level, optional)
 scheduler:
   # Worker count: how many messages are processed concurrently (1-50).

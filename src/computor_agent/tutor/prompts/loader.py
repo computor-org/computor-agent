@@ -85,6 +85,7 @@ class PromptLoader:
         self._strategy_prompts: Dict[str, str] = {}
         self._security_prompts: Dict[str, str] = {}
         self._figure_review_prompts: Dict[str, str] = {}
+        self._unit_description_prompts: Dict[str, str] = {}
 
         # File watcher
         self._observer: Optional[Observer] = None
@@ -144,6 +145,12 @@ class PromptLoader:
             for file_path in figure_review_dir.glob("*.md"):
                 self._load_figure_review_prompt(file_path)
 
+        # Load unit description prompts
+        unit_description_dir = self.prompts_dir / "unit_description"
+        if unit_description_dir.exists():
+            for file_path in unit_description_dir.glob("*.md"):
+                self._load_unit_description_prompt(file_path)
+
         logger.info(f"Loaded {len(self._personality_prompts)} personality prompts")
         logger.info(f"Loaded {len(self._strategy_prompts)} strategy prompts")
         logger.info(f"Loaded {len(self._security_prompts)} security prompts")
@@ -162,6 +169,8 @@ class PromptLoader:
             self._load_security_prompt(file_path)
         elif category == "figure_review":
             self._load_figure_review_prompt(file_path)
+        elif category == "unit_description":
+            self._load_unit_description_prompt(file_path)
         else:
             logger.warning(f"Unknown prompt category: {category}")
 
@@ -208,6 +217,17 @@ class PromptLoader:
         if content:
             self._figure_review_prompts[key] = content
             logger.debug(f"Loaded figure review prompt: {key}")
+
+    def _load_unit_description_prompt(self, file_path: Path) -> None:
+        """Load a unit description prompt file."""
+        if not file_path.exists():
+            return
+
+        key = file_path.stem
+        content = self._read_prompt_file(file_path)
+        if content:
+            self._unit_description_prompts[key] = content
+            logger.debug(f"Loaded unit description prompt: {key}")
 
     def _read_prompt_file(self, file_path: Path) -> Optional[str]:
         """
@@ -264,6 +284,10 @@ class PromptLoader:
     def get_figure_review_prompt(self, name: str = "review") -> Optional[str]:
         """Get a figure review prompt."""
         return self._figure_review_prompts.get(name)
+
+    def get_unit_description_prompt(self, name: str = "unit_description") -> Optional[str]:
+        """Get a unit description prompt by name (file stem)."""
+        return self._unit_description_prompts.get(name)
 
     def get_all_personality_prompts(self) -> Dict[str, str]:
         """Get all personality prompts."""
@@ -369,6 +393,22 @@ def get_figure_review_prompt(name: str = "review") -> str:
         prompt = FIGURE_REVIEW_SYSTEM_PROMPT
 
     return prompt
+
+
+def get_unit_description_prompt() -> str:
+    """The system prompt for unit description drafts.
+
+    Override it with ``unit_description/unit_description.md`` in the prompts
+    directory; without one the built-in ``UNIT_DESCRIPTION_PROMPT`` is used.
+    """
+    from computor_agent.tutor.prompts.templates import UNIT_DESCRIPTION_PROMPT
+
+    try:
+        prompt = get_prompt_loader().get_unit_description_prompt()
+    except Exception as e:  # pragma: no cover - loader construction failure
+        logger.debug(f"Prompt loader unavailable, using built-in unit description prompt: {e}")
+        return UNIT_DESCRIPTION_PROMPT
+    return prompt or UNIT_DESCRIPTION_PROMPT
 
 
 def get_tutor_prompt() -> str:

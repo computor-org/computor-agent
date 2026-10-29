@@ -122,7 +122,7 @@ class AgentRuntime:
             # and /health start showing live numbers.
             self.scheduler_stats.target = scheduler
 
-            await self._run_until_shutdown(scheduler)
+            await self._run_until_shutdown(scheduler, client)
 
         await tutor_llm.close()
         if self.figure_reviewer:
@@ -430,7 +430,18 @@ class AgentRuntime:
         logger.info("Using WebSocket for real-time events")
         return scheduler
 
-    async def _run_until_shutdown(self, scheduler) -> None:
+    def _start_unit_descriptions(self, client, stop: asyncio.Event):
+        """Start the unit description draft worker, if enabled."""
+        if not self.tutor_config.unit_descriptions.enabled or self.options.dry_run:
+            return None
+        from computor_agent.tutor.unit_descriptions import UnitDescriptionWorker
+
+        worker = UnitDescriptionWorker(
+            client, self.llm_provider, self.tutor_config.unit_descriptions
+        )
+        return asyncio.create_task(worker.run(stop))
+
+    async def _run_until_shutdown(self, scheduler, client=None) -> None:
         """Run scheduler + LLM probe + dashboard until a signal or failure."""
         shutdown_event = asyncio.Event()
 
@@ -445,6 +456,12 @@ class AgentRuntime:
         # Start scheduler in background task
         scheduler_task = asyncio.create_task(
             self._run_scheduler(scheduler, shutdown_event)
+        )
+
+        # Unit description drafts for lecturers; stops with the scheduler.
+        drafts_stop = asyncio.Event()
+        drafts_task = (
+            self._start_unit_descriptions(client, drafts_stop) if client is not None else None
         )
 
         # Periodic LLM liveness probe. Off when interval == 0.
@@ -471,6 +488,13 @@ class AgentRuntime:
             wait_tasks,
             return_when=asyncio.FIRST_COMPLETED,
         )
+
+        if drafts_task is not None:
+            drafts_stop.set()
+            try:
+                await asyncio.wait_for(drafts_task, timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                drafts_task.cancel()
 
         # Stop the LLM probe first; it may be mid-request and we want to
         # avoid trailing log lines after "stopped".

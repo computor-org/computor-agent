@@ -149,8 +149,10 @@ prompts/
 ├── security/              # Security prompts
 │   ├── detection.md
 │   └── confirmation.md
-└── figure_review/
-    └── review.md
+├── figure_review/
+│   └── review.md
+└── unit_description/
+    └── unit_description.md   # drafts of unit descriptions for lecturers
 ```
 
 **Which file actually runs?**
@@ -269,6 +271,38 @@ Notes:
 - **Security note:** text rendered inside student images is untrusted; the
   review prompt instructs the model to ignore embedded instructions, but
   review output is still LLM-generated from student-controlled input.
+
+---
+
+## Unit Description Drafts
+
+A lecturer can ask Lena for a draft description of a unit, written from the
+assignments in it (computor-org/issues#559). The extension and the web UI send
+the request to the backend, which queues a job with the unit's title and the
+student-visible text of each assignment (`content/index*.md`). No submissions,
+messages, grades or names are part of a job.
+
+The messaging agent claims these jobs alongside its normal work, as the tutor
+agent user: `POST /course-contents/description-drafts/worker/claim`. For each
+requested language it makes one call to the main `llm` with the prompt in
+`unit_description/unit_description.md` (built-in: `UNIT_DESCRIPTION_PROMPT`)
+and posts the drafts back. A draft longer than the backend's 4096-character
+limit is asked for again once, shorter; if it is still too long the job fails
+with `too_long` rather than being cut off. Nothing is written to the course:
+the lecturer reviews the draft and saves it.
+
+```yaml
+tutor:
+  unit_descriptions:
+    enabled: true            # default
+    poll_interval_seconds: 3
+    max_response_tokens: 2048
+    temperature: 0.3
+```
+
+The backend offers the feature only while a worker has claimed within the
+last 90 seconds, so lecturers do not see it when no agent is running. Against
+a backend without the routes, the worker checks again every ten minutes.
 
 ---
 
