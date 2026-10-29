@@ -42,6 +42,8 @@ class MessageInfo:
     is_from_student: bool = True
     created_at: Optional[datetime] = None
     thread_root_id: Optional[str] = None
+    reading_language: Optional[str] = None
+    """Language ('de'/'en') the author was reading when posting; None from older backends."""
 
 
 @dataclass

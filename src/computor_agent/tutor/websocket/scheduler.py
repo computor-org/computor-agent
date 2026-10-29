@@ -654,6 +654,8 @@ class WebSocketScheduler:
                     "title": getattr(msg, "title", "") or "",
                     "author_id": getattr(msg, "author_id", "") or "",
                     "submission_group_id": submission_group_id,
+                    # Absent on backends older than issues#556.
+                    "reading_language": getattr(msg, "reading_language", None),
                 }
 
                 course_member_id = getattr(msg, "course_member_id", None)
@@ -1022,6 +1024,7 @@ class WebSocketScheduler:
             root_message_id=root_id,
             parent_id=message_data.get("parent_id"),
             is_follow_up=is_follow_up,
+            reading_language=message_data.get("reading_language"),
         )
 
         reason = "Follow-up reply in agent conversation" if is_follow_up else "WebSocket message:new event mentioning the agent"
