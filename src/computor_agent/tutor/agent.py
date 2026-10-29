@@ -38,8 +38,9 @@ logger = logging.getLogger(__name__)
 
 
 # Sent when the LLM returns nothing at all. No model call is left to phrase it
-# in the student's language, so it follows the configured course language;
-# codes without a translation fall back to English.
+# in the student's language, so it follows the fallback language (the
+# learner's reading language, else the configured one); codes without a
+# translation fall back to English.
 EMPTY_RESPONSE_FALLBACK = {
     "en": (
         "I'm sorry, I wasn't able to generate a response right now. "
@@ -312,7 +313,7 @@ class TutorAgent:
                 # Send a fallback message so the student isn't left waiting
                 formatted_title = self._format_response_title(None)
                 parent_id = reply_to_message_id or message.get("id")
-                language = (self.config.personality.language or "en").lower()
+                language = (self._fallback_language(context) or "en").lower()
                 fallback_content = EMPTY_RESPONSE_FALLBACK.get(
                     language, EMPTY_RESPONSE_FALLBACK["en"]
                 )
@@ -386,6 +387,15 @@ class TutorAgent:
         """
         return ""
 
+    def _fallback_language(self, context: Optional[ConversationContext]) -> str:
+        """Language for replies whose message has no clear language of its own.
+
+        The learner's reading language when the backend recorded it with the
+        message (issues#556), else the configured one.
+        """
+        trigger = context.trigger_message if context else None
+        return (trigger and trigger.reading_language) or self.config.personality.language
+
     def _build_system_prompt(self, context: ConversationContext) -> str:
         """Build the unified system prompt with all available context."""
         # Personality
@@ -446,7 +456,7 @@ class TutorAgent:
 
         return template.format(
             personality_prompt=personality,
-            language=self.config.personality.language,
+            language=self._fallback_language(context),
             student_section=student_section,
             assignment_section=assignment_section,
             code_section=code_section,
@@ -501,7 +511,7 @@ class TutorAgent:
             context.figure_review = await self.figure_reviewer.review_all(
                 figures,
                 assignment_section=self._format_assignment_section(context),
-                language=self.config.personality.language,
+                language=self._fallback_language(context),
             )
         except Exception as e:
             # Defensive: the service itself degrades per figure and
