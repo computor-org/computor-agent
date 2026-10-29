@@ -198,6 +198,7 @@ class WebSocketScheduler:
             # carries every message we have read access to, across every
             # scope, so no per-course subscription is needed.
             await self._ws.connect()
+            self._adopt_ws_user_id()
             logger.info(
                 f"Listening on auto-subscribed user inbox "
                 f"(user:{self._ws.user_id})"
@@ -228,6 +229,7 @@ class WebSocketScheduler:
                 if reconnected:
                     # Start the event loop after successful reconnection
                     self._event_task = asyncio.create_task(self._event_loop())
+                    self._periodic_catchup_task = asyncio.create_task(self._periodic_catchup_loop())
                     logger.info("WebSocket scheduler started after reconnection")
                     try:
                         await self._event_task
@@ -313,6 +315,9 @@ class WebSocketScheduler:
 
         self._evict_stale_states()
 
+        # A start during a backend outage finds no courses; look again.
+        if not self._course_ids:
+            await self._discover_courses()
         if not self._course_ids:
             logger.debug("No courses to check for unread messages")
             return
@@ -820,6 +825,7 @@ class WebSocketScheduler:
                 # and typing channels re-subscribe lazily on next use.
                 self._subscribed_channels.clear()
                 self._consecutive_auth_failures = 0
+                self._adopt_ws_user_id()
                 logger.info(f"WebSocket reconnected after {attempt} attempt(s)")
 
                 # Process any unread messages that arrived while disconnected
@@ -834,6 +840,13 @@ class WebSocketScheduler:
                 # Continue loop to retry
 
         return False
+
+    def _adopt_ws_user_id(self) -> None:
+        """Take the agent's user id from the socket when the startup lookup failed."""
+        user_id = getattr(self._ws, "user_id", None)
+        if user_id and not self.trigger_config.agent_user_id:
+            self.trigger_config.agent_user_id = str(user_id)
+            logger.info(f"Agent backend user id taken from the WebSocket: {user_id}")
 
     async def _refresh_ws_token(self) -> None:
         """Refresh the WebSocket auth token before a reconnect attempt.

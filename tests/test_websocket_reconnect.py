@@ -208,3 +208,75 @@ async def test_event_loop_reconnects_on_receive_error():
     assert ws.connect_calls == 1  # one successful reconnect
     assert len(unread_calls) == 1
     assert receive_calls["count"] == 2
+
+
+class OutageTutors:
+    """Course discovery that fails while the backend is down, then works."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def list_courses(self):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("HTTP 503 Temporarily unavailable")
+        return [type("Course", (), {"id": "course-1"})()]
+
+
+class NoUnread:
+    async def list(self, course_id, unread=False, mentions_me=False, limit=100):
+        return []
+
+
+class OutageClient:
+    def __init__(self):
+        self.tutors = OutageTutors()
+        self.messages = NoUnread()
+
+
+class ListeningWS(FakeWS):
+    async def receive(self):
+        while True:
+            await asyncio.sleep(3600)
+            yield None
+
+
+async def test_catch_up_rediscovers_courses_after_a_start_during_an_outage():
+    """Regression: a tutor started while the backend answered 503 kept an
+    empty course list for good, so after reconnecting it never saw a question."""
+    scheduler = WebSocketScheduler(client=OutageClient(), ws=FakeWS())
+
+    await scheduler._discover_courses()
+    assert scheduler._course_ids == []
+
+    await scheduler._process_unread_messages()
+
+    assert scheduler._course_ids == ["course-1"]
+
+
+async def test_reconnect_takes_the_agent_user_id_from_the_socket():
+    from computor_agent.tutor.config import TriggerConfig
+
+    scheduler, _ = make_scheduler(FakeWS(fail_connects=1), trigger_config=TriggerConfig())
+
+    assert await asyncio.wait_for(scheduler._reconnect(), timeout=5.0)
+
+    assert scheduler.trigger_config.agent_user_id == "agent-1"
+
+
+async def test_start_after_a_failed_first_connect_runs_the_periodic_catch_up():
+    scheduler = WebSocketScheduler(
+        client=OutageClient(), ws=ListeningWS(fail_connects=1), reconnect_delay_seconds=0.001
+    )
+    runner = asyncio.create_task(scheduler.start())
+    try:
+        for _ in range(200):
+            if scheduler._periodic_catchup_task is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert scheduler._periodic_catchup_task is not None
+        assert scheduler._course_ids == ["course-1"]
+    finally:
+        await scheduler.stop()
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
