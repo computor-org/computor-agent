@@ -166,6 +166,48 @@ class ContextConfig(BaseModel):
     )
 
 
+class UnitDescriptionConfig(BaseModel):
+    """
+    Configuration for drafting unit descriptions for lecturers.
+
+    A lecturer asks for a draft in the extension or the web UI; the backend
+    queues a job with the unit's assignment texts and the agent claims it,
+    writes one markdown draft per language and returns it. Nothing reaches
+    students: the lecturer reviews and saves the draft themselves.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = Field(
+        default=True,
+        description="Claim and write unit description drafts",
+    )
+    poll_interval_seconds: float = Field(
+        default=3.0,
+        ge=1.0,
+        le=60.0,
+        description="Seconds between claims while the queue is empty",
+    )
+    max_response_tokens: int = Field(
+        default=2048,
+        ge=256,
+        description="Maximum tokens per draft",
+    )
+    temperature: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=2.0,
+        description="LLM temperature for drafts",
+    )
+    job_timeout_seconds: float = Field(
+        default=540.0,
+        ge=30.0,
+        le=570.0,
+        description="Time limit for one job, all languages and retries; "
+        "must end before the backend's 600 s lease",
+    )
+
+
 class FigureReviewConfig(BaseModel):
     """
     Configuration for vision-LLM review of figures in submissions.
@@ -507,6 +549,10 @@ class TutorConfig(BaseModel):
     figure_review: FigureReviewConfig = Field(
         default_factory=FigureReviewConfig,
         description="Vision-LLM figure review settings",
+    )
+    unit_descriptions: UnitDescriptionConfig = Field(
+        default_factory=UnitDescriptionConfig,
+        description="Unit description drafts for lecturers",
     )
 
     @classmethod

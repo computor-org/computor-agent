@@ -404,6 +404,7 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
         SECURITY_DETECTION_PROMPT,
         SECURITY_CONFIRMATION_PROMPT,
         TUTOR_SYSTEM_PROMPT,
+        UNIT_DESCRIPTION_PROMPT,
     )
 
     # Create directory structure
@@ -411,8 +412,9 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
     strategy_dir = prompts_dir / "strategy"
     security_dir = prompts_dir / "security"
     figure_review_dir = prompts_dir / "figure_review"
+    unit_description_dir = prompts_dir / "unit_description"
 
-    for dir_path in [personality_dir, strategy_dir, security_dir, figure_review_dir]:
+    for dir_path in [personality_dir, strategy_dir, security_dir, figure_review_dir, unit_description_dir]:
         dir_path.mkdir(parents=True, exist_ok=True)
 
     initialized_count = 0
@@ -467,6 +469,17 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
         )
         initialized_count += 1
         logger.debug(f"Created prompt file: {figure_review_path}")
+
+    # Check and create unit description prompt
+    unit_description_path = unit_description_dir / "unit_description.md"
+    if not unit_description_path.exists():
+        _write_prompt_file(
+            unit_description_path,
+            UNIT_DESCRIPTION_PROMPT,
+            "Unit Description: unit_description",
+        )
+        initialized_count += 1
+        logger.debug(f"Created prompt file: {unit_description_path}")
 
     # Copy documentation files
     import shutil

@@ -14,6 +14,7 @@ from computor_agent.tutor.prompts.templates import (
     STRATEGY_PROMPTS,
     SECURITY_DETECTION_PROMPT,
     SECURITY_CONFIRMATION_PROMPT,
+    UNIT_DESCRIPTION_PROMPT,
 )
 
 
@@ -32,8 +33,9 @@ def export_prompts(target_dir: Optional[Path] = None):
     strategy_dir = target_dir / "strategy"
     security_dir = target_dir / "security"
     figure_review_dir = target_dir / "figure_review"
+    unit_description_dir = target_dir / "unit_description"
 
-    for dir_path in [personality_dir, strategy_dir, security_dir, figure_review_dir]:
+    for dir_path in [personality_dir, strategy_dir, security_dir, figure_review_dir, unit_description_dir]:
         dir_path.mkdir(parents=True, exist_ok=True)
 
     print(f"Exporting prompts to: {target_dir}")
@@ -68,10 +70,18 @@ def export_prompts(target_dir: Optional[Path] = None):
     )
     print(f"  ✓ {figure_review_path.relative_to(target_dir)}")
 
+    # Export unit description prompt
+    unit_description_path = unit_description_dir / "unit_description.md"
+    write_prompt_file(
+        unit_description_path, UNIT_DESCRIPTION_PROMPT, "Unit Description: unit_description"
+    )
+    print(f"  ✓ {unit_description_path.relative_to(target_dir)}")
+
     print(f"\nExported {len(PERSONALITY_PROMPTS)} personality prompts")
     print(f"Exported {len(STRATEGY_PROMPTS)} strategy prompts")
     print(f"Exported {len(security_prompts)} security prompts")
     print("Exported 1 figure review prompt")
+    print("Exported 1 unit description prompt")
     print(f"\nYou can now edit these files, and changes will hot-reload in dev mode!")
 
 
