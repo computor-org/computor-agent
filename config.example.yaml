@@ -53,6 +53,7 @@ tutor:
     # poll_interval_seconds: 3
     # max_response_tokens: 2048
     # temperature: 0.3
+    # job_timeout_seconds: 540   # below the backend's 600 s lease
 
 # Scheduler settings (top-level, optional)
 scheduler:

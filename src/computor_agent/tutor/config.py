@@ -199,6 +199,13 @@ class UnitDescriptionConfig(BaseModel):
         le=2.0,
         description="LLM temperature for drafts",
     )
+    job_timeout_seconds: float = Field(
+        default=540.0,
+        ge=30.0,
+        le=570.0,
+        description="Time limit for one job, all languages and retries; "
+        "must end before the backend's 600 s lease",
+    )
 
 
 class FigureReviewConfig(BaseModel):

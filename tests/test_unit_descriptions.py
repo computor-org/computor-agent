@@ -36,6 +36,9 @@ class FakeLLM:
         answer = self.answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
+        if isinstance(answer, float):
+            await asyncio.sleep(answer)
+            answer = "late"
         if isinstance(answer, LLMResponse):
             return answer
         return LLMResponse(content=answer, model="m", finish_reason="stop")
@@ -98,7 +101,6 @@ async def test_too_long_is_retried_once_then_fails_without_cutting():
     ("answer", "code"),
     [
         (RuntimeError("upstream said: " + TEXT_MARKER), "model_error"),
-        (LLMResponse(content="cut", model="m", finish_reason="length"), "too_long"),
         (LLMResponse(content="x", model="m", finish_reason="content_filter"), "invalid_output"),
         ("   ", "invalid_output"),
     ],
@@ -106,6 +108,41 @@ async def test_too_long_is_retried_once_then_fails_without_cutting():
 async def test_failures_become_error_codes(answer, code):
     body = await writer(FakeLLM(answer)).completion({"lease": "1", "request": REQUEST})
     assert body == {"lease": "1", "state": "failed", "error": code}
+
+
+def cut(content):
+    return LLMResponse(content=content, model="m", finish_reason="length")
+
+
+@pytest.mark.asyncio
+async def test_budget_spent_on_reasoning_is_retried_with_more_tokens():
+    llm = FakeLLM(cut("<think>still planning"), "Week 1")
+    assert await writer(llm).write(REQUEST, "en") == "Week 1"
+    assert [call["max_tokens"] for call in llm.calls] == [2048, 4096]
+
+    llm = FakeLLM(cut(""), cut("<think>"))
+    body = await writer(llm).completion({"lease": "1", "request": REQUEST})
+    assert body == {"lease": "1", "state": "failed", "error": "model_error"}
+
+
+@pytest.mark.asyncio
+async def test_cut_off_long_answer_is_asked_for_shorter():
+    llm = FakeLLM(cut("x" * 5000), "short enough")
+    assert await writer(llm).write(REQUEST, "en") == "short enough"
+    assert "at most 3000 characters" in llm.calls[1]["prompt"]
+
+    llm = FakeLLM(cut("x" * 5000), cut("x" * 5000))
+    body = await writer(llm).completion({"lease": "1", "request": REQUEST})
+    assert body == {"lease": "1", "state": "failed", "error": "too_long"}
+
+
+@pytest.mark.asyncio
+async def test_job_ends_before_the_lease():
+    config = UnitDescriptionConfig().model_copy(update={"job_timeout_seconds": 0.05})
+    slow = drafts.UnitDescriptionWriter(FakeLLM("Woche 1", 1.0), config)
+    body = await slow.completion({"lease": "1", "request": REQUEST})
+    assert body == {"lease": "1", "state": "failed", "error": "model_error"}
+    assert UnitDescriptionConfig().job_timeout_seconds < 600
 
 
 @pytest.mark.asyncio
@@ -120,11 +157,18 @@ async def test_operator_prompt_override_with_braces(tmp_path):
     assert llm.calls[0]["system_prompt"] == 'Describe the unit in English. Example: {"title": "x"}'
 
 
+def http_error(status):
+    error = RuntimeError(f"HTTP {status}")
+    error.status_code = status
+    return error
+
+
 class FakeClient:
-    def __init__(self, claims, fail_complete=False):
+    def __init__(self, claims, complete_errors=()):
         self.claims = list(claims)
         self.posts = []
-        self.fail_complete = fail_complete
+        # Raised by the completion calls in turn; then they succeed.
+        self.complete_errors = list(complete_errors)
 
     async def post(self, path, *, json_data=None, **_kwargs):
         self.posts.append((path, json_data))
@@ -133,8 +177,8 @@ class FakeClient:
             if isinstance(claim, Exception):
                 raise claim
             return claim
-        if self.fail_complete:
-            raise RuntimeError("down")
+        if self.complete_errors:
+            raise self.complete_errors.pop(0)
         return {"state": "finished"}
 
 
@@ -160,11 +204,61 @@ async def test_worker_claims_writes_and_completes(caplog):
     assert TEXT_MARKER not in caplog.text and DRAFT_MARKER not in caplog.text
 
 
+JOB_ID = "8a5c2f8e-3b9e-4b8e-9a62-0d6a4f4d2c11"
+
+
+def claimed(job_id=JOB_ID):
+    return {"state": "claimed", "id": job_id, "lease": "3", "request": REQUEST}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_job_is_dropped_without_backoff(caplog):
+    caplog.set_level(logging.INFO)
+    client = FakeClient([claimed()], complete_errors=[http_error(409)])
+    assert await worker(client, FakeLLM("Woche 1", "Week 1")).poll_once() == 0.0
+    assert len(client.posts) == 2
+    assert "dropped" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 422])
+async def test_refused_drafts_fail_the_job(status):
+    client = FakeClient([claimed()], complete_errors=[http_error(status)])
+    assert await worker(client, FakeLLM("Woche 1", "Week 1")).poll_once() == 0.0
+    path, body = client.posts[2]
+    assert path == f"/course-contents/description-drafts/worker/complete/{JOB_ID}"
+    assert body == {"lease": "3", "state": "failed", "error": "invalid_output"}
+
+
+@pytest.mark.asyncio
+async def test_refused_failure_is_not_sent_again():
+    client = FakeClient([claimed()], complete_errors=[http_error(422)])
+    w = worker(client, FakeLLM(RuntimeError("down")))
+    assert await w.poll_once() == drafts.ERROR_BACKOFF_SECONDS
+    assert len(client.posts) == 2
+
+
+@pytest.mark.asyncio
+async def test_refused_drafts_then_failing_fails_too():
+    client = FakeClient([claimed()], complete_errors=[http_error(422), http_error(503)])
+    w = worker(client, FakeLLM("Woche 1", "Week 1"))
+    assert await w.poll_once() == drafts.ERROR_BACKOFF_SECONDS
+    assert len(client.posts) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("job_id", ["../../users/me", None, "", "8a5c2f8e"])
+async def test_claim_with_a_bad_job_id_is_skipped(job_id):
+    llm = FakeLLM()
+    client = FakeClient([claimed(job_id)])
+    assert await worker(client, llm).poll_once() == drafts.ERROR_BACKOFF_SECONDS
+    assert len(client.posts) == 1 and llm.calls == []
+
+
 @pytest.mark.asyncio
 async def test_worker_backs_off_on_old_backend(caplog):
     caplog.set_level(logging.INFO)
-    error = RuntimeError("not found")
-    error.status_code = 404
+    error = http_error(404)
     client = FakeClient([error, error])
     w = worker(client, FakeLLM())
     assert await w.poll_once() == drafts.UNSUPPORTED_BACKOFF_SECONDS

@@ -288,8 +288,12 @@ requested language it makes one call to the main `llm` with the prompt in
 `unit_description/unit_description.md` (built-in: `UNIT_DESCRIPTION_PROMPT`)
 and posts the drafts back. A draft longer than the backend's 4096-character
 limit is asked for again once, shorter; if it is still too long the job fails
-with `too_long` rather than being cut off. Nothing is written to the course:
-the lecturer reviews the draft and saves it.
+with `too_long` rather than being cut off. An answer cut off by the token
+budget before it got long (a reasoning model thinking too long) is retried
+once with twice the budget, then fails with `model_error`. The whole job has
+`job_timeout_seconds` (540) so it ends before the backend's 600-second lease;
+past that it fails with `model_error` instead of being handed out again.
+Nothing is written to the course: the lecturer reviews the draft and saves it.
 
 ```yaml
 tutor:
@@ -298,11 +302,16 @@ tutor:
     poll_interval_seconds: 3
     max_response_tokens: 2048
     temperature: 0.3
+    job_timeout_seconds: 540
 ```
 
 The backend offers the feature only while a worker has claimed within the
-last 90 seconds, so lecturers do not see it when no agent is running. Against
-a backend without the routes, the worker checks again every ten minutes.
+last 90 seconds or is still working on a claimed job, so lecturers do not see
+it when no agent is running. Against a backend without the routes, the worker
+checks again every ten minutes. When the backend answers a completion with
+409 (the lecturer cancelled, or the lease ran out) the job is dropped; when it
+refuses the drafts (400/422) the worker fails the job with `invalid_output` so
+the lecturer is not left waiting.
 
 ---
 

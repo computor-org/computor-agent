@@ -14,6 +14,7 @@ import asyncio
 import logging
 import re
 from typing import Any, Optional
+from uuid import UUID
 
 from computor_agent.llm.base import LLMProvider
 from computor_agent.tutor.config import UnitDescriptionConfig
@@ -110,20 +111,33 @@ class UnitDescriptionWriter:
         self.llm = llm
         self.config = config
 
-    async def _complete(self, system_prompt: str, message: str) -> str:
+    async def _complete(
+        self, system_prompt: str, message: str, max_tokens: Optional[int] = None
+    ) -> str:
+        max_tokens = max_tokens or self.config.max_response_tokens
         try:
             response = await self.llm.complete(
                 message,
                 system_prompt=system_prompt,
-                max_tokens=self.config.max_response_tokens,
+                max_tokens=max_tokens,
                 temperature=self.config.temperature,
             )
         except Exception as e:
             # Exception text can echo request content; log its type only.
             logger.warning(f"Unit description draft: model call failed ({type(e).__name__})")
             raise DraftFailed("model_error") from None
+        if response.finish_reason == "length":
+            draft = clean_draft(response.content)
+            if len(draft) > MAX_DESCRIPTION_CHARS:
+                # Really too long: write() asks for a shorter one.
+                return draft
+            # A reasoning model can spend the budget before it answers; that
+            # is not a long draft. One retry with twice the budget.
+            if max_tokens > self.config.max_response_tokens:
+                raise DraftFailed("model_error")
+            return await self._complete(system_prompt, message, max_tokens * 2)
         if response.finish_reason not in (None, "stop"):
-            raise DraftFailed("too_long" if response.finish_reason == "length" else "invalid_output")
+            raise DraftFailed("invalid_output")
         return clean_draft(response.content)
 
     async def write(self, request: dict[str, Any], language: str) -> str:
@@ -151,15 +165,27 @@ class UnitDescriptionWriter:
             raise DraftFailed("invalid_output")
         return draft
 
+    async def _drafts(self, request: dict[str, Any]) -> list[dict[str, str]]:
+        return [
+            {"language": language, "description": await self.write(request, language)}
+            for language in request["languages"]
+        ]
+
     async def completion(self, claim: dict[str, Any]) -> dict[str, Any]:
         """The completion body for a claimed job."""
-        request = claim["request"]
-        drafts = []
         try:
-            for language in request["languages"]:
-                drafts.append({"language": language, "description": await self.write(request, language)})
+            # The whole job ends before the backend's lease does; otherwise
+            # the backend hands it out again and it is written twice.
+            drafts = await asyncio.wait_for(
+                self._drafts(claim["request"]), timeout=self.config.job_timeout_seconds
+            )
         except DraftFailed as failure:
             return {"lease": claim["lease"], "state": "failed", "error": failure.code}
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Unit description draft: no result within {self.config.job_timeout_seconds:.0f}s"
+            )
+            return {"lease": claim["lease"], "state": "failed", "error": "model_error"}
         return {"lease": claim["lease"], "state": "done", "drafts": drafts}
 
 
@@ -196,7 +222,12 @@ class UnitDescriptionWorker:
 
         if not isinstance(claim, dict) or claim.get("state") != "claimed":
             return self.config.poll_interval_seconds
-        job_id = claim.get("id")
+        # The id goes into a URL: only a well-formed UUID.
+        try:
+            job_id = str(UUID(str(claim.get("id"))))
+        except ValueError:
+            logger.warning("Unit description claim with an invalid job id; skipped")
+            return ERROR_BACKOFF_SECONDS
         request = claim.get("request") or {}
         logger.info(
             f"Unit description draft {job_id}: {len(request.get('assignments') or [])} assignments, "
@@ -206,11 +237,34 @@ class UnitDescriptionWorker:
         try:
             await self.client.post(COMPLETE_PATH.format(job_id=job_id), json_data=body)
         except Exception as e:
+            status = _status_code(e)
+            if status == 409:
+                # The lecturer cancelled, or the lease ran out: nothing to do.
+                logger.info(f"Unit description draft {job_id}: dropped, the job is gone")
+                return 0.0
+            if status in (400, 422) and body["state"] == "done":
+                # The backend refused the drafts. Fail the job so the lecturer
+                # is not left waiting until the lease runs out.
+                return await self._fail(job_id, body["lease"], status)
             # The lease expires and the backend hands the job out again.
             logger.warning(f"Unit description draft {job_id}: completion failed ({type(e).__name__})")
             return ERROR_BACKOFF_SECONDS
         logger.info(f"Unit description draft {job_id}: {body['state']}{' ' + body['error'] if body.get('error') else ''}")
         # A job was waiting; there may be another.
+        return 0.0
+
+    async def _fail(self, job_id: str, lease: str, status: int) -> float:
+        body = {"lease": lease, "state": "failed", "error": "invalid_output"}
+        try:
+            await self.client.post(COMPLETE_PATH.format(job_id=job_id), json_data=body)
+        except Exception as e:
+            logger.warning(
+                f"Unit description draft {job_id}: failing the job failed ({type(e).__name__})"
+            )
+            return ERROR_BACKOFF_SECONDS
+        logger.info(
+            f"Unit description draft {job_id}: drafts refused (HTTP {status}), job failed"
+        )
         return 0.0
 
     async def run(self, stop: asyncio.Event) -> None:
