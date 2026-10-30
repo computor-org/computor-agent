@@ -6,6 +6,8 @@ from computor_agent.tutor.websocket.scheduler import WebSocketScheduler
 class FakeWS:
     """Minimal stand-in for ComputorWebSocket used by the processing path."""
 
+    is_connected = True
+
     def __init__(self):
         self.subscribed: list[str] = []
         self.marked_read: list[tuple[str, str]] = []

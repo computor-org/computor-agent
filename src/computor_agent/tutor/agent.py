@@ -37,6 +37,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Sent when the LLM returns nothing at all. No model call is left to phrase it
+# in the student's language, so it follows the fallback language (the
+# learner's reading language, else the configured one); codes without a
+# translation fall back to English.
+EMPTY_RESPONSE_FALLBACK = {
+    "en": (
+        "I'm sorry, I wasn't able to generate a response right now. "
+        "Please try again in a moment, or rephrase your question."
+    ),
+    "de": (
+        "Entschuldige, ich konnte gerade keine Antwort erzeugen. "
+        "Bitte versuche es gleich noch einmal oder formuliere deine Frage um."
+    ),
+}
+
+
 class LLMClient(Protocol):
     """Protocol for LLM client used by TutorAgent."""
 
@@ -153,7 +169,10 @@ class TutorAgent:
 
         # Initialize components
         self.context_builder = ContextBuilder(
-            client, config.context, figure_config=config.figure_review
+            client,
+            config.context,
+            figure_config=config.figure_review,
+            trigger_config=config.triggers,
         )
         self.security_gate = SecurityGate(config.security, llm)
         self.intent_classifier = IntentClassifier(llm)
@@ -294,9 +313,9 @@ class TutorAgent:
                 # Send a fallback message so the student isn't left waiting
                 formatted_title = self._format_response_title(None)
                 parent_id = reply_to_message_id or message.get("id")
-                fallback_content = (
-                    "I'm sorry, I wasn't able to generate a response right now. "
-                    "Please try again in a moment, or rephrase your question."
+                language = (self._fallback_language(context) or "en").lower()
+                fallback_content = EMPTY_RESPONSE_FALLBACK.get(
+                    language, EMPTY_RESPONSE_FALLBACK["en"]
                 )
                 message_data: dict[str, Any] = {
                     "content": fallback_content,
@@ -368,6 +387,15 @@ class TutorAgent:
         """
         return ""
 
+    def _fallback_language(self, context: Optional[ConversationContext]) -> str:
+        """Language for replies whose message has no clear language of its own.
+
+        The learner's reading language when the backend recorded it with the
+        message (issues#556), else the configured one.
+        """
+        trigger = context.trigger_message if context else None
+        return (trigger and trigger.reading_language) or self.config.personality.language
+
     def _build_system_prompt(self, context: ConversationContext) -> str:
         """Build the unified system prompt with all available context."""
         # Personality
@@ -384,6 +412,11 @@ class TutorAgent:
         # override was impossible to discover.)
         from computor_agent.tutor.prompts.loader import get_tutor_prompt
         template = get_tutor_prompt()
+
+        # Student identity — the names are fetched into StudentInfo anyway;
+        # rendering them lets the tutor address people and tell group members
+        # apart. Deliberately names only: emails and ids stay out of the prompt.
+        student_section = self._format_student_section(context)
 
         # Assignment
         assignment_section = self._format_assignment_section(context)
@@ -423,7 +456,8 @@ class TutorAgent:
 
         return template.format(
             personality_prompt=personality,
-            language=self.config.personality.language,
+            language=self._fallback_language(context),
+            student_section=student_section,
             assignment_section=assignment_section,
             code_section=code_section,
             test_results_section=test_results_section,
@@ -431,6 +465,24 @@ class TutorAgent:
             reference_comparison_section=reference_comparison_section,
             figure_review_section=figure_review_section,
         )
+
+    def _format_student_section(self, context: ConversationContext) -> str:
+        """Format who the tutor is talking to (names only, no emails/ids)."""
+        lines = []
+        names = [n for n in context.student.names if n]
+        if len(names) == 1:
+            lines.append(f"Student: {names[0]}")
+        elif names:
+            lines.append("Students in this submission group: " + ", ".join(names))
+
+        author = (
+            context.trigger_message.author_name if context.trigger_message else None
+        )
+        # For a solo student the author line would just repeat the name above.
+        if author and (len(names) != 1 or author != names[0]):
+            lines.append(f"The current message was written by: {author}")
+
+        return "\n".join(lines)
 
     def _format_assignment_section(self, context: ConversationContext) -> str:
         """Format the assignment context block (shared with figure review)."""
@@ -459,7 +511,7 @@ class TutorAgent:
             context.figure_review = await self.figure_reviewer.review_all(
                 figures,
                 assignment_section=self._format_assignment_section(context),
-                language=self.config.personality.language,
+                language=self._fallback_language(context),
             )
         except Exception as e:
             # Defensive: the service itself degrades per figure and

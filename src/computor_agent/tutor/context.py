@@ -42,6 +42,8 @@ class MessageInfo:
     is_from_student: bool = True
     created_at: Optional[datetime] = None
     thread_root_id: Optional[str] = None
+    reading_language: Optional[str] = None
+    """Language ('de'/'en') the author was reading when posting; None from older backends."""
 
 
 @dataclass
@@ -272,7 +274,10 @@ class ConversationContext:
 
         for msg in messages:
             role = "Student" if msg.is_from_student else "Tutor"
-            formatted.append(f"[{role}]: {msg.content}")
+            # Name the speaker when we know them — group threads are unreadable
+            # if every human collapses into the same "[Student]" label.
+            label = f"{msg.author_name} ({role})" if msg.author_name else role
+            formatted.append(f"[{label}]: {msg.content}")
 
         return "\n\n".join(formatted)
 

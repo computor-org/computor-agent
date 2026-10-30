@@ -366,6 +366,7 @@ class AgentRuntime:
                 "author_id": result.message_trigger.author_id,
                 "is_follow_up": result.message_trigger.is_follow_up,
                 "thread_root_id": result.root_message_id,
+                "reading_language": result.message_trigger.reading_language,
             }
 
             processing_result = await agent.process_message(

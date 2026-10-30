@@ -58,6 +58,9 @@ class MessageTrigger:
     is_follow_up: bool = False
     """True if this is a follow-up reply in an existing conversation."""
 
+    reading_language: Optional[str] = None
+    """Language the author was reading when posting (None from older backends)."""
+
 
 @dataclass
 class SubmissionTrigger:
