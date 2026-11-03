@@ -1,4 +1,4 @@
-# Course-message Lena for computor.at on faepmac2
+# Course-message Lena for computor.at on macOS
 
 This runs `computor-agent tutor messaging` for computor.at: learners who write
 `@lena`, `@luna` or `@ai` in an assignment conversation get an answer in the
@@ -44,8 +44,7 @@ Slopgate `public_luna` key, the one the public Lena worker uses. computor.at
 runs on that class rather than on `computor`, so its learners do not queue
 behind the TU tutors; Slopgate admits the tutor's request shape on it with
 tutor-sized limits (131,072 context, 8192 output, inline images) next to the
-Ask Lena form (sloppy-org/slopgate e26722d2, slopcode-infra 5fd6325), always
-for the `luna-public` model. The installer writes them to the root-only
+Ask Lena form, always for the `luna-public` model. The installer writes them to the root-only
 `/Library/Computor/LenaTutor/tutor.env`; remove the input files afterwards.
 Before the first start, load the anchor and run the public worker's
 `probe.py` (installed next to the tutor) as `_computor_lena` in `tutor.sb`;

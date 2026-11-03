@@ -34,6 +34,14 @@ computor-agent tutor messaging --dev --prompts-dir ./custom-prompts
 | `--dev` | | Development mode (interactive shell) |
 | `--prompts-dir` | | Custom prompts directory |
 | `--assignment` | | [Dev] Assignment directory with `meta.yaml` |
+| `--scenario` | | [Dev] Scenario directory with `scenario.yaml` |
+| `--prompt` | `-p` | [Dev] Process a single message and exit |
+| `--log-file` | `-l` | Log to a rotating file |
+| `--log-llm-content` | | Log LLM prompts and replies at DEBUG level |
+| `--api-port` | | Enable the HTTP dashboard on this port |
+| `--api-host` | | Dashboard bind address (default: `127.0.0.1`) |
+| `--llm-probe-interval` | | Seconds between LLM liveness probes; `0` disables |
+| `--workers` | `-w` | Messages processed concurrently (1-50) |
 
 ### Grading Agent
 
@@ -79,6 +87,8 @@ computor-agent tutor messaging --dev
 | `/new` | Start a new conversation |
 | `/reply <id>` | Reply to a specific message |
 | `/show` | Display conversation history |
+| `/assignment` | Show loaded assignment details |
+| `/reload` | Reload all prompt files |
 | `/clear` | Clear all messages |
 | `/exit` | Exit development mode |
 | *(text)* | Send a message |
@@ -135,15 +145,10 @@ prompts/
 ├── personality/           # Tone and style, prepended to the tutor prompt
 │   ├── friendly_professional.md
 │   ├── strict.md
-│   └── casual.md
+│   ├── casual.md
+│   └── encouraging.md
 ├── strategy/
-│   ├── tutor.md           # THE live messaging prompt — edit this one
-│   ├── question_example.md    # retired: intent→strategy model, not used
-│   ├── question_howto.md      #   for live replies
-│   ├── help_debug.md
-│   ├── help_review.md
-│   ├── clarification.md
-│   └── fallback.md
+│   └── tutor.md           # the live messaging prompt
 ├── grading/
 │   └── grading.md         # rubric for `tutor grading`
 ├── security/              # Security prompts
@@ -158,8 +163,7 @@ prompts/
 **Which file actually runs?**
 
 - **Live replies** use exactly two files: `personality/<tone>.md` and
-  `strategy/tutor.md`. Everything else in `strategy/` belongs to the retired
-  intent→strategy architecture and is ignored by the messaging agent.
+  `strategy/tutor.md`.
 - **Grading** uses `grading/grading.md` when present. Supplying it selects
   single-step grading, because that is the path a custom rubric applies to;
   without it, grading runs its more accurate multi-step analysis.
@@ -181,16 +185,12 @@ prompts/
 backend:
   url: https://api.computor.example.com
   api_token: ctp_your_token_here
-  # Or use username/password:
-  # username: tutor@example.com
-  # password: secret
 
 # LLM provider
 llm:
   provider: ollama          # ollama, lmstudio, openai
   model: qwen2.5-coder:7b
   base_url: http://localhost:11434/v1
-  temperature: 0.7
 
 # Secondary vision-capable LLM, used only for figure review (optional)
 # vision_llm:
@@ -277,7 +277,7 @@ Notes:
 ## Unit Description Drafts
 
 A lecturer can ask Lena for a draft description of a unit, written from the
-assignments in it (computor-org/issues#559). The extension and the web UI send
+assignments in it. The extension and the web UI send
 the request to the backend, which queues a job with the unit's title and the
 student-visible text of each assignment (`content/index*.md`). No submissions,
 messages, grades or names are part of a job.
@@ -349,13 +349,12 @@ needed or written.
 
 ## Transport
 
-The messaging agent is **WebSocket-only**. It needs a token to connect and
-exits with an error if it cannot get one — there is no HTTP-polling fallback.
+The messaging agent is **WebSocket-only**. It needs an API token to connect
+and exits with an error without one — there is no HTTP-polling fallback.
 
 ```yaml
 backend:
   api_token: ctp_your_token_here
-  # or username / password, from which a token is obtained at startup
 ```
 
 A periodic REST **catch-up scan** backstops the event stream, so a message that

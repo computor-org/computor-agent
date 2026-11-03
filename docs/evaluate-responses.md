@@ -19,7 +19,7 @@ python scripts/evaluate_responses.py evaluate.yaml ./results/
 python scripts/evaluate_responses.py evaluate.yaml ./results/ -m mistral:7b
 
 # Only evaluate a specific run
-python scripts/evaluate_responses.py ./results/ --run run_2026-03-25_mistral-7b
+python scripts/evaluate_responses.py ./results/ --run run_2026-03-25T14-30-00_mistral-7b
 
 # Specify scenarios directory explicitly
 python scripts/evaluate_responses.py ./results/ --scenarios-dir ./examples/scenarios/
@@ -85,6 +85,8 @@ All metrics use a 0-5 scale. You can define custom metrics with different ranges
 5. Aggregates scores (mean, median, min, max) across all successful repeats
 6. Writes `evaluations.json` alongside `summary.json` in the run directory
 
+Responses that already have an entry in `evaluations.json` are skipped on a re-run unless `--override` is given.
+
 The evaluator model is initialized once and stays alive across all evaluations.
 
 ## Output
@@ -138,13 +140,13 @@ An `evaluations.json` file is written to each run directory:
 
 | Field | Description |
 |-------|-------------|
-| `scores` | Mean values per metric (backward compatible — used by report generator) |
+| `scores` | Mean values per metric (used by the report generator) |
 | `score_stats` | Per-metric statistics: mean, median, min, max |
 | `all_scores` | Raw individual results from each repeat |
 | `repeats` | Number of evaluation runs requested |
 | `repeats_succeeded` | Number of runs that returned valid scores |
 
-When `repeats=1` (default), the output is the same as before with the addition of `repeats: 1` and `score_stats`.
+With `repeats: 1` (the default), `all_scores` holds a single result and `score_stats` reports that one score.
 
 The `generate_report.py` script automatically picks up `evaluations.json` and adds:
 - Evaluation scores overview table
@@ -172,6 +174,7 @@ extract_scenarios.py  -->  generate_prompts.py  -->  run_scenarios.py  -->  eval
 | `--scenarios-dir` | Scenarios directory (auto-detected if not specified) |
 | `--config`, `-c` | Config file path for LLM settings (default: `config.yaml`) |
 | `--model`, `-m` | Override evaluator LLM model |
-| `--run` | Filter: only evaluate runs matching this name |
+| `--run` | Filter: only evaluate runs whose directory name contains this string |
 | `--repeats`, `-n` | Independent evaluation runs per response (default: 1) |
+| `--override` | Re-evaluate all responses, ignoring existing evaluations |
 | `--verbose`, `-v` | Enable debug logging |

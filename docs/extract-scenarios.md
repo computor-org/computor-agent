@@ -4,7 +4,7 @@ Extracts real student interactions from the computor database into scenario dire
 
 ## Prerequisites
 
-- PostgreSQL access to the computor database (docker-postgres-1)
+- PostgreSQL access to the computor database
 - MinIO access for downloading submission files (optional, use `--skip-files` without)
 - Python packages: `psycopg2-binary`, `minio`, `pyyaml`
 
@@ -49,8 +49,9 @@ For each qualifying submission group:
 | Output | Source |
 |--------|--------|
 | `scenario.yaml` | Student name (obfuscated), assignment title, grade info |
-| `assignment/description.md` | `course_content.description` from database |
+| `assignment/description.md` | Assignment README (`content/index_en.md` or `content/index.md`) from MinIO, else `course_content.description` from database |
 | `submission/` | Actual files downloaded from MinIO |
+| `reference/` | Reference solution files of the deployed example, from MinIO |
 | `test-results.json` | `result` rows linked to the graded artifact |
 | `grade.json` | Grade score, status, grader comment |
 | `prompts/*.md` | Student messages (non-AI) as individual prompt files |
@@ -64,6 +65,8 @@ extracted_scenarios/
 │   ├── assignment/
 │   │   └── description.md
 │   ├── submission/
+│   │   └── solution.py
+│   ├── reference/
 │   │   └── solution.py
 │   ├── test-results.json
 │   ├── grade.json
@@ -81,7 +84,7 @@ student:
   name: Student 001          # Obfuscated
 assignment:
   title: NumPy Basics
-  path: itpcp.pgph.py.basis1
+  path: intro.python.numpy_basics
   language: en
 grade:
   score: 0.85
@@ -137,6 +140,7 @@ Database                          MinIO
 | `--output`, `-o` | (required) | Output directory |
 | `--course-id` | all | Filter by course UUID |
 | `--limit` | all | Max scenarios to extract |
+| `--limit-per-assignment` | all | Max scenarios per assignment (course content) |
 | `--skip-files` | false | Skip MinIO download |
 | `--db-host` | `localhost` | PostgreSQL host |
 | `--db-port` | `5432` | PostgreSQL port |

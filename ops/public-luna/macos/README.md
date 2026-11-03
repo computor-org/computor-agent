@@ -1,4 +1,4 @@
-# Public Lena on faepmac2
+# Public Lena on macOS
 
 This is a separate native worker. It has no model tools, general Computor
 credential, listener, writable cache, or learner files. Its dedicated non-login
@@ -7,7 +7,7 @@ UID can connect only to computor.at (`195.201.17.41:443`) and Slopgate
 denies listeners, file writes and child processes. Local DNS IPC is allowed.
 The launcher stops the worker if PF is disabled or its rules change.
 
-The installer does not start the worker. On faepmac2, supply a private JSON
+The installer does not start the worker. On the host, supply a private JSON
 file with exactly these four string fields:
 
 - `PUBLIC_LUNA_BACKEND_URL`: `https://computor.at/api`

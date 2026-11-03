@@ -6,11 +6,6 @@
 > `strategy/tutor.md`, with `personality/<tone>.md` substituted into it. That is
 > the whole surface for the messaging agent.
 >
-> The intent→strategy composition described further down
-> (`question_example.md`, `help_debug.md`, `fallback.md`, …) belongs to a
-> **retired** architecture. Those files are still created and still load, but the
-> messaging agent does not consult them. Editing them has no effect on replies.
->
 > | I want to change… | Edit |
 > |---|---|
 > | how the tutor answers students | `strategy/tutor.md` |
@@ -18,9 +13,10 @@
 > | the grading rubric | `grading/grading.md` |
 > | prompt-injection screening | `security/detection.md`, `security/confirmation.md` |
 > | figure review | `figure_review/review.md` |
+> | unit description drafts | `unit_description/unit_description.md` |
 >
 > Placeholders available in `strategy/tutor.md`: `{personality_prompt}`,
-> `{language}`, `{assignment_section}`, `{code_section}`,
+> `{language}`, `{student_section}`, `{assignment_section}`, `{code_section}`,
 > `{test_results_section}`, `{previous_messages_section}`,
 > `{reference_comparison_section}`, `{figure_review_section}`. Sections are
 > empty strings when the corresponding context is unavailable.
@@ -38,49 +34,44 @@ This guide explains how to create and modify prompts for the Tutor Agent. Prompt
 ```
 prompts/
 ├── personality/      # Define the agent's tone and behavior
-├── strategy/        # tutor.md = the live prompt; the rest are retired
+├── strategy/        # tutor.md = the live messaging prompt
 ├── grading/         # Grading rubric (`grading.md`)
 ├── security/        # Security check prompts
 ├── figure_review/   # Figure review prompt (`review.md`)
-└── README.md        # This guide (auto-copied)
+├── unit_description/ # Unit description draft prompt (`unit_description.md`)
+├── README.md        # This guide (auto-copied)
+└── VARIABLES.md     # Variable reference card (auto-copied)
 ```
 
 ## Template Variables Reference
 
-### Common Variables (Available in Most Prompts)
+### `strategy/tutor.md`
 
 | Variable | Description | Example Content |
 |----------|-------------|-----------------|
-| `{tutor_name}` | The agent's name from config | "Tutor AI" |
-| `{language}` | Response language code | "en", "de", "fr" |
 | `{personality_prompt}` | The selected personality text | Content from personality/*.md |
-| `{assignment_description}` | Current assignment details | "Title: Lab 1\nImplement a sorting algorithm..." |
+| `{language}` | Response language code | "en", "de", "fr" |
+| `{student_section}` | Name(s) of the student(s) | "Student: Max Mustermann" |
+| `{assignment_section}` | Current assignment details | "Title: Lab 1\nImplement a sorting algorithm..." |
+| `{code_section}` | Student's latest submitted code | "Student's Code: ..." |
+| `{test_results_section}` | Test execution results | "Test Results: ..." |
+| `{previous_messages_section}` | Conversation history | "Previous Conversation: ..." |
+| `{reference_comparison_section}` | Comparison against the reference solution | "Reference Comparison: ..." |
+| `{figure_review_section}` | Vision-LLM review of submitted figures | "Figure Review: ..." |
 
-### Strategy-Specific Variables
-
-#### All Strategy Prompts
-| Variable | Description | Available In |
-|----------|-------------|--------------|
-| `{student_message}` | The student's current message | fallback, clarification |
-| `{student_code}` | Student's repository code | help_debug, help_review |
-| `{previous_messages}` | Conversation history | clarification, all strategies |
-| `{reference_solution_section}` | Reference solution (if enabled) | help_debug, help_review |
-
-#### Intent-Specific Variables
-| Variable | Description | Used In Strategy |
-|----------|-------------|------------------|
-| `{user_intent_description}` | AI's interpretation of user intent | fallback |
-| `{test_results}` | Test execution results | help_debug |
-| `{artifacts}` | Build/compilation artifacts | help_debug |
-| `{git_diff}` | Recent changes in repository | help_review |
-| `{reference_comparison}` | Diff against reference solution | help_review |
+### Personality Prompt Variables
+| Variable | Description |
+|----------|-------------|
+| `{tutor_name}` | The agent's name from config (`tutor.personality.name`) |
 
 ### Security Prompt Variables
 | Variable | Description |
 |----------|-------------|
-| `{content}` | Message content to analyze |
-| `{code}` | Code content to check |
-| `{repository_files}` | List of files in repository |
+| `{content}` | Message or code content to analyze |
+| `{initial_detection}` | Result of the first check (`confirmation.md` only) |
+
+See `VARIABLES.md` for the placeholders of the figure review, unit description
+and grading prompts.
 
 ## Prompt Types Explained
 
@@ -110,39 +101,27 @@ IMPORTANT: Keep your responses CONCISE and TO THE POINT:
 - Include code examples only when necessary
 ```
 
-### 2. Strategy Prompts (`strategy/*.md`)
+### 2. Tutor Prompt (`strategy/tutor.md`)
 
-> Only `strategy/tutor.md` affects live replies. The per-intent files below
-> are retired.
-
-
-**Purpose**: Define how to handle specific types of student requests.
+**Purpose**: Define how the tutor answers students. Every live reply is
+generated from this one prompt.
 
 **Template Structure**:
 ```markdown
-You are helping a student [context].
-
-Assignment Context:
----
-{assignment_description}
----
-
 {personality_prompt}
 
-[Specific instructions for this intent]
+[How to help without giving away the solution]
 
 [Response guidelines]
 
+{student_section}
+{assignment_section}
+{code_section}
+{test_results_section}
+{previous_messages_section}
+
 Language: {language}
 ```
-
-**Available Strategies**:
-- `question_example.md` - Student asks about assignment requirements
-- `question_howto.md` - Student asks how to do something
-- `help_debug.md` - Student needs debugging help
-- `help_review.md` - Student wants code review
-- `clarification.md` - Student asks follow-up questions
-- `fallback.md` - Unmatched intents
 
 ### 3. Security Prompts (`security/*.md`)
 
@@ -166,60 +145,20 @@ Respond with JSON:
 }
 ```
 
-## Prompt Composition Flow (retired intent→strategy model)
-
-> Kept for reference. Live replies do **not** compose prompts this way —
-> see the note at the top of this guide.
-
+## Prompt Composition Flow
 
 The agent builds the final prompt by combining multiple pieces:
 
 ```
-1. Load Strategy Template (e.g., question_howto.md)
+1. Load strategy/tutor.md (or the built-in prompt)
    ↓
-2. Replace {personality_prompt} with content from personality/*.md
+2. Replace {tutor_name} within personality/<tone>.md
    ↓
-3. Replace {tutor_name} within personality prompt
+3. Replace {personality_prompt} with that personality text
    ↓
-4. Replace context variables ({assignment_description}, {student_message}, etc.)
+4. Replace the context sections ({assignment_section}, {code_section}, etc.)
    ↓
 5. Send to LLM
-```
-
-### Example Composition
-
-**Input**: Student asks "How do I read a file in Python?"
-
-**Composition**:
-1. Intent classified as `QUESTION_HOWTO`
-2. Load `strategy/question_howto.md`
-3. Load `personality/friendly_professional.md`
-4. Replace variables:
-   - `{personality_prompt}` → Entire personality text
-   - `{tutor_name}` → "Tutor AI"
-   - `{assignment_description}` → "Title: File I/O Lab..."
-   - `{language}` → "en"
-
-**Final Prompt Sent to LLM**:
-```
-You are helping a student learn how to do something.
-
-Assignment Context:
----
-Title: File I/O Lab
-Implement file reading and writing operations...
----
-
-You are Tutor AI, a friendly and professional tutor.
-You maintain a warm but educational tone...
-
-The student is asking a general how-to question...
-
-RESPONSE GUIDELINES:
-- Provide a CONCISE answer (2-3 paragraphs maximum)
-- Show ONE clear example if helpful (keep it brief)
-
-Language: en
 ```
 
 ## Best Practices
@@ -239,7 +178,7 @@ RESPONSE GUIDELINES:
 
 ### 3. Tone Consistency
 - Personality prompts set the base tone
-- Strategy prompts should complement, not override
+- `strategy/tutor.md` should complement, not override
 - Keep language consistent across related prompts
 
 ### 4. Security Considerations
@@ -252,13 +191,13 @@ RESPONSE GUIDELINES:
 **Development Mode Testing**:
 ```bash
 # Start dev mode with your prompts
-computor-agent tutor --dev --prompts-dir ./my-prompts
+computor-agent tutor messaging --dev --prompts-dir ./my-prompts
 
 # Edit a prompt file
 vim ./my-prompts/personality/friendly_professional.md
 
 # See hot reload message
-🔄 Prompt reloaded: friendly_professional.md
+Prompt reloaded: friendly_professional.md
 
 # Test immediately with a message
 ```
@@ -266,7 +205,7 @@ vim ./my-prompts/personality/friendly_professional.md
 ### 6. Prompt Stacking
 
 Prompts are "stacked" in this order:
-1. **Base**: Strategy template provides structure
+1. **Base**: `strategy/tutor.md` provides structure
 2. **Personality**: Injected via `{personality_prompt}`
 3. **Context**: Variables replaced with actual data
 4. **Guidelines**: Response constraints applied
@@ -302,7 +241,7 @@ Brief explanation follows...
 ### Variables Not Replaced
 - Check variable name spelling exactly
 - Ensure the variable is available for that prompt type
-- Check the strategy implementation in code
+- Literal braces must be written as `{{` and `}}`
 
 ### Prompts Too Verbose
 - Add explicit length constraints
@@ -310,9 +249,9 @@ Brief explanation follows...
 - Specify paragraph/sentence limits
 
 ### Inconsistent Behavior
-- Check if personality and strategy prompts conflict
+- Check if the personality and tutor prompts conflict
 - Ensure all prompts have similar guidelines
-- Test with different personality/strategy combinations
+- Test with different personalities
 
 ## Advanced Techniques
 
@@ -338,7 +277,7 @@ If {language} is "en", respond in English.
 
 ### Context-Aware Responses
 ```markdown
-{previous_messages}
+{previous_messages_section}
 
 Based on our previous discussion:
 - Reference what was already covered

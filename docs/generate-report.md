@@ -40,12 +40,15 @@ results/report/
     ├── category_success.png
     ├── response_length.png
     ├── length_by_category.png
-    ├── time_per_scenario.png
+    ├── assignment_comparison.png    # with two or more models
+    ├── scenarios/
+    │   └── scenario_time_<model>.png
     ├── scores_per_model.png         # if evaluations.json present
     ├── metric_heatmap.png           #
     ├── radar_chart.png              #
     ├── metric_boxplots.png          #
     ├── scores_per_category.png      #
+    ├── assignment_quality_comparison.png #
     ├── category_score_comparison.png #
     ├── score_distribution.png       #
     ├── time_vs_quality.png          #
@@ -70,7 +73,8 @@ results/report/
 | Success Rate by Category | Grouped bar | Success rate per category across models |
 | Response Length | Bar | Average character count per model |
 | Response Length by Category | Box | Length distribution per intent category |
-| Time per Scenario | Grouped bar | Per-scenario timing across models |
+| Avg Response Time per Assignment | Bar | Per-assignment timing, one plot per model |
+| Response Time Comparison | Dot | Assignments with the largest timing spread, all models on one chart (two or more models) |
 
 ### Evaluation plots (when `evaluations.json` present)
 
@@ -81,6 +85,7 @@ results/report/
 | Model Metric Profiles | Radar/spider | Each model's strengths and weaknesses across all metrics |
 | Per-Metric Score Distribution | Box (subplots) | Score consistency per metric per model |
 | Scores by Prompt Category | Heatmap | Overall score per model x prompt category |
+| Quality Score Comparison | Dot | Assignments with the largest score spread, all models on one chart |
 | Category Score Comparison | Grouped bar | Quality per intent type across models |
 | Overall Score Distribution | Box | Score spread per model |
 | Response Time vs Quality | Scatter | Are slower models better? Each point is one model |
