@@ -10,20 +10,20 @@ ws://{host}/ws?token={bearer_token}
 ```
 
 ### Key Characteristics
-- **No server-side timeout**: Connections stay open indefinitely
+- **Bound to the credential**: A connection stays open as long as the token that opened it is valid. Shortly before it expires the server sends `system:auth_expiring`; a client that answers with `system:reauth` and a fresh token keeps its connection and subscriptions, otherwise the server closes it with code `4003`. Tokens without an expiry keep the connection open indefinitely
 - **Protocol-level ping/pong**: The underlying WebSocket protocol handles keep-alive
-- **Long-lived connections supported**: Designed for AI agents and persistent clients (can run for weeks)
+- **Long-lived connections supported**: Designed for AI agents and persistent clients
 - **Dead connection detection**: Server detects dead connections when send operations fail
 
 ## Connection Flow
 
 1. Client connects with bearer token as query parameter
 2. Server validates token and accepts connection
-3. Server sends `system:connected` event with user info
+3. Server sends `system:connected` event with the user id and the credential's expiry
 4. Client subscribes to channels via `channel:subscribe`
 5. Server validates permissions and confirms with `channel:subscribed`
 6. Client/server exchange events
-7. Connection closes when client disconnects or send fails
+7. Connection closes when client disconnects, send fails, or the credential expires without `system:reauth`
 
 ## Client-Side Requirements
 
@@ -99,21 +99,34 @@ async def connect_with_retry(url, token, max_retries=None):
 {"type": "system:ping"}
 ```
 
+#### Re-authenticate
+Re-arm the connection with a fresh token for the same user:
+```json
+{"type": "system:reauth", "token": "fresh_token"}
+```
+
 ### Server -> Client Events
 
 #### Connection Established
 ```json
-{"type": "system:connected", "user_id": "uuid"}
+{"type": "system:connected", "user_id": "uuid", "expires_at": "2026-01-27T10:00:00Z"}
 ```
+
+`expires_at` is `null` when the credential never expires.
 
 #### Subscription Confirmed
 ```json
 {"type": "channel:subscribed", "channels": ["submission_group:123"]}
 ```
 
+#### Unsubscription Confirmed
+```json
+{"type": "channel:unsubscribed", "channels": ["submission_group:123"]}
+```
+
 #### Subscription Failed
 ```json
-{"type": "channel:error", "channel": "submission_group:123", "error": "Permission denied"}
+{"type": "channel:error", "channel": "submission_group:123", "reason": "Permission denied"}
 ```
 
 #### New Message
@@ -132,12 +145,12 @@ async def connect_with_retry(url, token, max_retries=None):
 
 #### Message Updated
 ```json
-{"type": "message:update", "channel": "submission_group:123", "data": {...}}
+{"type": "message:update", "channel": "submission_group:123", "message_id": "uuid", "data": {...}}
 ```
 
 #### Message Deleted
 ```json
-{"type": "message:delete", "channel": "submission_group:123", "data": {"id": "uuid"}}
+{"type": "message:delete", "channel": "submission_group:123", "message_id": "uuid"}
 ```
 
 #### Typing Status Update
@@ -145,22 +158,30 @@ async def connect_with_retry(url, token, max_retries=None):
 {
   "type": "typing:update",
   "channel": "submission_group:123",
-  "data": {
-    "user_id": "uuid",
-    "user_name": "John",
-    "is_typing": true
-  }
+  "user_id": "uuid",
+  "user_name": "John",
+  "is_typing": true
 }
 ```
 
 #### Read Receipt (submission_group channels only)
 ```json
-{"type": "read:update", "channel": "submission_group:123", "data": {"message_id": "uuid", "user_id": "uuid"}}
+{"type": "read:update", "channel": "submission_group:123", "message_id": "uuid", "user_id": "uuid", "read": true}
 ```
 
 #### Keep-Alive Response
 ```json
 {"type": "system:pong"}
+```
+
+#### Credential Expiring
+```json
+{"type": "system:auth_expiring", "expires_at": "2026-01-27T10:00:00Z", "seconds_remaining": 60}
+```
+
+#### Re-authentication Accepted
+```json
+{"type": "system:reauthed", "user_id": "uuid", "expires_at": "2026-01-27T18:00:00Z"}
 ```
 
 #### Error
@@ -308,13 +329,14 @@ async def main():
     )
 
     # Register handlers
-    @client.on("message:new")
     async def on_message(data):
         print(f"New message: {data}")
 
-    @client.on("typing:update")
     async def on_typing(data):
         print(f"Typing: {data}")
+
+    client.on("message:new", on_message)
+    client.on("typing:update", on_typing)
 
     # Connect and subscribe
     await client.connect()
@@ -340,14 +362,30 @@ if __name__ == "__main__":
 | `WS_TYPING_TTL` | 5s | Typing indicator auto-expiry |
 | `WS_HANDLER_TIMEOUT` | 5s | Server handler timeout |
 | `WS_PING_INTERVAL` | 25s | Recommended client ping interval |
-| `WS_SEND_TIMEOUT` | 2s | Server send operation timeout |
+| `WS_SEND_TIMEOUT` | 10s | Server send operation timeout |
 
 ## Error Codes
 
 | Code | Description |
 |------|-------------|
 | `AUTH_FAILED` | Token validation failed |
+| `TOKEN_EXPIRED` | The credential behind the connection expired |
 | `CONNECTION_LIMIT` | Connection limit reached |
 | `INVALID_JSON` | Message was not valid JSON |
-| `PERMISSION_DENIED` | Not allowed to access channel |
-| `INVALID_CHANNEL` | Channel format invalid |
+| `INVALID_EVENT` | Event did not match a known event schema |
+| `UNHANDLED_EVENT` | Event type has no handler |
+| `HANDLER_ERROR` | Server failed while handling the event |
+| `NOT_SUBSCRIBED` | Typing or read event for a channel the client is not subscribed to |
+| `READ_MARK_FAILED` | Marking a message as read failed |
+| `REAUTH_FAILED` | `system:reauth` was rejected; the connection is closed |
+
+A refused subscription is reported as `channel:error` with a `reason`, not as `system:error`.
+
+## Close Codes
+
+| Code | Meaning |
+|------|---------|
+| `4001` | Credential rejected at handshake; obtain a new one |
+| `4003` | Credential expired during the connection; refresh and reconnect |
+| `4008` | Connection limit reached |
+| `1011` | Internal server error |

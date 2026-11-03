@@ -6,6 +6,7 @@ AI agents for the Computor system.
 
 - **LLM Abstraction Layer**: Unified interface for multiple LLM providers
 - **Multiple Providers**: Support for OpenAI, LM Studio, Ollama, and custom providers
+- **Configurable Model**: The language model is chosen in `config.yaml` (`llm.provider`, `llm.model`, `llm.base_url`). It can run on your own hardware through any OpenAI-compatible server such as Ollama, LM Studio, vLLM or llama.cpp, or in the cloud through the OpenAI API (see [docs/local-llm-setup.md](docs/local-llm-setup.md))
 - **Streaming Support**: Real-time response streaming
 - **Figure Review**: Vision-LLM review of plots/images in student submissions, used in messaging and grading (see `docs/tutor-agent.md`)
 - **Highly Configurable**: Extensive configuration options via Pydantic models
@@ -42,6 +43,8 @@ pip install -e ".[dev]"
 computor-agent tutor messaging -c config.yaml --workers 4
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose changes.
+
 ## Quick Start
 
 ### As a Library
@@ -76,13 +79,12 @@ config = LLMConfig(
     provider=ProviderType.OLLAMA,
     model="devstral-small",
     base_url="http://localhost:11434/v1",
-    temperature=0.7,
     max_tokens=2000,
     system_prompt="You are a helpful coding tutor.",
 )
 
 async with get_provider(config) as provider:
-    response = await provider.complete("How do I write a for loop?")
+    response = await provider.complete("How do I write a for loop?", temperature=0.7)
     print(response.content)
 ```
 
@@ -117,7 +119,7 @@ computor-agent providers
 | OpenAI | Cloud | `https://api.openai.com/v1` |
 | Dummy | Testing | N/A |
 
-All providers use the OpenAI-compatible API format.
+All providers use the OpenAI-compatible API format, so any other OpenAI-compatible server (for example vLLM or llama.cpp) works by setting its `base_url`.
 
 ## Setting Up Ollama (Linux)
 
@@ -193,7 +195,6 @@ llm:
   provider: ollama
   model: qwen2.5-coder:1.5b
   base_url: http://localhost:11434/v1
-  temperature: 0.7
 ```
 
 ### Ollama Commands Reference
@@ -224,7 +225,7 @@ journalctl -u ollama -f
 
 ### Recommended Models for Tutoring
 
-The minimum recommended model for the Tutor AI Agent is `mistral:7b` (~4.4GB). Larger models generally produce better pedagogical guidance but require more resources. A formal benchmark of multiple models is ongoing — final recommendations will be updated once results are available.
+The minimum recommended model for the Tutor AI Agent is `mistral:7b` (~4.4GB). Larger models generally produce better pedagogical guidance but require more resources.
 
 | Model | Size | RAM Needed | Notes |
 |-------|------|------------|-------|
@@ -246,7 +247,7 @@ process a general Computor API token or run the broad tutor scheduler as the
 public worker. The backend flag `PUBLIC_LUNA_ENABLED` remains false until the
 route, egress policy, logs, and synthetic response are verified.
 
-The [native faepmac2 deployment](ops/public-luna/macos/README.md) supplies a
+The [native macOS deployment](ops/public-luna/macos/README.md) supplies a
 dedicated non-login account, per-UID firewall and sandbox. Use
 `https://computor.at/api` as the external backend base URL.
 
@@ -277,7 +278,7 @@ computor-agent tutor messaging --dev --assignment ./my-assignment
 
 #### `computor-agent tutor messaging`
 
-Responds to student messages tagged with `#ai::request`.
+Responds when a learner @mentions the tutor in a course message, and to follow-up replies in threads the tutor already takes part in.
 
 | Option | Description |
 |--------|-------------|
@@ -287,6 +288,14 @@ Responds to student messages tagged with `#ai::request`.
 | `--dev` | Development mode (interactive shell, no API calls) |
 | `--prompts-dir PATH` | Custom prompts directory |
 | `--assignment PATH` | [Dev mode] Assignment directory with `meta.yaml` |
+| `--scenario PATH` | [Dev mode] Scenario directory with `scenario.yaml` |
+| `-p, --prompt TEXT` | [Dev mode] Process a single message and exit |
+| `-l, --log-file PATH` | Log to a rotating file |
+| `--log-llm-content` | Log LLM prompts and replies at DEBUG level (off by default) |
+| `--api-port PORT` | Enable the HTTP dashboard on this port |
+| `--api-host HOST` | Dashboard bind address (default: `127.0.0.1`) |
+| `--llm-probe-interval SECONDS` | Seconds between LLM liveness probes; `0` disables them (default: 30) |
+| `-w, --workers N` | Messages processed concurrently (1-50) |
 
 #### `computor-agent tutor grading`
 
@@ -310,7 +319,7 @@ All settings are in a single `config.yaml` file:
 # Backend API connection
 backend:
   url: https://api.computor.example.com
-  api_token: ctp_your_api_token_here  # or use username/password
+  api_token: ctp_your_api_token_here
 
 # LLM provider settings
 llm:
@@ -323,20 +332,15 @@ tutor:
   personality:
     name: "Lena"
     tone: "friendly_professional"
-
-  triggers:
-    request_tags:
-      - scope: "ai"
-        value: "request"
 ```
 
 ### How It Works
 
 **Messaging Mode:**
-1. Student creates message with `#ai::request` tag
-2. Agent detects tag and classifies intent (question, debug, review, etc.)
-3. Agent generates response using LLM
-4. Student can reply without tag for follow-ups
+1. Student @mentions the tutor in a course message
+2. Agent gathers the thread, assignment and submission context
+3. Agent generates the response with one LLM call
+4. Student can reply in the thread without a new mention for follow-ups
 
 **Grading Mode (Dev):**
 1. Point to reference solution and student submission directories
@@ -348,12 +352,11 @@ See [docs/tutor-agent.md](docs/tutor-agent.md) for detailed documentation.
 ### Mentioning Lena
 
 The tutor is displayed as Lena. Learners reach her through a structured
-course-message mention of the existing tutor account; with the matching backend
-update, typed or pasted `@lena`, legacy `@luna` and `@ai` all resolve to that
-same account, with or without choosing autocomplete. Set the backend
-`TUTOR_AGENT_USER_ID` to the account already used by this worker and rename
-that existing account; retain its user ID, memberships and credentials. The
-worker continues to consume `mentions_me` and recognize follow-ups by user ID.
+course-message mention of the tutor account; typed or pasted `@lena`, `@luna`
+and `@ai` all resolve to that same account, with or without choosing
+autocomplete. Set the backend `TUTOR_AGENT_USER_ID` to the user ID of the
+account this worker authenticates as. The worker consumes `mentions_me` and
+recognizes follow-ups by user ID.
 
 The author label and mention dropdown show the backend account's name.
 `tutor.personality.name` only sets how the tutor introduces itself in its
@@ -380,10 +383,11 @@ LLMConfig(
     base_url="http://localhost:1234/v1",
     api_key=None,                    # Optional API key
 
-    # Generation parameters
-    temperature=0.7,                 # 0.0-2.0
+    # Generation parameters (temperature is passed per call,
+    # e.g. provider.complete(prompt, temperature=0.7))
     max_tokens=None,                 # Max tokens to generate
     top_p=None,                      # Nucleus sampling
+    top_k=None,                      # Top-k sampling
     frequency_penalty=None,          # Repetition penalty
     presence_penalty=None,           # Topic penalty
     stop_sequences=None,             # Stop strings

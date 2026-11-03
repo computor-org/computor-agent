@@ -53,6 +53,9 @@ ollama serve
 ollama pull devstral-small
 ```
 
+To keep Ollama running as a launchd service across logins and reboots, run
+`scripts/setup-ollama-macos.sh` from this repository.
+
 ### Windows
 
 1. Download installer from https://ollama.com/download/windows
@@ -263,10 +266,6 @@ LLM Error: Model 'xyz' not found
 **Solutions:**
 1. Use GPU if available
 2. Use smaller/quantized models
-3. For Ollama on macOS, enable Metal:
-   ```bash
-   OLLAMA_METAL=1 ollama serve
-   ```
 
 ---
 
@@ -313,9 +312,14 @@ Once your LLM server is running:
    computor-agent chat -p ollama -m devstral-small
    ```
 
-3. Configure defaults in your environment:
-   ```bash
-   export LLM_PROVIDER=ollama
-   export LLM_MODEL=devstral-small
-   export LLM_BASE_URL=http://localhost:11434/v1
+3. Point the tutor agent at the server in `config.yaml`:
+   ```yaml
+   llm:
+     provider: ollama
+     model: devstral-small
+     base_url: http://localhost:11434/v1
    ```
+   The `COMPUTOR_LLM_PROVIDER`, `COMPUTOR_LLM_MODEL`, `COMPUTOR_LLM_BASE_URL`
+   and `COMPUTOR_LLM_API_KEY` environment variables override these values.
+   The `chat` and `ask` commands take the provider, model and URL as options
+   and read an API key from `OPENAI_API_KEY` or `LLM_API_KEY`.

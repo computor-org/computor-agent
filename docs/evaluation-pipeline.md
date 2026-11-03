@@ -64,7 +64,6 @@ llm:
   provider: ollama
   model: qwen2.5-coder:7b
   base_url: http://localhost:11434/v1
-  temperature: 0.7
 ```
 
 See [examples/config.example.yaml](../examples/config.example.yaml) for all options.
@@ -185,7 +184,7 @@ Requires PostgreSQL access to the computor database and optionally MinIO for dow
 
 #### Database & MinIO Connection
 
-All connection details are passed as CLI flags. The defaults match the standard local Docker setup (`docker-postgres-1` + MinIO), so no extra flags are needed if you're running against that:
+All connection details are passed as CLI flags. The defaults match the local Docker setup of the backend (PostgreSQL + MinIO), so no extra flags are needed if you're running against that:
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -256,11 +255,11 @@ Scores each tutor response using a strong LLM as a judge. The evaluator receives
 python scripts/evaluate_responses.py evaluate.yaml ./results/
 python scripts/evaluate_responses.py ./results/                      # default metrics
 python scripts/evaluate_responses.py ./results/ -m llama3.1:70b      # strong evaluator
-python scripts/evaluate_responses.py ./results/ --run run_*_mistral  # filter runs
+python scripts/evaluate_responses.py ./results/ --run mistral        # runs whose name contains 'mistral'
 python scripts/evaluate_responses.py ./results/ --repeats 3          # 3 independent evals per response
 ```
 
-For statistical robustness, use `--repeats N` (or `repeats: N` in `evaluate.yaml`) to run N independent evaluations per response. The output includes per-metric mean, median, min, and max across all runs, plus the raw individual scores. The `scores` field contains the mean values for backward compatibility with the report generator.
+For statistical robustness, use `--repeats N` (or `repeats: N` in `evaluate.yaml`) to run N independent evaluations per response. The output includes per-metric mean, median, min, and max across all runs, plus the raw individual scores. The `scores` field contains the mean values used by the report generator.
 
 The evaluator model is initialized once and stays alive across all evaluations.
 
@@ -277,7 +276,7 @@ python scripts/generate_report.py ./results/
 python scripts/generate_report.py ./results/ -o ./my-report/
 ```
 
-Automatically detects `evaluations.json` and includes scoring plots if present. When evaluations used `--repeats`, the report uses the mean scores for comparison tables and plots. Generates up to 22 plots covering performance (timing, success rates, response length) and evaluation quality (score matrices, radar charts, scatter plots for time-vs-quality and safety-vs-helpfulness trade-offs, response style comparison).
+Automatically detects `evaluations.json` and includes scoring plots if present. When evaluations used `--repeats`, the report uses the mean scores for comparison tables and plots. Generates plots covering performance (timing, success rates, response length) and evaluation quality (score matrices, radar charts, scatter plots for time-vs-quality and safety-vs-helpfulness trade-offs, response style comparison).
 
 **Output:** `results/report/report.md` with embedded images from `results/report/media/`.
 

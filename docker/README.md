@@ -25,7 +25,7 @@ Stop with `./start.sh down`. Rebuild after a code update with
 
 **Required settings in config.yaml:**
 - `backend.url` — Backend API URL
-- `backend.api_token` or `backend.username`/`password` — Authentication
+- `backend.api_token` — Authentication
 - `llm.provider`, `llm.model`, `llm.base_url` — LLM settings
 
 ## Worker count
@@ -51,8 +51,6 @@ Any of these can be set in the `environment:` section of
 | `COMPUTOR_WORKERS` | `scheduler.max_concurrent_processing` |
 | `COMPUTOR_BACKEND_URL` | `backend.url` |
 | `COMPUTOR_BACKEND_API_TOKEN` | `backend.api_token` |
-| `COMPUTOR_BACKEND_USERNAME` | `backend.username` |
-| `COMPUTOR_BACKEND_PASSWORD` | `backend.password` |
 | `COMPUTOR_LLM_PROVIDER` | `llm.provider` |
 | `COMPUTOR_LLM_MODEL` | `llm.model` |
 | `COMPUTOR_LLM_BASE_URL` | `llm.base_url` |
@@ -115,7 +113,7 @@ The image runs the agent with `--api-port 8080`; compose publishes it as
 ./start.sh --workers 2
 docker ps                                   # wait for (healthy)
 
-# Simulate a long outage (longer than any old retry budget)
+# Simulate a long outage (longer than the 300 s reconnect backoff cap)
 docker network disconnect <network> computor-agent   # find it: docker inspect computor-agent
 sleep 700
 docker network connect <network> computor-agent

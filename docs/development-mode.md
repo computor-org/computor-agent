@@ -88,7 +88,7 @@ Provides:
 
 ### Assignment Directory (`--assignment`)
 
-Load just an assignment from a reference solution directory (legacy, predates scenarios):
+Load just an assignment from a reference solution directory:
 
 ```bash
 computor-agent tutor messaging --dev --assignment /path/to/assignment
@@ -148,7 +148,7 @@ If the LLM health check fails, dev mode exits with a helpful error message sugge
 | `--dev` | Enable development mode (required) |
 | `--config`, `-c` | Config file path (default: `config.yaml`) |
 | `--scenario` | Path to scenario directory |
-| `--assignment` | Path to assignment directory (legacy) |
+| `--assignment` | Path to assignment directory |
 | `--prompt`, `-p` | Single message to process and exit |
 | `--prompts-dir` | Custom prompts directory (default: `~/.computor/prompts`) |
 | `--verbose`, `-v` | Enable debug logging |

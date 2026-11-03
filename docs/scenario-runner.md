@@ -93,13 +93,14 @@ I don't understand how to create the matrix M. Can you help me?
 
 ## Output
 
-Results are written to `results/run_<timestamp>_<model>/` — one directory per model:
+Results are written to `results/run_<timestamp>_<model>/` — one directory per model. A re-run continues in the newest existing run directory of the same model and skips prompts that already have a response file; `--override` starts a new run directory and re-runs every prompt:
 
 ```
 results/
 ├── run_2026-03-25T14-30-00_mistral-7b/
 │   ├── summary.json
 │   └── python-basics/
+│       ├── summary.json
 │       ├── 001_help_response.md
 │       ├── 002_help_response.md
 │       └── 003_solution_request_error.log
@@ -160,4 +161,5 @@ results/
 | `--model`, `-m` | Override LLM model(s). Comma-separated for multiple: `-m 'a:7b,b:7b'` |
 | `--output`, `-o` | Output directory (default: `<scenarios_dir>/../results/`) |
 | `--scenario`, `-s` | Filter: only run scenarios matching this name |
+| `--override` | Re-run all prompts, ignoring existing response files |
 | `--verbose`, `-v` | Enable debug logging |
