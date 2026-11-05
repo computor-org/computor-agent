@@ -8,8 +8,6 @@ import pytest
 
 from computor_agent.tutor import (
     TutorConfig,
-    Intent,
-    IntentClassification,
     TriggerType,
     ConversationContext,
     ThreatType,
@@ -105,46 +103,6 @@ class TestTutorConfig:
 
         with pytest.raises(pydantic.ValidationError):
             TutorConfig.from_dict({"figure_review": {"enabld": True}})
-
-
-class TestIntent:
-    """Tests for Intent enum."""
-
-    def test_intent_values(self):
-        """Test all intent values exist."""
-        assert Intent.QUESTION_EXAMPLE.value == "question_example"
-        assert Intent.QUESTION_HOWTO.value == "question_howto"
-        assert Intent.HELP_DEBUG.value == "help_debug"
-        assert Intent.HELP_REVIEW.value == "help_review"
-        assert Intent.SUBMISSION_REVIEW.value == "submission_review"
-        assert Intent.CLARIFICATION.value == "clarification"
-
-
-class TestIntentClassification:
-    """Tests for IntentClassification."""
-
-    def test_basic_classification(self):
-        """Test creating a classification."""
-        classification = IntentClassification(
-            intent=Intent.HELP_DEBUG,
-            confidence=0.85,
-            user_intent_description="Student mentioned error message",
-        )
-
-        assert classification.intent == Intent.HELP_DEBUG
-        assert classification.confidence == 0.85
-        assert "error" in classification.user_intent_description
-
-    def test_classification_with_none_intent(self):
-        """Test classification with no matched intent."""
-        classification = IntentClassification(
-            intent=None,
-            confidence=0.0,
-            user_intent_description="Student wants something unusual",
-        )
-
-        assert classification.intent is None
-        assert classification.confidence == 0.0
 
 
 class TestConversationContext:

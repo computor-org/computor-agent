@@ -13,12 +13,9 @@
 # =============================================================================
 backend:
   url: https://api.computor.example.com
-  # Choose ONE authentication method:
-  # Option 1: API Token (recommended)
+  # Authentication: an API token, sent as the X-API-Token header.
+  # The backend has no username/password login.
   api_token: ctp_your-api-token-here
-  # Option 2: Username/Password
-  # username: tutor-agent
-  # password: your-secret-password
   timeout: 30  # HTTP request timeout in seconds
 
 # =============================================================================

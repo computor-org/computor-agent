@@ -184,14 +184,6 @@ class MessageSimulator:
 
         return [msg for msg in chain if msg]
 
-    def add_ai_response(self, content: str, parent_id: str) -> MockMessage:
-        """Simulate an AI response message."""
-        return self.create_message(
-            content=content,
-            title="#ai::response",
-            parent_id=parent_id,
-        )
-
 
 class MockComputorClient:
     """Mock client that simulates API responses without making actual calls."""
@@ -400,7 +392,6 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
     from computor_agent.tutor.prompts.templates import (
         FIGURE_REVIEW_SYSTEM_PROMPT,
         PERSONALITY_PROMPTS,
-        STRATEGY_PROMPTS,
         SECURITY_DETECTION_PROMPT,
         SECURITY_CONFIRMATION_PROMPT,
         TUTOR_SYSTEM_PROMPT,
@@ -439,14 +430,6 @@ def _ensure_prompt_files(prompts_dir: Path) -> None:
         )
         initialized_count += 1
         logger.debug(f"Created prompt file: {tutor_prompt_path}")
-
-    # Check and create strategy prompts
-    for strategy, content in STRATEGY_PROMPTS.items():
-        file_path = strategy_dir / f"{strategy}.md"
-        if not file_path.exists():
-            _write_prompt_file(file_path, content, f"Strategy: {strategy}")
-            initialized_count += 1
-            logger.debug(f"Created prompt file: {file_path}")
 
     # Check and create security prompts
     security_prompts = {
@@ -545,8 +528,8 @@ class DevelopmentScheduler:
                 user_input = Prompt.ask("\n[bold blue]You[/bold blue]")
 
                 if user_input.startswith("/"):
-                    # Handle commands
-                    await self._handle_command(user_input, last_message_id)
+                    # Handle commands; they may start or switch the thread
+                    last_message_id = await self._handle_command(user_input, last_message_id)
                     if not self.running:
                         break
                     continue
@@ -573,8 +556,13 @@ class DevelopmentScheduler:
                 console.print(f"[red]Error: {e}[/red]")
                 logger.exception("Error in development loop")
 
-    async def _handle_command(self, command: str, last_message_id: Optional[str]):
-        """Handle special commands."""
+    async def _handle_command(
+        self, command: str, last_message_id: Optional[str]
+    ) -> Optional[str]:
+        """Handle a special command.
+
+        Returns the message the next one replies to (None starts a new thread).
+        """
         parts = command.split()
         cmd = parts[0].lower()
 
@@ -583,14 +571,15 @@ class DevelopmentScheduler:
             self.running = False
 
         elif cmd == "/new":
-            console.print("[green]Starting new conversation (next message will have #ai::request tag)[/green]")
+            console.print("[green]Starting a new conversation (the next message opens a new thread)[/green]")
+            return None
 
         elif cmd == "/reply" and len(parts) > 1:
             msg_id = parts[1]
             if msg_id in self.simulator.messages:
                 console.print(f"[green]Replying to message {msg_id}[/green]")
-            else:
-                console.print(f"[red]Message {msg_id} not found[/red]")
+                return msg_id
+            console.print(f"[red]Message {msg_id} not found[/red]")
 
         elif cmd == "/show":
             self._show_conversation_history()
@@ -599,6 +588,7 @@ class DevelopmentScheduler:
             self.simulator.messages.clear()
             self.simulator.conversation_chains.clear()
             console.print("[yellow]All messages cleared[/yellow]")
+            return None
 
         elif cmd == "/reload":
             # Manually reload all prompts
@@ -612,6 +602,8 @@ class DevelopmentScheduler:
 
         else:
             console.print(f"[red]Unknown command: {cmd}[/red]")
+
+        return last_message_id
 
     def _show_assignment_details(self):
         """Display assignment details if loaded."""
@@ -709,10 +701,6 @@ class DevelopmentScheduler:
                     console.print(f"[green]✓ Response sent[/green]")
                 else:
                     console.print(f"[yellow]No response sent[/yellow]")
-
-                if result.intent:
-                    console.print(f"[dim]Intent: {result.intent.intent.value if result.intent.intent else 'unknown'}[/dim]")
-                    console.print(f"[dim]User wants: {result.intent.user_intent_description}[/dim]")
             else:
                 console.print(f"[red]Processing failed: {result.error}[/red]")
 

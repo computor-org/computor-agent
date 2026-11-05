@@ -98,7 +98,6 @@ computor-agent tutor messaging --dev
 ```
 You: How do I write a for loop in Python?
 Processing message...
-Intent: question_howto
 
 AI Response:
 In Python, you can write a for loop like this:

@@ -183,7 +183,7 @@ class TriggerChecker:
             )
 
         try:
-            # Check for messages with request tags (new conversations)
+            # Check for unread @mentions of the agent (new conversations)
             result = await self._check_new_conversation_trigger(
                 submission_group_id, course_id
             )

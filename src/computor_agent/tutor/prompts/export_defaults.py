@@ -11,9 +11,9 @@ from typing import Optional
 from computor_agent.tutor.prompts.templates import (
     FIGURE_REVIEW_SYSTEM_PROMPT,
     PERSONALITY_PROMPTS,
-    STRATEGY_PROMPTS,
     SECURITY_DETECTION_PROMPT,
     SECURITY_CONFIRMATION_PROMPT,
+    TUTOR_SYSTEM_PROMPT,
     UNIT_DESCRIPTION_PROMPT,
 )
 
@@ -46,11 +46,10 @@ def export_prompts(target_dir: Optional[Path] = None):
         write_prompt_file(file_path, prompt, f"Personality: {tone}")
         print(f"  ✓ {file_path.relative_to(target_dir)}")
 
-    # Export strategy prompts
-    for strategy, prompt in STRATEGY_PROMPTS.items():
-        file_path = strategy_dir / f"{strategy}.md"
-        write_prompt_file(file_path, prompt, f"Strategy: {strategy}")
-        print(f"  ✓ {file_path.relative_to(target_dir)}")
+    # Export the live tutor prompt
+    tutor_path = strategy_dir / "tutor.md"
+    write_prompt_file(tutor_path, TUTOR_SYSTEM_PROMPT, "Strategy: tutor (the live messaging prompt)")
+    print(f"  ✓ {tutor_path.relative_to(target_dir)}")
 
     # Export security prompts
     security_prompts = {
@@ -78,7 +77,7 @@ def export_prompts(target_dir: Optional[Path] = None):
     print(f"  ✓ {unit_description_path.relative_to(target_dir)}")
 
     print(f"\nExported {len(PERSONALITY_PROMPTS)} personality prompts")
-    print(f"Exported {len(STRATEGY_PROMPTS)} strategy prompts")
+    print("Exported 1 tutor prompt")
     print(f"Exported {len(security_prompts)} security prompts")
     print("Exported 1 figure review prompt")
     print("Exported 1 unit description prompt")

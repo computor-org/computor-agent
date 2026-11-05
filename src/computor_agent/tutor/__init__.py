@@ -9,14 +9,15 @@ This module provides an AI-powered tutor agent that can:
 Architecture:
     ┌─────────────────────────────────────────────────────────┐
     │                      SCHEDULER                           │
-    │  Polls for: new messages with request tags              │
+    │  Course messages over the backend WebSocket, backed by  │
+    │  a periodic catch-up scan                                │
     └─────────────────────────────────────────────────────────┘
                                │
                                ▼
     ┌─────────────────────────────────────────────────────────┐
     │                  TRIGGER CHECKER                         │
     │  Checks for:                                             │
-    │  - Messages with request tags (e.g., #ai::request)      │
+    │  - Messages that @mention the agent                     │
     │  - Replies in conversation chains where AI responded    │
     └─────────────────────────────────────────────────────────┘
                                │
@@ -41,32 +42,22 @@ Architecture:
                                │
                                ▼ (if safe)
     ┌─────────────────────────────────────────────────────────┐
-    │                 INTENT CLASSIFIER                        │
-    │  Determines what student wants:                          │
-    │  - QUESTION_EXAMPLE, QUESTION_HOWTO                     │
-    │  - HELP_DEBUG, HELP_REVIEW, CLARIFICATION               │
-    └─────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-    ┌─────────────────────────────────────────────────────────┐
-    │                 STRATEGY EXECUTOR                        │
-    │  Each intent → Strategy with:                            │
-    │  - System prompt (personality + context)                │
-    │  - LLM call                                             │
-    │  - Response formatting                                   │
+    │                 TUTOR PROMPT                             │
+    │  One LLM call with the unified prompt                   │
+    │  (strategy/tutor.md or the built-in), personality and   │
+    │  the gathered context                                    │
     └─────────────────────────────────────────────────────────┘
                                │
                                ▼
     ┌─────────────────────────────────────────────────────────┐
     │                 RESPONSE HANDLER                         │
     │  - Post reply to message chain (with parent_id)         │
-    │  - Tag response with #ai::response                      │
     │  - Save AI notes for future context                     │
     └─────────────────────────────────────────────────────────┘
 
 Conversation Model:
     - Conversations are message chains linked by parent_id
-    - A conversation starts when a message has a request tag
+    - A conversation starts when a message @mentions the agent
     - The AI responds as a reply (with parent_id)
     - Any student reply in the chain triggers another AI response
     - No external state tracking needed - the chain IS the conversation
@@ -109,17 +100,15 @@ from computor_agent.tutor.config import (
     TriggerConfig,
     NotesConfig,
 )
-from computor_agent.tutor.intents import Intent, IntentClassification, IntentClassifier
 from computor_agent.tutor.security import (
     SecurityGate,
     SecurityCheckResult,
     ThreatType,
     ThreatLevel,
 )
-from computor_agent.tutor.strategies import StrategyRegistry, StrategyResponse
 from computor_agent.tutor.context import ConversationContext, TriggerType
 from computor_agent.tutor.context_builder import ContextBuilder
-from computor_agent.tutor.agent import TutorAgent, ProcessingResult
+from computor_agent.tutor.agent import TutorAgent, ProcessingResult, TutorResponse
 from computor_agent.tutor.trigger import (
     TriggerChecker,
     TriggerCheckResult,
@@ -172,6 +161,7 @@ __all__ = [
     # Main agent
     "TutorAgent",
     "ProcessingResult",
+    "TutorResponse",
     # Scheduler configuration
     # WebSocket (real-time)
     "ComputorWebSocket",
@@ -200,18 +190,11 @@ __all__ = [
     "ConversationContext",
     "ContextBuilder",
     "TriggerType",
-    # Intent
-    "Intent",
-    "IntentClassification",
-    "IntentClassifier",
     # Security
     "SecurityGate",
     "SecurityCheckResult",
     "ThreatType",
     "ThreatLevel",
-    # Strategies
-    "StrategyRegistry",
-    "StrategyResponse",
     # Summary storage (AI's notes to itself)
     "SummaryStore",
     "AgentNote",
