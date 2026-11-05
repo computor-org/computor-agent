@@ -25,10 +25,8 @@ from computor_types.student_course_contents import CourseContentStudentGet
 from computor_agent.tutor.config import TutorConfig
 from computor_agent.tutor.context import ConversationContext
 from computor_agent.tutor.context_builder import ContextBuilder
-from computor_agent.tutor.intents import IntentClassification, IntentClassifier
 from computor_agent.tutor.prompts.templates import PERSONALITY_PROMPTS
 from computor_agent.tutor.security import SecurityCheckResult, SecurityGate
-from computor_agent.tutor.strategies import StrategyRegistry, StrategyResponse
 
 if TYPE_CHECKING:
     from computor_agent.tutor.assignment_loader import AssignmentContext
@@ -69,6 +67,17 @@ class LLMClient(Protocol):
 
 
 @dataclass
+class TutorResponse:
+    """The reply generated for a student message."""
+
+    message_content: str
+    """The response message content to send to the student."""
+
+    message_title: Optional[str] = None
+    """Optional title for the message."""
+
+
+@dataclass
 class ProcessingResult:
     """
     Result of processing a student interaction.
@@ -82,11 +91,8 @@ class ProcessingResult:
     message_sent: bool
     """Whether a response message was sent."""
 
-    response: Optional[StrategyResponse] = None
-    """The strategy response (if generated)."""
-
-    intent: Optional[IntentClassification] = None
-    """The classified intent (if classification ran)."""
+    response: Optional[TutorResponse] = None
+    """The generated reply (if one was generated)."""
 
     security_result: Optional[SecurityCheckResult] = None
     """Security check result (if check ran)."""
@@ -114,8 +120,7 @@ class TutorAgent:
     Coordinates:
     - Context building
     - Security checking
-    - Intent classification
-    - Strategy execution
+    - One LLM call with the unified tutor prompt
     - Response delivery
 
     The agent is stateless - each call processes a single interaction
@@ -175,8 +180,6 @@ class TutorAgent:
             trigger_config=config.triggers,
         )
         self.security_gate = SecurityGate(config.security, llm)
-        self.intent_classifier = IntentClassifier(llm)
-        self.strategy_registry = StrategyRegistry(config.personality)
 
     async def process_message(
         self,
@@ -258,7 +261,7 @@ class TutorAgent:
             system_prompt = self._build_system_prompt(context)
             user_message = context.trigger_message.content if context.trigger_message else "(No message)"
 
-            # Single LLM call — no intent classification needed
+            # Single LLM call with the unified prompt
             logger.info("Generating response via unified prompt")
             response_content = await self.llm.complete(
                 prompt=user_message,
@@ -267,16 +270,13 @@ class TutorAgent:
                 temperature=self.config.strategies.fallback.temperature,
             )
 
-            response = StrategyResponse(
-                message_content=response_content,
-                strategy_name="unified",
-            )
+            response = TutorResponse(message_content=response_content)
 
             # Send response if configured
             message_sent = False
             response_message_id = None
             if send_response and response.message_content:
-                # Add response tag to title for trigger detection
+                # Replies carry no title; the agent recognises its own by author
                 formatted_title = self._format_response_title(response.message_title)
 
                 # Reply to the triggering message to create a chain
@@ -583,32 +583,5 @@ class TutorAgent:
 
         try:
             return await self.security_gate.check(context)
-        finally:
-            context.destroy()
-
-    async def classify_only(
-        self,
-        submission_group_id: str,
-        message: dict,
-    ) -> IntentClassification:
-        """
-        Run only intent classification without generating a response.
-
-        Useful for analytics or routing.
-
-        Args:
-            submission_group_id: The submission group ID
-            message: The message dict to classify
-
-        Returns:
-            IntentClassification
-        """
-        context = await self.context_builder.build_for_message(
-            submission_group_id=submission_group_id,
-            message=message,
-        )
-
-        try:
-            return await self.intent_classifier.classify(context)
         finally:
             context.destroy()

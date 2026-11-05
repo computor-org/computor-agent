@@ -52,15 +52,14 @@ class PromptLoader:
     │   ├── casual.md
     │   └── encouraging.md
     ├── strategy/
-    │   ├── question_example.md
-    │   ├── question_howto.md
-    │   ├── help_debug.md
-    │   ├── help_review.md
-    │   ├── clarification.md
-    │   └── fallback.md
-    └── security/
-        ├── detection.md
-        └── confirmation.md
+    │   └── tutor.md
+    ├── security/
+    │   ├── detection.md
+    │   └── confirmation.md
+    ├── figure_review/
+    │   └── review.md
+    └── unit_description/
+        └── unit_description.md
     """
 
     def __init__(
@@ -261,20 +260,12 @@ class PromptLoader:
             self._personality_prompts.get("friendly_professional")
         )
 
-    def get_strategy_prompt(self, strategy: str) -> Optional[str]:
-        """Get a strategy prompt, falling back to ``fallback.md``."""
-        return self._strategy_prompts.get(
-            strategy,
-            self._strategy_prompts.get("fallback")
-        )
-
     def get_strategy_prompt_exact(self, strategy: str) -> Optional[str]:
-        """A strategy prompt by exact name, with NO fallback.
+        """A strategy prompt by exact name, with no fallback.
 
-        The live tutor prompt needs this: ``get_strategy_prompt`` falls back to
-        ``fallback.md``, one of the retired intent→strategy prompts, so asking
-        it for a missing ``tutor`` would silently answer with the old
-        architecture's text instead of the current built-in.
+        Older prompt directories still hold the retired per-intent prompts
+        (``fallback.md`` and friends); none of them may stand in for a missing
+        ``tutor.md``.
         """
         return self._strategy_prompts.get(strategy)
 
@@ -293,10 +284,6 @@ class PromptLoader:
     def get_all_personality_prompts(self) -> Dict[str, str]:
         """Get all personality prompts."""
         return self._personality_prompts.copy()
-
-    def get_all_strategy_prompts(self) -> Dict[str, str]:
-        """Get all strategy prompts."""
-        return self._strategy_prompts.copy()
 
     def start_watching(self) -> None:
         """Start watching prompt files for changes."""
@@ -366,19 +353,6 @@ def get_personality_prompt(tone: str) -> str:
         # Fall back to hardcoded templates
         from computor_agent.tutor.prompts.templates import PERSONALITY_PROMPTS
         prompt = PERSONALITY_PROMPTS.get(tone, PERSONALITY_PROMPTS["friendly_professional"])
-
-    return prompt
-
-
-def get_strategy_prompt(strategy: str) -> str:
-    """Get a strategy prompt, falling back to templates.py if needed."""
-    loader = get_prompt_loader()
-    prompt = loader.get_strategy_prompt(strategy)
-
-    if prompt is None:
-        # Fall back to hardcoded templates
-        from computor_agent.tutor.prompts.templates import STRATEGY_PROMPTS
-        prompt = STRATEGY_PROMPTS.get(strategy, STRATEGY_PROMPTS["fallback"])
 
     return prompt
 
@@ -475,8 +449,8 @@ def get_tutor_prompt() -> str:
     built-in text so it can be found and edited. Without an override the
     built-in ``TUTOR_SYSTEM_PROMPT`` is returned.
 
-    The retired intent→strategy prompts (``help_debug.md`` and friends) are NOT
-    consulted for live replies — this one file is the whole surface.
+    Other files in ``strategy/``, such as the retired per-intent prompts an
+    older version wrote there, are ignored.
     """
     from computor_agent.tutor.prompts.templates import TUTOR_SYSTEM_PROMPT
 

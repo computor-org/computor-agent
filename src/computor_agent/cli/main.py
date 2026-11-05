@@ -606,7 +606,8 @@ def messaging(
     """
     Start the messaging tutor agent.
 
-    Polls for student messages with trigger tags and responds automatically.
+    Answers course messages that @mention the agent, and follow-up replies
+    in threads it is part of.
 
     Examples:
 
