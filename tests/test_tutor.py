@@ -443,3 +443,13 @@ class TestSchedulerConfig:
 
         assert config.poll_interval_seconds == 60
         assert config.max_concurrent_processing == 10
+
+
+def test_dev_mode_defaults_load_without_a_config_file():
+    """`tutor messaging --dev` without -c must not fail on the backend token."""
+    from computor_agent.tutor.dev_mode import _default_dev_config
+
+    config = _default_dev_config()
+
+    assert config.backend.get_api_token()
+    assert config.llm.provider == "ollama"
