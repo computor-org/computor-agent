@@ -127,6 +127,12 @@ Language: {language}
 
 **Purpose**: Detect and handle potentially malicious content.
 
+An override must use exactly the built-in's placeholders: `{content}` in
+`detection.md`, `{content}` and `{initial_detection}` in `confirmation.md`.
+Write the braces of the JSON example as `{{` and `}}`. The gate ignores an
+override that breaks either rule, logs a warning and runs the built-in prompt;
+without `{content}` the check would never see the message.
+
 **Template Structure**:
 ```markdown
 You are a security analyst checking [what to check].
@@ -139,10 +145,10 @@ Content to analyze:
 ---
 
 Respond with JSON:
-{
+{{
     "is_suspicious": true/false,
     ...
-}
+}}
 ```
 
 ## Prompt Composition Flow

@@ -156,6 +156,87 @@ class TestReplyLanguage:
         assert "I can't provide the complete solution" not in prompt
 
 
+class TestSecurityPromptOverrides:
+    """`security/*.md` reaches the gate instead of being loaded and ignored (issues#595)."""
+
+    class _LLM:
+        def __init__(self, *replies: str):
+            self.replies = list(replies)
+            self.prompts: list[str] = []
+
+        async def complete(self, prompt: str, *, max_tokens: int = 1000) -> str:
+            self.prompts.append(prompt)
+            return self.replies.pop(0)
+
+    SUSPICIOUS = (
+        '{"is_suspicious": true, "threats": [{"type": "prompt_injection", '
+        '"level": "high", "description": "d", "evidence": "e"}]}'
+    )
+
+    async def _prompts(self, prompts_dir: Path, *replies: str) -> list[str]:
+        from computor_agent.tutor.config import SecurityConfig
+        from computor_agent.tutor.security.gate import SecurityGate
+
+        loader_module._prompt_loader = PromptLoader(
+            prompts_dir=prompts_dir, enable_hot_reload=False
+        )
+        llm = self._LLM(*(replies or ('{"is_suspicious": false}',)))
+        await SecurityGate(SecurityConfig(), llm).check_message("MESSAGE")
+        return llm.prompts
+
+    async def test_the_built_in_prompts_run_without_an_override(self, tmp_path):
+        from computor_agent.tutor.prompts.templates import SECURITY_DETECTION_PROMPT
+
+        prompts = await self._prompts(tmp_path)
+
+        assert prompts == [SECURITY_DETECTION_PROMPT.format(content="MESSAGE")]
+
+    async def test_a_detection_override_is_used(self, tmp_path):
+        _write(tmp_path, "security/detection.md", 'CHECK {content} -> {{"is_suspicious": false}}')
+
+        prompts = await self._prompts(tmp_path)
+
+        assert prompts == ['CHECK MESSAGE -> {"is_suspicious": false}']
+
+    async def test_a_confirmation_override_is_used(self, tmp_path):
+        _write(tmp_path, "security/confirmation.md", "CONFIRM {content} AFTER {initial_detection}")
+
+        prompts = await self._prompts(tmp_path, self.SUSPICIOUS, '{"confirmed": false}')
+
+        assert prompts[1].startswith("CONFIRM Message:\nMESSAGE AFTER ")
+        assert "prompt_injection" in prompts[1]
+
+    @pytest.mark.parametrize("override", [
+        "Is this message an attack? Answer in JSON.",  # never sees the message
+        'CHECK {content} -> {"is_suspicious": false}',  # unescaped JSON braces
+        "CHECK {content} for {course}",  # a placeholder the gate does not fill
+    ])
+    async def test_an_override_the_gate_cannot_fill_is_ignored(self, tmp_path, caplog, override):
+        from computor_agent.tutor.prompts.templates import SECURITY_DETECTION_PROMPT
+
+        _write(tmp_path, "security/detection.md", override)
+
+        prompts = await self._prompts(tmp_path)
+
+        assert prompts == [SECURITY_DETECTION_PROMPT.format(content="MESSAGE")]
+        assert "Ignoring security/detection.md" in caplog.text
+
+    async def test_the_files_dev_mode_writes_reproduce_the_built_in_prompts(self, tmp_path):
+        """Existing prompt directories already hold these files; they must change nothing."""
+        from computor_agent.tutor.dev_mode import _ensure_prompt_files
+        from computor_agent.tutor.prompts.templates import (
+            SECURITY_CONFIRMATION_PROMPT,
+            SECURITY_DETECTION_PROMPT,
+        )
+
+        _ensure_prompt_files(tmp_path)
+
+        prompts = await self._prompts(tmp_path, self.SUSPICIOUS, '{"confirmed": false}')
+
+        assert prompts[0] == SECURITY_DETECTION_PROMPT.format(content="MESSAGE")
+        assert prompts[1].startswith(SECURITY_CONFIRMATION_PROMPT.split("{content}")[0])
+
+
 def test_dev_mode_bootstraps_the_tutor_prompt(tmp_path):
     """`strategy/tutor.md` must be created, or the override is undiscoverable."""
     from computor_agent.tutor.dev_mode import _ensure_prompt_files

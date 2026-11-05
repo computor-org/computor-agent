@@ -7,6 +7,7 @@ Supports hot reloading in development mode.
 import re
 import logging
 from pathlib import Path
+from string import Formatter
 from typing import Dict, Optional
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
@@ -393,6 +394,61 @@ def get_figure_review_prompt(name: str = "review") -> str:
         prompt = FIGURE_REVIEW_SYSTEM_PROMPT
 
     return prompt
+
+
+def get_security_prompt(name: str) -> str:
+    """The security gate's ``detection`` or ``confirmation`` prompt.
+
+    Override it with ``security/<name>.md`` in the prompts directory. The
+    override must use exactly the built-in's placeholders (``{content}``, and
+    ``{initial_detection}`` in ``confirmation.md``) and write literal braces as
+    ``{{`` and ``}}``. One that does not is ignored with a warning, because the
+    gate cannot fill it: without ``{content}`` the check would never see the
+    message and would pass everything.
+    """
+    from computor_agent.tutor.prompts.templates import (
+        SECURITY_CONFIRMATION_PROMPT,
+        SECURITY_DETECTION_PROMPT,
+    )
+
+    built_in = {
+        "detection": SECURITY_DETECTION_PROMPT,
+        "confirmation": SECURITY_CONFIRMATION_PROMPT,
+    }[name]
+
+    try:
+        override = get_prompt_loader().get_security_prompt(name)
+    except Exception as e:  # pragma: no cover - loader construction failure
+        logger.debug(f"Prompt loader unavailable, using built-in security prompt: {e}")
+        return built_in
+    if not override:
+        return built_in
+
+    placeholders = _placeholders(built_in)
+    if not _fills_with(override, placeholders):
+        logger.warning(
+            f"Ignoring security/{name}.md: it must use exactly the placeholders "
+            f"{', '.join('{' + p + '}' for p in sorted(placeholders))} and write "
+            "literal braces as {{ and }}; using the built-in prompt"
+        )
+        return built_in
+    return override
+
+
+def _placeholders(template: str) -> set[str]:
+    """The ``str.format`` field names in ``template``."""
+    return {field for _, field, _, _ in Formatter().parse(template) if field is not None}
+
+
+def _fills_with(template: str, placeholders: set[str]) -> bool:
+    """Whether ``template.format`` succeeds with exactly ``placeholders``."""
+    try:
+        if _placeholders(template) != placeholders:
+            return False
+        template.format(**dict.fromkeys(placeholders, ""))
+    except (ValueError, KeyError, IndexError, AttributeError):
+        return False
+    return True
 
 
 def get_unit_description_prompt() -> str:

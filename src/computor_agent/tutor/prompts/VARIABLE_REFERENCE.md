@@ -50,6 +50,8 @@ section is simply omitted.
 {content}                - Message/code to analyze
 {initial_detection}      - Result of the first check (confirmation.md only)
 ```
+Both are required. An override that drops one or adds another is ignored and
+the built-in prompt runs instead.
 
 ## Examples
 
