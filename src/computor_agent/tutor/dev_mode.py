@@ -709,6 +709,22 @@ class DevelopmentScheduler:
             logger.exception("Failed to process message")
 
 
+def _default_dev_config():
+    """Configuration for dev mode when no config file is given."""
+    from computor_agent.settings import ComputorConfig
+    from computor_agent.settings.config import BackendConfig, LLMSettings
+
+    return ComputorConfig(
+        # Dev mode never calls the backend, but BackendConfig requires a token.
+        backend=BackendConfig(url="http://localhost:8000", api_token="dev-mode-placeholder"),
+        llm=LLMSettings(
+            provider="ollama",
+            model="devstral-small",
+            base_url="http://localhost:11434/v1",
+        ),
+    )
+
+
 async def run_development_mode(
     config_path: Optional[Path],
     verbose: bool = False,
@@ -745,16 +761,8 @@ async def run_development_mode(
         logger.info(f"Loading config from {config_path}")
         computor_config = ComputorConfig.from_file(config_path)
     else:
-        from computor_agent.settings.config import BackendConfig, LLMSettings
         console.print("[dim]No config file specified, using defaults for dev mode.[/dim]")
-        computor_config = ComputorConfig(
-            backend=BackendConfig(url="http://localhost:8000"),
-            llm=LLMSettings(
-                provider="ollama",
-                model="devstral-small",
-                base_url="http://localhost:11434/v1",
-            ),
-        )
+        computor_config = _default_dev_config()
     tutor_config = computor_config.get_tutor_config()
     # Dev mode has no backend to resolve identity from; pin the simulated id so
     # self-exclusion and follow-up detection work.

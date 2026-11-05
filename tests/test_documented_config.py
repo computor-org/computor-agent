@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from computor_agent.settings.config import AgentConfig
+from computor_agent.settings.config import ComputorConfig
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -41,12 +41,13 @@ def test_the_documented_config_example_validates():
     body = DOC.read_text().split("### config.yaml", 1)[1]
     block = body.split("```yaml", 1)[1].split("```", 1)[0]
 
-    AgentConfig(**yaml.safe_load(block))
+    # `tutor` is a plain dict on ComputorConfig; get_tutor_config() validates it.
+    ComputorConfig(**yaml.safe_load(block)).get_tutor_config()
 
 
 def test_the_shipped_example_config_validates():
     data = yaml.safe_load(EXAMPLE.read_text()) or {}
-    AgentConfig(**data)
+    ComputorConfig(**data).get_tutor_config()
 
 
 def test_every_documented_yaml_block_is_at_least_parseable():
