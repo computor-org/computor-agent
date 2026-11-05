@@ -157,8 +157,7 @@ SELECT
     u.id AS user_id,
     u.given_name,
     u.family_name,
-    u.email,
-    u.username
+    u.email
 FROM submission_group_member sgm
 JOIN course_member cm ON cm.id = sgm.course_member_id
 JOIN "user" u ON u.id = cm.user_id
@@ -201,7 +200,8 @@ EXAMPLE_VERSION_QUERY = """
 SELECT
     ccd.course_content_id,
     ev.storage_path,
-    ev.meta_yaml,
+    ev.student_submission_files,
+    ev.additional_files,
     er.source_url
 FROM course_content_deployment ccd
 JOIN example_version ev ON ev.id = ccd.example_version_id
@@ -390,7 +390,8 @@ def fetch_example_data(conn, minio_client: Minio, scenarios: list[ExtractedScena
 
     Resolves course_content → deployment → example_version → example → repository
     to find the MinIO bucket and storage path, then downloads:
-    - Reference solution files (from meta_yaml properties)
+    - Reference solution files (the version's studentSubmissionFiles and
+      additionalFiles from meta.yaml, stored as typed columns)
     - Assignment README (content/index_en.md or content/index.md)
     """
     # Collect unique course_content_ids
@@ -419,7 +420,6 @@ def fetch_example_data(conn, minio_client: Minio, scenarios: list[ExtractedScena
 
     for cc_id, version_info in version_by_cc.items():
         storage_path = version_info["storage_path"]
-        meta_yaml_text = version_info["meta_yaml"]
         source_url = version_info["source_url"]
         bucket_name = source_url.split("/")[0]
 
@@ -442,29 +442,24 @@ def fetch_example_data(conn, minio_client: Minio, scenarios: list[ExtractedScena
 
         # --- Download reference files ---
         ref_files: dict[str, bytes] = {}
-        if meta_yaml_text:
-            try:
-                meta = yaml.safe_load(meta_yaml_text)
-                properties = meta.get("properties", {}) if meta else {}
-                submission_files = properties.get("studentSubmissionFiles", []) or []
-                additional_files = properties.get("additionalFiles", []) or []
-                ref_paths = set(submission_files + additional_files)
+        ref_paths = set(
+            (version_info["student_submission_files"] or [])
+            + (version_info["additional_files"] or [])
+        )
+        if ref_paths:
+            for ref_path in ref_paths:
+                if "_master." in ref_path:
+                    continue
+                object_key = f"{storage_path}/{ref_path}"
+                try:
+                    resp = minio_client.get_object(bucket_name, object_key)
+                    ref_files[ref_path] = resp.read()
+                    resp.close()
+                    resp.release_conn()
+                except Exception as e:
+                    logger.warning(f"Failed to download reference file {bucket_name}/{object_key}: {e}")
 
-                for ref_path in ref_paths:
-                    if "_master." in ref_path:
-                        continue
-                    object_key = f"{storage_path}/{ref_path}"
-                    try:
-                        resp = minio_client.get_object(bucket_name, object_key)
-                        ref_files[ref_path] = resp.read()
-                        resp.close()
-                        resp.release_conn()
-                    except Exception as e:
-                        logger.warning(f"Failed to download reference file {bucket_name}/{object_key}: {e}")
-
-                logger.info(f"Downloaded {len(ref_files)} reference files for CC {cc_id}")
-            except yaml.YAMLError as e:
-                logger.warning(f"Failed to parse meta_yaml for CC {cc_id}: {e}")
+            logger.info(f"Downloaded {len(ref_files)} reference files for CC {cc_id}")
 
         cache[cc_id] = (ref_files, readme_content)
 
