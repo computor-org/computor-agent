@@ -167,6 +167,11 @@ prompts/
 - **Grading** uses `grading/grading.md` when present. Supplying it selects
   single-step grading, because that is the path a custom rubric applies to;
   without it, grading runs its more accurate multi-step analysis.
+- **Security screening** uses `security/detection.md` and
+  `security/confirmation.md`. An override must keep exactly the built-in's
+  placeholders (`{content}`, plus `{initial_detection}` in `confirmation.md`)
+  and write literal braces as `{{` and `}}`; otherwise the gate logs a warning
+  and runs the built-in prompt.
 
 **Features:**
 - Missing files are auto-created with defaults (including `strategy/tutor.md`)

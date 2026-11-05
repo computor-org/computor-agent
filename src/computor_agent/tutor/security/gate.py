@@ -15,10 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Protocol
 
-from computor_agent.tutor.prompts.templates import (
-    SECURITY_CONFIRMATION_PROMPT,
-    SECURITY_DETECTION_PROMPT,
-)
+from computor_agent.tutor.prompts.loader import get_security_prompt
 from computor_agent.tutor.security.types import (
     SecurityCheckResult,
     ThreatDetection,
@@ -393,7 +390,7 @@ class SecurityGate:
         Returns:
             List of detected threats
         """
-        prompt = SECURITY_DETECTION_PROMPT.format(content=content)
+        prompt = get_security_prompt("detection").format(content=content)
 
         # Use _llm_json_call with default empty response (fail open)
         data = await self._llm_json_call(
@@ -419,7 +416,7 @@ class SecurityGate:
         Returns:
             True if confirmation agrees with detection
         """
-        prompt = SECURITY_CONFIRMATION_PROMPT.format(
+        prompt = get_security_prompt("confirmation").format(
             content=content,
             initial_detection=initial_detection,
         )
