@@ -28,7 +28,8 @@ scopes.
   token, and a `_tutor` membership in each course Lena serves.
 - `TUTOR_AGENT_USER_ID=<service user id>` in the backend `.env`, then recreate
   the API container.
-- The tutor discovers its courses at startup: restart it after adding a course.
+- The tutor looks up its courses before every catch-up scan (every 60 s), so
+  a course it is added to is served within a minute, without a restart.
 
 ## Install
 
