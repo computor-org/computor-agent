@@ -208,3 +208,102 @@ async def test_event_loop_reconnects_on_receive_error():
     assert ws.connect_calls == 1  # one successful reconnect
     assert len(unread_calls) == 1
     assert receive_calls["count"] == 2
+
+
+class OutageTutors:
+    """Course discovery that fails while the backend is down, then works."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def list_courses(self):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("HTTP 503 Temporarily unavailable")
+        return [type("Course", (), {"id": "course-1"})()]
+
+
+class NoUnread:
+    async def list(self, course_id, unread=False, mentions_me=False, limit=100):
+        return []
+
+
+class OutageClient:
+    def __init__(self):
+        self.tutors = OutageTutors()
+        self.messages = NoUnread()
+
+
+
+async def test_catch_up_rediscovers_courses_after_a_start_during_an_outage():
+    """Regression: a tutor started while the backend answered 503 kept an
+    empty course list for good, so after reconnecting it never saw a question."""
+    scheduler = WebSocketScheduler(client=OutageClient(), ws=FakeWS())
+
+    await scheduler._discover_courses()
+    assert scheduler._course_ids == []
+
+    await scheduler._process_unread_messages()
+
+    assert scheduler._course_ids == ["course-1"]
+
+
+class GrowingTutors:
+    """The agent user is enrolled in a second course after startup, then
+    dropped from the first; the lookup in between fails."""
+
+    def __init__(self):
+        self.answers = [
+            ["course-1"],
+            ["course-1", "course-2"],
+            RuntimeError("HTTP 503 Temporarily unavailable"),
+            ["course-2"],
+        ]
+
+    async def list_courses(self):
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return [type("Course", (), {"id": c})() for c in answer]
+
+
+class RecordingUnread:
+    def __init__(self):
+        self.scanned: list[str] = []
+
+    async def list(self, course_id, unread=False, mentions_me=False, limit=100):
+        self.scanned.append(course_id)
+        return []
+
+
+class GrowingClient:
+    def __init__(self):
+        self.tutors = GrowingTutors()
+        self.messages = RecordingUnread()
+
+
+async def test_catch_up_picks_up_a_course_joined_after_startup():
+    """Regression (issues#618): courses were looked up once at startup, so a
+    course the agent joined later was never scanned until a restart."""
+    client = GrowingClient()
+    scheduler = WebSocketScheduler(client=client, ws=FakeWS())
+
+    await scheduler._discover_courses()
+    assert scheduler._course_ids == ["course-1"]
+
+    await scheduler._process_unread_messages()
+    assert scheduler._course_ids == ["course-1", "course-2"]
+    assert "course-2" in client.messages.scanned
+
+    # A failed lookup keeps scanning the known courses.
+    client.messages.scanned.clear()
+    await scheduler._process_unread_messages()
+    assert scheduler._course_ids == ["course-1", "course-2"]
+    assert set(client.messages.scanned) == {"course-1", "course-2"}
+
+    # A course the agent left is no longer scanned.
+    client.messages.scanned.clear()
+    await scheduler._process_unread_messages()
+    assert scheduler._course_ids == ["course-2"]
+    assert "course-1" not in client.messages.scanned
+

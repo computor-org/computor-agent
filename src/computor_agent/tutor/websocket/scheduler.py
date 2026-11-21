@@ -155,6 +155,7 @@ class WebSocketScheduler:
         self._locks: dict[str, asyncio.Lock] = {}  # Per-submission-group locks
         self._course_locks: dict[str, asyncio.Lock] = {}  # Per-course locks
         self._course_ids: list[str] = []
+        self._courses_discovered = False  # True after the first successful lookup
         self._subscribed_channels: set[str] = set()  # Track subscribed channels
         self._running = False
         self._consecutive_auth_failures = 0
@@ -277,25 +278,43 @@ class WebSocketScheduler:
     async def _discover_courses(self) -> None:
         """Discover courses the tutor is a member of.
 
+        Runs at startup and again before every catch-up scan, so a course the
+        agent user joins later is scanned from the next poll on and one it
+        leaves is dropped. A failed lookup keeps the previous list.
+
         Raises:
-            Exception: If unauthorized (401) to stop the scheduler
+            Exception: If unauthorized (401) while no course is known yet,
+                to stop the scheduler
         """
         try:
             # Use the tutors API to get courses
             # This should return courses where the authenticated user is a tutor
             courses = await self.client.tutors.list_courses()
-            self._course_ids = [c.id for c in courses if c.id]
-            logger.info(f"Discovered {len(self._course_ids)} course(s)")
         except Exception as e:
-            # Authorization errors stop the scheduler immediately
-            if is_auth_error(e):
+            # Authorization errors stop a scheduler that has nothing to serve.
+            # Once courses are known, keep scanning them: a refresh that hits
+            # a token hiccup must not take the agent down.
+            if is_auth_error(e) and not self._course_ids:
                 logger.error(f"Authentication failed: {e}")
                 logger.error("The worker cannot continue without valid credentials. Please check your login.")
                 # Re-raise to stop the scheduler
                 raise
-            else:
-                logger.warning(f"Failed to discover courses: {e}")
-                self._course_ids = []
+            logger.warning(f"Failed to discover courses: {e}")
+            return
+
+        course_ids = [c.id for c in courses if c.id]
+        if not self._courses_discovered:
+            logger.info(f"Discovered {len(course_ids)} course(s)")
+        else:
+            added = [c for c in course_ids if c not in self._course_ids]
+            removed = [c for c in self._course_ids if c not in course_ids]
+            if added or removed:
+                logger.info(
+                    f"Courses: +{len(added)} ({', '.join(c[:8] for c in added)}), "
+                    f"-{len(removed)} ({', '.join(c[:8] for c in removed)})"
+                )
+        self._course_ids = course_ids
+        self._courses_discovered = True
 
     async def _check_all_courses(self) -> None:
         """Check all courses for unread messages (triggered by WebSocket event)."""
@@ -318,6 +337,9 @@ class WebSocketScheduler:
 
         self._evict_stale_states()
 
+        # Pick up courses the agent joined since the last scan, and retry a
+        # start during a backend outage that found none.
+        await self._discover_courses()
         if not self._course_ids:
             logger.debug("No courses to check for unread messages")
             return
